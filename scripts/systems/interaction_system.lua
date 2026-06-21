@@ -1,0 +1,213 @@
+-- ============================================================================
+-- 世界交互系统 (Interaction System)
+-- Grow A Garden
+-- ============================================================================
+-- 管理世界点击命中、鼠标/触摸相机手势与键盘快捷操作。
+-- UI 只需要调用 SuppressNextWorldTap 来避免按钮点击穿透到世界。
+-- ============================================================================
+
+local InteractionSystem = {}
+
+local config_ = nil
+local cameraSystem_ = nil
+local deps_ = {}
+local suppressNextWorldTap_ = false
+local touchGestureActive_ = false
+local lastPinchDistance_ = 0
+
+function InteractionSystem.Init(config, cameraSystem, deps)
+    config_ = config
+    cameraSystem_ = cameraSystem
+    deps_ = deps or {}
+    suppressNextWorldTap_ = false
+    touchGestureActive_ = false
+    lastPinchDistance_ = 0
+end
+
+function InteractionSystem.SuppressNextWorldTap()
+    suppressNextWorldTap_ = true
+end
+
+local function IsWorldTapArea(x, y)
+    local h = graphics:GetHeight()
+    local bottomReserved = 86
+    if cameraSystem_.GetViewMode() == cameraSystem_.ViewMode.PLANT then
+        bottomReserved = 260
+    end
+    return y > 170 and y < h - bottomReserved
+end
+
+local function PlotHitFromScreen(x, y)
+    local camera = deps_.getCamera and deps_.getCamera() or nil
+    if camera == nil then return nil, nil end
+    if not IsWorldTapArea(x, y) then return nil, nil end
+
+    local plots = deps_.getPlots and deps_.getPlots() or nil
+    if plots == nil then return nil, nil end
+
+    local w = graphics:GetWidth()
+    local h = graphics:GetHeight()
+    local ray = camera:GetScreenRay(x / w, y / h)
+    if math.abs(ray.direction.y) < 0.001 then return nil, nil end
+
+    local surfaceY = 0.92
+    local t = (surfaceY - ray.origin.y) / ray.direction.y
+    if t <= 0 then return nil, nil end
+    local hit = ray.origin + ray.direction * t
+
+    local bestIndex = nil
+    local bestDist = 9999
+    local bestLocal = nil
+    for i = 1, #plots do
+        local pos = deps_.plotWorldPosition(i)
+        local dx = hit.x - pos.x
+        local dz = hit.z - pos.z
+        local dist = dx * dx + dz * dz
+        if dist < bestDist then
+            bestDist = dist
+            bestIndex = i
+            bestLocal = Vector3(dx / config_.PlotSize, 0, dz / config_.PlotSize)
+        end
+    end
+
+    local halfSize = 0.55
+    if bestIndex ~= nil and bestDist <= (halfSize * config_.PlotSize) * (halfSize * config_.PlotSize) then
+        return bestIndex, deps_.clampToPlot(bestLocal)
+    end
+    return nil, nil
+end
+
+local function HandleWorldTap(x, y)
+    if suppressNextWorldTap_ then
+        suppressNextWorldTap_ = false
+        return
+    end
+
+    local plotIndex, localPos = PlotHitFromScreen(x, y)
+    if plotIndex == nil then return end
+
+    if cameraSystem_.GetViewMode() == cameraSystem_.ViewMode.FARM then
+        deps_.setSelectedPlot(plotIndex)
+        deps_.refreshSelection()
+        deps_.showToast("已选中田地，可查看状态；点击下方开始种植后操作")
+        deps_.refreshUI(true)
+    else
+        deps_.performPlotAction(plotIndex, localPos)
+    end
+end
+
+function InteractionSystem.HandleMouseButtonDown(eventData)
+    local button = eventData["Button"]:GetInt()
+    if button ~= MOUSEB_LEFT then return end
+    HandleWorldTap(eventData["X"]:GetInt(), eventData["Y"]:GetInt())
+end
+
+function InteractionSystem.HandleMouseMove(eventData)
+    if cameraSystem_.GetViewMode() ~= cameraSystem_.ViewMode.FARM then return end
+    if not input:GetMouseButtonDown(MOUSEB_LEFT) then return end
+    local y = eventData["Y"]:GetInt()
+    if not IsWorldTapArea(eventData["X"]:GetInt(), y) then return end
+
+    local dx = eventData["DX"]:GetInt()
+    local dy = eventData["DY"]:GetInt()
+    if math.abs(dx) > 0 or math.abs(dy) > 0 then
+        cameraSystem_.RotateYaw(dx * 0.16)
+        cameraSystem_.AdjustPitch(dy * 0.08, 24.0, 68.0)
+    end
+end
+
+function InteractionSystem.HandleMouseWheel(eventData)
+    if cameraSystem_.GetViewMode() ~= cameraSystem_.ViewMode.FARM then return end
+    local wheel = eventData["Wheel"]:GetInt()
+    if wheel == 0 then return end
+    cameraSystem_.AdjustDistance(-wheel * 0.8, config_.FarmViewMinDistance, config_.FarmViewMaxDistance)
+end
+
+function InteractionSystem.HandleTouchBegin(eventData)
+    HandleWorldTap(eventData["X"]:GetInt(), eventData["Y"]:GetInt())
+end
+
+function InteractionSystem.HandleTouchMove()
+    touchGestureActive_ = true
+end
+
+function InteractionSystem.UpdateTouchCameraGesture()
+    if cameraSystem_.GetViewMode() ~= cameraSystem_.ViewMode.FARM then
+        lastPinchDistance_ = 0
+        return
+    end
+
+    local touchCount = input.numTouches
+    if touchCount == 1 then
+        lastPinchDistance_ = 0
+        local touch = input:GetTouch(0)
+        if touch ~= nil and not touch.touchedElement then
+            local dx = touch.delta.x
+            local dy = touch.delta.y
+            if math.abs(dx) > 0 or math.abs(dy) > 0 then
+                touchGestureActive_ = true
+                cameraSystem_.RotateYaw(-dx * 0.16)
+                cameraSystem_.AdjustPitch(dy * 0.08, 24.0, 68.0)
+            end
+        end
+    elseif touchCount >= 2 then
+        local touch1 = input:GetTouch(0)
+        local touch2 = input:GetTouch(1)
+        if touch1 ~= nil and touch2 ~= nil and not touch1.touchedElement and not touch2.touchedElement then
+            local dx = touch1.position.x - touch2.position.x
+            local dy = touch1.position.y - touch2.position.y
+            local dist = math.sqrt(dx * dx + dy * dy)
+            if lastPinchDistance_ > 0 then
+                local delta = dist - lastPinchDistance_
+                if math.abs(delta) > 0.5 then
+                    touchGestureActive_ = true
+                    cameraSystem_.AdjustDistance(-delta * 0.018, config_.FarmViewMinDistance, config_.FarmViewMaxDistance)
+                end
+            end
+            lastPinchDistance_ = dist
+        end
+    else
+        lastPinchDistance_ = 0
+        touchGestureActive_ = false
+    end
+end
+
+function InteractionSystem.HandleInput(dt)
+    if input:GetKeyPress(KEY_LEFT) then deps_.selectPlotByDelta(-1, 0) end
+    if input:GetKeyPress(KEY_RIGHT) then deps_.selectPlotByDelta(1, 0) end
+    if input:GetKeyPress(KEY_UP) then deps_.selectPlotByDelta(0, -1) end
+    if input:GetKeyPress(KEY_DOWN) then deps_.selectPlotByDelta(0, 1) end
+    if input:GetKeyPress(KEY_Q) then deps_.cycleSeed(-1) end
+    if input:GetKeyPress(KEY_E) then deps_.cycleSeed(1) end
+    if input:GetKeyPress(KEY_B) then deps_.buySelectedSeed(); deps_.refreshUI(true) end
+    if input:GetKeyPress(KEY_G) then deps_.sellAllHarvested(); deps_.refreshUI(true) end
+
+    if input:GetKeyPress(KEY_SPACE) then
+        if cameraSystem_.GetViewMode() == cameraSystem_.ViewMode.FARM then
+            deps_.enterPlantView()
+        else
+            local plot = deps_.getSelectedPlot()
+            if plot ~= nil and deps_.countMaturePlants(plot) > 0 then
+                deps_.harvestNearestMature(deps_.getSelectedPlotIndex(), nil)
+            elseif plot ~= nil and deps_.countPlotPlants(plot) < config_.MaxCropsPerPlot then
+                deps_.plantSeed(deps_.getSelectedPlotIndex(), deps_.getSelectedSeedIndex())
+            end
+            deps_.refreshUI(true)
+        end
+    end
+
+    if input:GetKeyDown(KEY_A) then
+        cameraSystem_.RotateYaw(-70.0 * dt)
+    end
+    if input:GetKeyDown(KEY_D) then
+        cameraSystem_.RotateYaw(70.0 * dt)
+    end
+    if input:GetKeyDown(KEY_W) then
+        cameraSystem_.AdjustDistance(-8.0 * dt, config_.FarmViewMinDistance, config_.FarmViewMaxDistance)
+    end
+    if input:GetKeyDown(KEY_S) then
+        cameraSystem_.AdjustDistance(8.0 * dt, config_.FarmViewMinDistance, config_.FarmViewMaxDistance)
+    end
+end
+
+return InteractionSystem
