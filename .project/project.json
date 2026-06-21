@@ -1,6 +1,6 @@
 {
   "$schema": "../schemas/project.schema.json",
-  "project_id": "p_4jpc",
+  "project_id": "p_iemc",
   "author": {
     "id": "858557875"
   },
@@ -10,7 +10,7 @@
     "title": "<game title, required>",
     "description": "<game description>",
     "category": "<game category: rpg, casual, action, strategy, simulation, trivia, arcade, adventure, card, sports, racing, puzzle, educational, music, word, board>",
-    "screen_orientation": "landscape",
+    "screen_orientation": "portrait",
     "collection_type": "sce",
     "trial_note": "<developer's note>",
     "transparent": false,
