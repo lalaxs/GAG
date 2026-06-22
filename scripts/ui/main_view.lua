@@ -37,6 +37,7 @@ function MainView.CreateLabels()
         fontColor = {255, 255, 255, 255},
         textAlign = "center",
     }
+    labels.seedPackIcon = nil
     labels.plotLabel = UI.Label {
         text = "LV1",
         fontSize = 16,
@@ -209,43 +210,47 @@ local function BuildFarmControls(labels, actionButton)
             actionButton,
             UI.Panel {
                 width = 90,
-                height = 142,
+                height = 190,
                 alignItems = "center",
                 justifyContent = "flex-end",
-                overflow = "visible",
                 children = {
-                    deps_.countSeedPacks() > 0 and UI.Button {
-                        position = "absolute",
-                        top = 0,
-                        text = "礼包",
-                        width = 68,
-                        height = 42,
-                        fontSize = 15,
-                        fontWeight = "bold",
-                        backgroundColor = {245, 232, 198, 250},
-                        fontColor = {125, 88, 45, 255},
-                        borderRadius = 18,
-                        borderWidth = 2,
-                        borderColor = {255, 255, 255, 240},
-                        onClick = function()
-                            deps_.suppressWorldTap()
-                            deps_.openSeedPackHub()
-                        end,
-                    } or UI.Panel { width = 0, height = 0 },
-                    deps_.countSeedPacks() > 0 and UI.Panel {
-                        position = "absolute",
-                        top = -6,
-                        right = 4,
-                        width = 24,
-                        height = 24,
-                        borderRadius = 12,
-                        backgroundColor = {225, 55, 45, 255},
-                        borderWidth = 2,
-                        borderColor = {255, 255, 255, 255},
-                        justifyContent = "center",
-                        alignItems = "center",
-                        children = { labels.seedPackBadgeLabel },
-                    } or UI.Panel { width = 0, height = 0 },
+                    deps_.countSeedPacks() > 0 and (function()
+                        local icon = UI.Panel {
+                            width = 71,
+                            height = 82,
+                            marginBottom = 14,
+                            backgroundImage = deps_.getHighestPackIcon(),
+                            backgroundFit = "contain",
+                            onClick = function()
+                                deps_.suppressWorldTap()
+                                deps_.openSeedPackHub()
+                            end,
+                        }
+                        labels.seedPackIcon = icon
+                        return UI.Panel {
+                            alignItems = "center",
+                            overflow = "visible",
+                            children = {
+                                icon,
+                                UI.Panel {
+                                    position = "absolute",
+                                    top = -4,
+                                    right = -2,
+                                    minWidth = 22,
+                                    height = 22,
+                                    paddingLeft = 5,
+                                    paddingRight = 5,
+                                    borderRadius = 11,
+                                    backgroundColor = {225, 55, 45, 255},
+                                    borderWidth = 2,
+                                    borderColor = {255, 255, 255, 255},
+                                    justifyContent = "center",
+                                    alignItems = "center",
+                                    children = { labels.seedPackBadgeLabel },
+                                },
+                            },
+                        }
+                    end)() or UI.Panel { width = 0, height = 0 },
                     UI.Button {
                         text = "任务",
                         width = 90,
@@ -362,7 +367,7 @@ function MainView.BuildRoot(labels, children)
             BuildCollapseButton(),
             children.bagDetail,
             children.seedPackOverlay,
-            children.seedPackResultOverlay,
+            children.seedPackOpeningOverlay,
         },
     }
 end

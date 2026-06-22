@@ -31,11 +31,11 @@ GameConfig.CONFIG = {
 }
 
 GameConfig.RARITY_COLORS = {
-    ["普通"] = Color(0.92, 0.92, 0.88, 1.0),
-    ["罕见"] = Color(0.25, 0.95, 0.35, 1.0),
-    ["稀有"] = Color(0.25, 0.55, 1.0, 1.0),
-    ["史诗"] = Color(0.75, 0.35, 1.0, 1.0),
-    ["传奇"] = Color(1.0, 0.58, 0.08, 1.0),
+    ["普通"] = Color(0.50, 0.48, 0.42, 1.0),
+    ["罕见"] = Color(0.30, 0.72, 0.38, 1.0),
+    ["稀有"] = Color(0.30, 0.55, 0.88, 1.0),
+    ["史诗"] = Color(0.62, 0.38, 0.82, 1.0),
+    ["传奇"] = Color(0.88, 0.55, 0.15, 1.0),
 }
 
 GameConfig.PLANTS = {
@@ -99,84 +99,79 @@ GameConfig.RARITY_PLANT_INDICES = {
 }
 
 GameConfig.SEED_PACK_CONFIG = {
-    daily_basic = {
-        packId = "daily_basic",
-        packName = "日常普通种子礼包",
-        packType = "daily",
-        getWay = "每日任务",
-        onceOpenCount = 5,
+    pack_common = {
+        packId = "pack_common",
+        packName = "普通种子包",
+        packRarity = "普通",
+        onceOpenCount = 1,
         seedBuff = 0,
         stackMax = 999,
-        themeColor = {245, 232, 198, 255},
+        packIcon = "image/seedpack_icon/seedpack_0.png",
+        themeColor = {235, 235, 225, 255},
         weightPool = {
-            { seedId = 1, weight = 150 }, { seedId = 2, weight = 150 }, { seedId = 21, weight = 150 }, { seedId = 22, weight = 150 },
-            { seedId = 3, weight = 58 }, { seedId = 4, weight = 58 }, { seedId = 5, weight = 58 }, { seedId = 6, weight = 58 }, { seedId = 23, weight = 59 }, { seedId = 24, weight = 59 },
-            { seedId = 7, weight = 8 }, { seedId = 8, weight = 8 }, { seedId = 9, weight = 8 }, { seedId = 10, weight = 8 }, { seedId = 25, weight = 9 }, { seedId = 26, weight = 9 },
+            { seedId = 1, weight = 250 }, { seedId = 2, weight = 250 }, { seedId = 21, weight = 250 }, { seedId = 22, weight = 250 },
         },
     },
-    silver_common = {
-        packId = "silver_common",
-        packName = "银质・普通礼包",
-        packType = "silver_普通",
-        getWay = "普通收集成就",
-        onceOpenCount = 3,
-        seedBuff = 0.01,
+    pack_uncommon = {
+        packId = "pack_uncommon",
+        packName = "罕见种子包",
+        packRarity = "罕见",
+        onceOpenCount = 1,
+        seedBuff = 0,
         stackMax = 999,
-        themeColor = {205, 205, 195, 255},
-        weightPool = { { seedId = 1, weight = 260 }, { seedId = 21, weight = 260 }, { seedId = 2, weight = 240 }, { seedId = 22, weight = 240 } },
-    },
-    silver_uncommon = {
-        packId = "silver_uncommon",
-        packName = "银质・罕见礼包",
-        packType = "silver_罕见",
-        getWay = "罕见收集成就",
-        onceOpenCount = 3,
-        seedBuff = 0.01,
-        stackMax = 999,
+        packIcon = "image/seedpack_icon/seedpack_1.png",
         themeColor = {170, 220, 175, 255},
-        weightPool = { { seedId = 3, weight = 170 }, { seedId = 4, weight = 170 }, { seedId = 5, weight = 160 }, { seedId = 6, weight = 160 }, { seedId = 23, weight = 170 }, { seedId = 24, weight = 170 } },
+        weightPool = {
+            { seedId = 3, weight = 170 }, { seedId = 4, weight = 170 }, { seedId = 5, weight = 160 }, { seedId = 6, weight = 160 }, { seedId = 23, weight = 170 }, { seedId = 24, weight = 170 },
+        },
     },
-    silver_rare = {
-        packId = "silver_rare",
-        packName = "银质・稀有礼包",
-        packType = "silver_稀有",
-        getWay = "稀有收集成就",
-        onceOpenCount = 3,
-        seedBuff = 0.01,
+    pack_rare = {
+        packId = "pack_rare",
+        packName = "稀有种子包",
+        packRarity = "稀有",
+        onceOpenCount = 1,
+        seedBuff = 0,
         stackMax = 999,
+        packIcon = "image/seedpack_icon/seedpack_2.png",
         themeColor = {160, 190, 240, 255},
-        weightPool = { { seedId = 7, weight = 165 }, { seedId = 8, weight = 165 }, { seedId = 9, weight = 170 }, { seedId = 10, weight = 165 }, { seedId = 25, weight = 165 }, { seedId = 26, weight = 170 } },
+        weightPool = {
+            { seedId = 7, weight = 165 }, { seedId = 8, weight = 165 }, { seedId = 9, weight = 170 }, { seedId = 10, weight = 165 }, { seedId = 25, weight = 165 }, { seedId = 26, weight = 170 },
+        },
     },
-    silver_epic = {
-        packId = "silver_epic",
-        packName = "银质・史诗礼包",
-        packType = "silver_史诗",
-        getWay = "史诗收集成就",
-        onceOpenCount = 3,
-        seedBuff = 0.01,
+    pack_epic = {
+        packId = "pack_epic",
+        packName = "史诗种子包",
+        packRarity = "史诗",
+        onceOpenCount = 1,
+        seedBuff = 0,
         stackMax = 999,
+        packIcon = "image/seedpack_icon/seedpack_3.png",
         themeColor = {205, 165, 240, 255},
-        weightPool = { { seedId = 11, weight = 167 }, { seedId = 12, weight = 167 }, { seedId = 13, weight = 167 }, { seedId = 14, weight = 167 }, { seedId = 27, weight = 166 }, { seedId = 28, weight = 166 } },
+        weightPool = {
+            { seedId = 11, weight = 167 }, { seedId = 12, weight = 167 }, { seedId = 13, weight = 167 }, { seedId = 14, weight = 167 }, { seedId = 27, weight = 166 }, { seedId = 28, weight = 166 },
+        },
     },
-    silver_legendary = {
-        packId = "silver_legendary",
-        packName = "银质・传奇礼包",
-        packType = "silver_传奇",
-        getWay = "传奇收集成就",
-        onceOpenCount = 3,
-        seedBuff = 0.01,
+    pack_legendary = {
+        packId = "pack_legendary",
+        packName = "传奇种子包",
+        packRarity = "传奇",
+        onceOpenCount = 1,
+        seedBuff = 0,
         stackMax = 999,
+        packIcon = "image/seedpack_icon/seedpack_4.png",
         themeColor = {245, 185, 95, 255},
-        weightPool = { { seedId = 15, weight = 143 }, { seedId = 16, weight = 143 }, { seedId = 17, weight = 143 }, { seedId = 18, weight = 143 }, { seedId = 19, weight = 143 }, { seedId = 20, weight = 143 }, { seedId = 29, weight = 142 } },
+        weightPool = {
+            { seedId = 15, weight = 143 }, { seedId = 16, weight = 143 }, { seedId = 17, weight = 143 }, { seedId = 18, weight = 143 }, { seedId = 19, weight = 143 }, { seedId = 20, weight = 143 }, { seedId = 29, weight = 142 },
+        },
     },
 }
 
-GameConfig.SILVER_PACK_BY_RARITY = {
-    ["普通"] = "silver_common",
-    ["罕见"] = "silver_uncommon",
-    ["稀有"] = "silver_rare",
-    ["史诗"] = "silver_epic",
-    ["传奇"] = "silver_legendary",
+GameConfig.SEED_PACK_BY_RARITY = {
+    ["普通"] = "pack_common",
+    ["罕见"] = "pack_uncommon",
+    ["稀有"] = "pack_rare",
+    ["史诗"] = "pack_epic",
+    ["传奇"] = "pack_legendary",
 }
 
 GameConfig.DAILY_TASK_CONFIG = {

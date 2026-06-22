@@ -46,6 +46,8 @@ local helpLabel_ = nil
 local toastLabel_ = nil
 ---@type Widget|nil
 local seedPackBadgeLabel_ = nil
+local seedPackIcon_ = nil
+local seedPackIconTimer_ = 0
 local seedButtons_ = {}
 
 local CONFIG = GameConfig.CONFIG
@@ -54,7 +56,7 @@ local PLANTS = GameConfig.PLANTS
 local RARITY_ORDER = GameConfig.RARITY_ORDER
 local RARITY_PLANT_INDICES = GameConfig.RARITY_PLANT_INDICES
 local SEED_PACK_CONFIG = GameConfig.SEED_PACK_CONFIG
-local SILVER_PACK_BY_RARITY = GameConfig.SILVER_PACK_BY_RARITY
+local SEED_PACK_BY_RARITY = GameConfig.SEED_PACK_BY_RARITY
 local DAILY_TASK_CONFIG = GameConfig.DAILY_TASK_CONFIG
 local SEED_STACK_MAX = GameConfig.SEED_STACK_MAX
 local COLOR_MUTATIONS = GameConfig.COLOR_MUTATIONS
@@ -76,8 +78,11 @@ local seedPackModal_ = nil
 local taskModal_ = nil
 local seedPackReveal_ = nil
 local seedPackPanelOpen_ = false
-local seedPackResultTitle_ = nil
-local seedPackResultItems_ = nil
+
+local seedPackOpening_ = nil
+local seedPackOpeningTimer_ = 0
+local seedPackOpeningStage_ = "closed"
+local seedPackRevealIndex_ = 0
 local selectedBagItem_ = nil
 local ViewMode = CameraSystem.ViewMode
 local unlockedPlotCount_ = CONFIG.InitialUnlockedPlots
@@ -129,6 +134,22 @@ end
 
 local function CountSeedPacks()
     return InventorySystem.CountSeedPacks()
+end
+
+local function GetHighestPackIcon()
+    local bestOrder = 0
+    local bestIcon = "image/seedpack_icon/seedpack_0.png"
+    for packId, cfg in pairs(SEED_PACK_CONFIG) do
+        local owned = seedPacks_[packId] or 0
+        if owned > 0 then
+            local order = RARITY_ORDER[cfg.packRarity or "普通"] or 0
+            if order > bestOrder then
+                bestOrder = order
+                bestIcon = cfg.packIcon or "image/seedpack_icon/seedpack_0.png"
+            end
+        end
+    end
+    return bestIcon
 end
 
 local function AddSeedPack(packId, count)
@@ -355,23 +376,44 @@ local function GetFirstAvailablePackId()
     return SeedPackSystem.GetFirstAvailablePackId()
 end
 
-local function OpenSeedPackResultModal(title, results)
+
+
+local function StartSeedPackOpening(title, results)
     seedPackPanelOpen_ = false
-    seedPackResultTitle_ = title
-    seedPackResultItems_ = results
+    seedPackOpening_ = { title = title, results = results }
+    seedPackOpeningStage_ = "unseal"
+    seedPackOpeningTimer_ = 0
+    seedPackRevealIndex_ = 1
     if RebuildUI ~= nil then RebuildUI() end
 end
 
-local function OpenSeedPack(packId, packCount)
-    local results, err, title = SeedPackSystem.OpenPack(packId, packCount)
+local function FinishSeedPackOpening()
+    if seedPackOpening_ == nil then return end
+    local opening = seedPackOpening_
+    SeedPackSystem.ConfirmResults(opening.results)
+    -- 单开完成后直接回到种子包弹窗
+    seedPackOpening_ = nil
+    seedPackOpeningStage_ = "closed"
+    seedPackOpeningTimer_ = 0
+    seedPackRevealIndex_ = 0
+    seedPackPanelOpen_ = true
+    if RebuildUI ~= nil then RebuildUI() end
+    SeedPackView.OpenPackModal()
+end
+
+local function SkipSeedPackOpening()
+    FinishSeedPackOpening()
+end
+
+local function OpenSeedPack(packId)
+    local results, err, title = SeedPackSystem.PreviewPack(packId, 1)
     if results == nil then
-        if err ~= nil then
-            ShowToast(err)
-        end
+        if err ~= nil then ShowToast(err) end
         return
     end
+    SeedPackView.ClosePackModal()
+    StartSeedPackOpening(title, results)
     RefreshUI(true)
-    OpenSeedPackResultModal(title, results)
 end
 
 OpenSeedPackHub = function()
@@ -379,18 +421,16 @@ OpenSeedPackHub = function()
         ShowToast("暂无可开启的种子包")
         return
     end
-    seedPackResultTitle_ = nil
-    seedPackResultItems_ = nil
     seedPackPanelOpen_ = true
-    if RebuildUI ~= nil then RebuildUI() end
+    SeedPackView.OpenPackModal()
 end
 
 local function BuildSeedPackOverlay()
     return SeedPackView.BuildPackOverlay(seedPackPanelOpen_)
 end
 
-local function BuildSeedPackResultOverlay()
-    return SeedPackView.BuildResultOverlay(seedPackResultTitle_, seedPackResultItems_)
+local function BuildSeedPackOpeningOverlay()
+    return SeedPackView.BuildOpeningOverlay(seedPackOpening_, seedPackOpeningStage_, seedPackRevealIndex_, seedPackOpeningTimer_)
 end
 
 OpenTaskPanel = function()
@@ -539,9 +579,10 @@ RebuildUI = function()
         plantContent = BuildPlantTabContent(),
         bagDetail = BagDetailView.Build(selectedBagItem_, GetViewMode() == ViewMode.PLANT),
         seedPackOverlay = BuildSeedPackOverlay(),
-        seedPackResultOverlay = BuildSeedPackResultOverlay(),
+        seedPackOpeningOverlay = BuildSeedPackOpeningOverlay(),
     })
     actionButton_ = labels.actionButton
+    seedPackIcon_ = labels.seedPackIcon
     UI.SetRoot(root)
     if previewItem ~= nil then
         CreateBagPreview(previewItem)
@@ -607,6 +648,23 @@ local function UpdatePlants(dt)
     CropSystem.UpdatePlants(plots_, dt)
 end
 
+local function UpdateSeedPackOpening(dt)
+    if seedPackOpening_ == nil then return end
+    seedPackOpeningTimer_ = seedPackOpeningTimer_ + dt
+
+    if seedPackOpeningStage_ == "unseal" and seedPackOpeningTimer_ >= 0.3 then
+        seedPackOpeningStage_ = "rolling"
+        seedPackOpeningTimer_ = 0
+        if RebuildUI ~= nil then RebuildUI() end
+    elseif seedPackOpeningStage_ == "rolling" and seedPackOpeningTimer_ >= 1.8 then
+        seedPackOpeningStage_ = "selected"
+        seedPackOpeningTimer_ = 0
+        if RebuildUI ~= nil then RebuildUI() end
+    elseif seedPackOpeningStage_ == "selected" then
+        -- 停在 selected 等用户点确认
+    end
+end
+
 ---@param eventType string
 ---@param eventData UpdateEventData
 function HandleUpdate(eventType, eventData)
@@ -615,7 +673,9 @@ function HandleUpdate(eventType, eventData)
     HandleInput(dt)
     UpdateTouchCameraGesture()
     UpdatePlants(dt)
+    UpdateSeedPackOpening(dt)
     Shop.Update(dt)
+
 
     if toastTimer_ > 0 then
         toastTimer_ = toastTimer_ - dt
@@ -675,10 +735,7 @@ function Start()
         openSeedPack = OpenSeedPack,
         suppressWorldTap = function() suppressNextWorldTap_ = true end,
         closePackPanel = function() seedPackPanelOpen_ = false end,
-        closeResultPanel = function()
-            seedPackResultTitle_ = nil
-            seedPackResultItems_ = nil
-        end,
+        skipOpening = SkipSeedPackOpening,
         rebuildUI = function()
             if RebuildUI ~= nil then RebuildUI() end
         end,
@@ -737,6 +794,7 @@ function Start()
         openSeedPackHub = OpenSeedPackHub,
         openTaskPanel = OpenTaskPanel,
         countSeedPacks = CountSeedPacks,
+        getHighestPackIcon = GetHighestPackIcon,
         clearSelectedBagItem = function() selectedBagItem_ = nil end,
         clearBagPreview = function()
             if ClearBagPreview ~= nil then ClearBagPreview() end
@@ -795,10 +853,10 @@ function Start()
     AddSeedToBag(1, 4, 0)
     AddSeedToBag(2, 2, 0)
     AddSeedToBag(3, 1, 0)
-    AddSeedPack("daily_basic", 3)
-    AddSeedPack("silver_common", 2)
-    AddSeedPack("silver_uncommon", 1)
-    AddSeedPack("silver_rare", 1)
+    AddSeedPack("pack_common", 3)
+    AddSeedPack("pack_uncommon", 2)
+    AddSeedPack("pack_rare", 1)
+    AddSeedPack("pack_legendary", 1)
 
     RebuildUI()
     RefreshUI(true)

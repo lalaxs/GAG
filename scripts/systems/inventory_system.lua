@@ -154,7 +154,7 @@ function InventorySystem.AddDailyProgress(key, amount)
 end
 
 function InventorySystem.CheckSilverPackRewards()
-    for rarity, packId in pairs(cfg_.SILVER_PACK_BY_RARITY) do
+    for rarity, packId in pairs(cfg_.SEED_PACK_BY_RARITY) do
         if not state_.silverRewardClaimed[rarity] and IsRarityCollected(rarity) then
             state_.silverRewardClaimed[rarity] = true
             InventorySystem.AddSeedPack(packId, 1)
@@ -284,12 +284,32 @@ function InventorySystem.OpenSeedPack(packId, packCount)
     return results
 end
 
+function InventorySystem.PreviewSeedPack(packId, packCount)
+    local packCfg = cfg_.SEED_PACK_CONFIG[packId]
+    local owned = state_.seedPacks[packId] or 0
+    packCount = math.min(packCount or 1, owned)
+    if packCfg == nil or packCount <= 0 then return nil end
+
+    local results = InventorySystem.BuildSeedPackResults(packCfg, packCount)
+    if not InventorySystem.CanReceivePackResults(results) then
+        return nil, "背包空间不足，无法开启礼包"
+    end
+    state_.seedPacks[packId] = owned - packCount
+    return results
+end
+
+function InventorySystem.ConfirmSeedPackResults(results)
+    if results == nil then return false end
+    InventorySystem.ApplyPackResults(results)
+    return true
+end
+
 function InventorySystem.ClaimDailyReward()
     if not InventorySystem.AreAllDailyTasksCompleted() or state_.dailyTaskState.rewardClaimed then
         return false
     end
     state_.dailyTaskState.rewardClaimed = true
-    InventorySystem.AddSeedPack("daily_basic", 1)
+    InventorySystem.AddSeedPack("pack_common", 1)
     return true
 end
 

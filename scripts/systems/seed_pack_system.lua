@@ -52,4 +52,24 @@ function SeedPackSystem.OpenPack(packId, packCount)
     return results, nil, title
 end
 
+function SeedPackSystem.PreviewPack(packId, packCount)
+    local cfg = config_.SEED_PACK_CONFIG[packId]
+    if cfg == nil then return nil, nil, nil end
+
+    local state = inventory_.GetState()
+    local owned = state.seedPacks[packId] or 0
+    packCount = math.min(packCount or 1, owned)
+    local results, err = inventory_.PreviewSeedPack(packId, packCount)
+    if results == nil then
+        return nil, err, nil
+    end
+
+    local title = packCount > 1 and (cfg.packName .. " x" .. packCount) or cfg.packName
+    return results, nil, title
+end
+
+function SeedPackSystem.ConfirmResults(results)
+    return inventory_.ConfirmSeedPackResults(results)
+end
+
 return SeedPackSystem
