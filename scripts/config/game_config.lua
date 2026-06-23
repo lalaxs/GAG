@@ -15,6 +15,7 @@ GameConfig.CONFIG = {
     InitialUnlockedPlots = 3,
     PlotSpacing = 3.05,
     PlotSize = 2.0,
+    PlantableHalf = 0.60,
     ScatterRadius = 0.68,
     SeedMinDistance = 0.22,
     MaxCropsPerPlot = 10,

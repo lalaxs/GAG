@@ -281,7 +281,7 @@ local function BuildPlantShell(plantContent)
     return UI.Panel {
         position = "absolute",
         left = 0, right = 0, bottom = 0,
-        paddingTop = 12, paddingBottom = 125,
+        paddingTop = 12, paddingBottom = plantTab == "harvest" and 16 or 125,
         paddingLeft = 14, paddingRight = 14,
         backgroundColor = {250, 245, 235, 252},
         borderRadius = {22, 22, 0, 0},

@@ -6,6 +6,8 @@
 -- UI 只需要调用 SuppressNextWorldTap 来避免按钮点击穿透到世界。
 -- ============================================================================
 
+local FloatingToast = require("ui.floating_toast")
+
 local InteractionSystem = {}
 
 local config_ = nil
@@ -81,11 +83,17 @@ local function PlotHitFromScreen(x, y)
         end
     end
 
-    local halfSize = 0.55
-    if bestIndex ~= nil and bestDist <= (halfSize * config_.PlotSize) * (halfSize * config_.PlotSize) then
-        return bestIndex, deps_.clampToPlot(bestLocal)
+    local plantableHalf = config_.PlantableHalf or 0.60
+    if bestIndex ~= nil and bestDist <= (plantableHalf * config_.PlotSize) * (plantableHalf * config_.PlotSize) then
+        if math.abs(bestLocal.x) > plantableHalf or math.abs(bestLocal.z) > plantableHalf then
+            return nil, nil, "edge"
+        end
+        return bestIndex, bestLocal, nil
     end
-    return nil, nil
+    if bestIndex ~= nil then
+        return nil, nil, "edge"
+    end
+    return nil, nil, nil
 end
 
 local function HandleWorldTap(x, y)
@@ -94,8 +102,15 @@ local function HandleWorldTap(x, y)
         return
     end
 
-    local plotIndex, localPos = PlotHitFromScreen(x, y)
-    if plotIndex == nil then return end
+    local plotIndex, localPos, missReason = PlotHitFromScreen(x, y)
+    if plotIndex == nil then
+        if missReason == "edge" and cameraSystem_.GetViewMode() == cameraSystem_.ViewMode.PLANT and deps_.getPlantTab ~= nil and deps_.getPlantTab() == "seed" then
+            local text = "请换个地方播种"
+            if deps_.showToast ~= nil then deps_.showToast(text) end
+            FloatingToast.Show(text)
+        end
+        return
+    end
 
     if cameraSystem_.GetViewMode() == cameraSystem_.ViewMode.FARM then
         deps_.setSelectedPlot(plotIndex)

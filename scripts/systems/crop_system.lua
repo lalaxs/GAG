@@ -129,7 +129,7 @@ local function BuildCropName(plant, mutation)
 end
 
 local function ClampToPlot(localPos)
-    local half = 0.46
+    local half = cfg_.CONFIG.PlantableHalf or 0.60
     return Vector3(Clamp(localPos.x, -half, half), 0, Clamp(localPos.z, -half, half))
 end
 
@@ -148,17 +148,8 @@ end
 
 local function ResolveSeedLocalPosition(plot, centerLocalPos)
     local basePos = ClampToPlot(centerLocalPos)
-    if IsSeedPositionUsable(plot, basePos) then
-        return basePos
-    end
-
-    for i = 1, 10 do
-        local angle = (i - 1) * (math.pi * 2.0 / 10.0)
-        local radius = cfg_.CONFIG.SeedMinDistance * (0.8 + i * 0.08)
-        local candidate = ClampToPlot(basePos + Vector3(math.cos(angle) * radius, 0, math.sin(angle) * radius))
-        if IsSeedPositionUsable(plot, candidate) then
-            return candidate
-        end
+    if not IsSeedPositionUsable(plot, basePos) then
+        return nil
     end
     return basePos
 end
@@ -452,6 +443,10 @@ function CropSystem.PlantSeedAt(plots, plotIndex, plantIndex, centerLocalPos)
     end
 
     local localPos = ResolveSeedLocalPosition(plot, centerLocalPos)
+    if localPos == nil then
+        return false, "occupied"
+    end
+
     local seedBuff = deps_.InventorySystem.RemoveSeedFromBag(plantIndex)
     local mutation = RollMutation(plant, seedBuff, plotIndex)
     local naturalScale = 0.78 + math.random() * 0.62
@@ -507,7 +502,7 @@ function CropSystem.PlantSeedAt(plots, plotIndex, plantIndex, centerLocalPos)
     }
     table.insert(plot.plants, crop)
     deps_.InventorySystem.AddDailyProgress("plant", 1)
-    print(string.format("散点播种: 田地%d %s 位置(%.2f, %.2f)，重量 %.2fkg[%s]，成熟时间 %.1fs，预估售价 %d", plotIndex, cropName, localPos.x, localPos.z, weight, weightTier, growTime, price))
+    print(string.format("精确播种: 田地%d %s 位置(%.2f, %.2f)，重量 %.2fkg[%s]，成熟时间 %.1fs，预估售价 %d", plotIndex, cropName, localPos.x, localPos.z, weight, weightTier, growTime, price))
     return true
 end
 

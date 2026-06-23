@@ -35,6 +35,7 @@ function PlantPanelView.BuildContent()
     local COL_TXT = {75, 55, 40, 255}
     local COL_SUB = {130, 110, 85, 220}
     local CONTENT_H = 200
+    local HARVEST_CONTENT_H = 309
 
     if plantTab == "seed" then
         local ownedList = GetOwnedSeedIndices()
@@ -216,19 +217,19 @@ function PlantPanelView.BuildContent()
 
         if #harvestCards > 0 then
             return UI.Panel {
-                height = CONTENT_H,
+                height = HARVEST_CONTENT_H,
                 gap = 6,
                 children = {
                     UI.Label { text = "点击土地中成熟的作物收获", fontSize = 12, fontWeight = "bold", fontColor = COL_TXT },
                     UI.ScrollView {
-                        scrollY = true, flexGrow = 1, flexBasis = 0,
+                        scrollY = true, showScrollbar = false, flexGrow = 1, flexBasis = 0,
                         children = harvestCards,
                     },
                 },
             }
         else
             return UI.Panel {
-                height = CONTENT_H,
+                height = HARVEST_CONTENT_H,
                 justifyContent = "center",
                 alignItems = "center",
                 children = {
