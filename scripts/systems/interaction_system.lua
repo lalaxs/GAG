@@ -15,6 +15,14 @@ local suppressNextWorldTap_ = false
 local touchGestureActive_ = false
 local lastPinchDistance_ = 0
 
+--- 检查是否有 UI 弹窗正在拦截交互（Modal 等）
+local function IsUIBlocking()
+    if deps_.isUIBlocking then
+        return deps_.isUIBlocking()
+    end
+    return false
+end
+
 function InteractionSystem.Init(config, cameraSystem, deps)
     config_ = config
     cameraSystem_ = cameraSystem
@@ -59,14 +67,17 @@ local function PlotHitFromScreen(x, y)
     local bestDist = 9999
     local bestLocal = nil
     for i = 1, #plots do
-        local pos = deps_.plotWorldPosition(i)
-        local dx = hit.x - pos.x
-        local dz = hit.z - pos.z
-        local dist = dx * dx + dz * dz
-        if dist < bestDist then
-            bestDist = dist
-            bestIndex = i
-            bestLocal = Vector3(dx / config_.PlotSize, 0, dz / config_.PlotSize)
+        local plot = plots[i]
+        if plot ~= nil and plot.visible ~= false then
+            local pos = deps_.plotWorldPosition(i)
+            local dx = hit.x - pos.x
+            local dz = hit.z - pos.z
+            local dist = dx * dx + dz * dz
+            if dist < bestDist then
+                bestDist = dist
+                bestIndex = i
+                bestLocal = Vector3(dx / config_.PlotSize, 0, dz / config_.PlotSize)
+            end
         end
     end
 
@@ -97,12 +108,14 @@ local function HandleWorldTap(x, y)
 end
 
 function InteractionSystem.HandleMouseButtonDown(eventData)
+    if IsUIBlocking() then return end
     local button = eventData["Button"]:GetInt()
     if button ~= MOUSEB_LEFT then return end
     HandleWorldTap(eventData["X"]:GetInt(), eventData["Y"]:GetInt())
 end
 
 function InteractionSystem.HandleMouseMove(eventData)
+    if IsUIBlocking() then return end
     if cameraSystem_.GetViewMode() ~= cameraSystem_.ViewMode.FARM then return end
     if not input:GetMouseButtonDown(MOUSEB_LEFT) then return end
     local y = eventData["Y"]:GetInt()
@@ -117,6 +130,7 @@ function InteractionSystem.HandleMouseMove(eventData)
 end
 
 function InteractionSystem.HandleMouseWheel(eventData)
+    if IsUIBlocking() then return end
     if cameraSystem_.GetViewMode() ~= cameraSystem_.ViewMode.FARM then return end
     local wheel = eventData["Wheel"]:GetInt()
     if wheel == 0 then return end
@@ -124,6 +138,7 @@ function InteractionSystem.HandleMouseWheel(eventData)
 end
 
 function InteractionSystem.HandleTouchBegin(eventData)
+    if IsUIBlocking() then return end
     HandleWorldTap(eventData["X"]:GetInt(), eventData["Y"]:GetInt())
 end
 
@@ -132,6 +147,10 @@ function InteractionSystem.HandleTouchMove()
 end
 
 function InteractionSystem.UpdateTouchCameraGesture()
+    if IsUIBlocking() then
+        lastPinchDistance_ = 0
+        return
+    end
     if cameraSystem_.GetViewMode() ~= cameraSystem_.ViewMode.FARM then
         lastPinchDistance_ = 0
         return

@@ -15,10 +15,103 @@ function BagDetailView.Init(deps)
     deps_ = deps or {}
 end
 
+-- 特殊变异配色表
+local SPECIAL_TAG_COLORS = {
+    rainbow  = {180, 80, 240, 255},
+    glow     = {50, 200, 120, 255},
+    wet      = {60, 140, 220, 255},
+    stardust = {100, 80, 200, 255},
+    gold     = {220, 170, 30, 255},
+}
+
+--- 构建变异标签行
+local function BuildMutationTags(item)
+    local mutation = item.mutation
+    local tags = {}
+
+    if mutation == nil then
+        -- 无 mutation 数据，显示"无变异"
+        table.insert(tags, UI.Panel {
+            paddingTop = 4, paddingBottom = 4, paddingLeft = 10, paddingRight = 10,
+            backgroundColor = {195, 190, 180, 255},
+            borderRadius = 10,
+            children = {
+                UI.Label { text = "无变异", fontSize = 11, fontWeight = "bold", fontColor = {255, 255, 255, 255} },
+            },
+        })
+        return tags
+    end
+
+    -- 体积变异
+    if mutation.sizePrefix ~= nil then
+        table.insert(tags, UI.Panel {
+            paddingTop = 4, paddingBottom = 4, paddingLeft = 10, paddingRight = 10,
+            backgroundColor = {235, 145, 50, 255},
+            borderRadius = 10,
+            children = {
+                UI.Label { text = mutation.sizePrefix, fontSize = 11, fontWeight = "bold", fontColor = {255, 255, 255, 255} },
+            },
+        })
+    end
+
+    -- 颜色变异
+    if mutation.colorMutation ~= nil then
+        local cm = mutation.colorMutation
+        local bgColor = {
+            math.floor((cm.color and cm.color.r or 0.5) * 200),
+            math.floor((cm.color and cm.color.g or 0.5) * 200),
+            math.floor((cm.color and cm.color.b or 0.5) * 200),
+            255,
+        }
+        -- 确保背景不太浅（白色/黄色需加深）
+        local brightness = bgColor[1] * 0.299 + bgColor[2] * 0.587 + bgColor[3] * 0.114
+        local textColor = brightness > 140 and {50, 40, 30, 255} or {255, 255, 255, 255}
+        table.insert(tags, UI.Panel {
+            paddingTop = 4, paddingBottom = 4, paddingLeft = 10, paddingRight = 10,
+            backgroundColor = bgColor,
+            borderRadius = 10,
+            children = {
+                UI.Label { text = cm.name or "颜色变异", fontSize = 11, fontWeight = "bold", fontColor = textColor },
+            },
+        })
+    end
+
+    -- 特殊变异（可能多个）
+    if mutation.specials ~= nil then
+        for _, special in ipairs(mutation.specials) do
+            local bgColor = SPECIAL_TAG_COLORS[special.key] or {160, 80, 200, 255}
+            table.insert(tags, UI.Panel {
+                paddingTop = 4, paddingBottom = 4, paddingLeft = 10, paddingRight = 10,
+                backgroundColor = bgColor,
+                borderRadius = 10,
+                children = {
+                    UI.Label { text = special.name or "特殊变异", fontSize = 11, fontWeight = "bold", fontColor = {255, 255, 255, 255} },
+                },
+            })
+        end
+    end
+
+    -- 如果没有任何变异（sizePrefix == nil, colorMutation == nil, specials 为空）
+    if #tags == 0 then
+        table.insert(tags, UI.Panel {
+            paddingTop = 4, paddingBottom = 4, paddingLeft = 10, paddingRight = 10,
+            backgroundColor = {195, 190, 180, 255},
+            borderRadius = 10,
+            children = {
+                UI.Label { text = "无变异", fontSize = 11, fontWeight = "bold", fontColor = {255, 255, 255, 255} },
+            },
+        })
+    end
+
+    return tags
+end
+
 function BagDetailView.Build(item, isPlantView)
     if item == nil then
         return UI.Panel { width = 0, height = 0 }
     end
+
+    local mutationTags = BuildMutationTags(item)
 
     return UI.Panel {
         position = "absolute",
@@ -47,6 +140,7 @@ function BagDetailView.Build(item, isPlantView)
                 borderColor = {94, 194, 131, 235},
                 boxShadow = { { x = 0, y = 8, blur = 20, spread = 0, color = {0, 0, 0, 70} } },
                 children = {
+                    -- 标题行
                     UI.Panel {
                         flexDirection = "row",
                         justifyContent = "space-between",
@@ -71,6 +165,7 @@ function BagDetailView.Build(item, isPlantView)
                             },
                         },
                     },
+                    -- 作物图片
                     UI.Panel {
                         height = 218,
                         width = "100%",
@@ -92,6 +187,15 @@ function BagDetailView.Build(item, isPlantView)
                             },
                         },
                     },
+                    -- 变异标签行
+                    UI.Panel {
+                        flexDirection = "row",
+                        flexWrap = "wrap",
+                        gap = 6,
+                        marginBottom = 10,
+                        children = mutationTags,
+                    },
+                    -- 重量 + 售价信息
                     UI.Panel {
                         gap = 8,
                         marginBottom = 14,
@@ -128,6 +232,7 @@ function BagDetailView.Build(item, isPlantView)
                             },
                         },
                     },
+                    -- 出售按钮
                     UI.Button {
                         text = "出售",
                         width = "100%",

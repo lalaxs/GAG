@@ -7,6 +7,8 @@
 -- ============================================================================
 
 local UI = require("urhox-libs/UI")
+local SettingsView = require("ui.settings_view")
+local FloatingToast = require("ui.floating_toast")
 
 local MainView = {}
 
@@ -44,6 +46,7 @@ function MainView.CreateLabels()
         fontWeight = "bold",
         fontColor = {255, 255, 255, 255},
     }
+
     labels.actionLabel = UI.Label {
         text = "点击田地播种或收获",
         fontSize = 12,
@@ -94,14 +97,15 @@ end
 local function BuildTopHud(labels)
     return UI.Panel {
         position = "absolute",
-        top = 14,
+        top = 50,
         left = 12,
         right = 12,
         flexDirection = "row",
-        alignItems = "center",
+        alignItems = "flex-start",
         gap = 8,
         pointerEvents = "box-none",
         children = {
+            -- 等级徽章
             UI.Panel {
                 paddingTop = 7, paddingBottom = 7,
                 paddingLeft = 14, paddingRight = 14,
@@ -162,9 +166,10 @@ end
 local function BuildToast(labels)
     return UI.Panel {
         position = "absolute",
-        top = 145,
+        top = 180,
         left = 28,
         right = 28,
+        zIndex = 999,
         alignItems = "center",
         pointerEvents = "box-none",
         children = {
@@ -352,6 +357,77 @@ local function BuildCollapseButton()
     }
 end
 
+local function BuildTalentButton(labels)
+    labels.talentBadge = UI.Panel {
+        position = "absolute",
+        top = 18,
+        right = -4,
+        minWidth = 18,
+        height = 18,
+        paddingLeft = 4,
+        paddingRight = 4,
+        borderRadius = 9,
+        backgroundColor = {225, 55, 45, 255},
+        borderWidth = 2,
+        borderColor = {255, 255, 255, 255},
+        justifyContent = "center",
+        alignItems = "center",
+        display = "none",
+        children = {
+            UI.Label { text = "!", fontSize = 10, fontWeight = "bold", fontColor = {255, 255, 255, 255} },
+        },
+    }
+
+    return UI.Panel {
+        position = "absolute",
+        top = 110,
+        left = 12,
+        overflow = "visible",
+        gap = 8,
+        children = {
+            UI.Button {
+                text = "天赋",
+                width = 69,
+                height = 66,
+                paddingTop = 0,
+                paddingRight = 16,
+                paddingBottom = 5,
+                paddingLeft = 16,
+                fontSize = 15,
+                fontWeight = "bold",
+                backgroundColor = {255, 250, 240, 245},
+                fontColor = {78, 155, 100, 255},
+                borderRadius = 14,
+                onClick = function()
+                    if deps_.onTalentOpen then
+                        deps_.onTalentOpen()
+                    end
+                end,
+            },
+            (not deps_.isExpansionMaxed or not deps_.isExpansionMaxed()) and UI.Button {
+                text = "扩展",
+                width = 69,
+                height = 66,
+                paddingTop = 0,
+                paddingRight = 16,
+                paddingBottom = 5,
+                paddingLeft = 16,
+                fontSize = 15,
+                fontWeight = "bold",
+                backgroundColor = {255, 250, 240, 245},
+                fontColor = {80, 135, 185, 255},
+                borderRadius = 14,
+                onClick = function()
+                    if deps_.onExpansionOpen then
+                        deps_.onExpansionOpen()
+                    end
+                end,
+            } or nil,
+            labels.talentBadge,
+        },
+    }
+end
+
 function MainView.BuildRoot(labels, children)
     local actionButton = BuildActionButton()
     labels.actionButton = actionButton
@@ -362,12 +438,15 @@ function MainView.BuildRoot(labels, children)
         pointerEvents = "box-none",
         children = {
             BuildTopHud(labels),
-            BuildToast(labels),
+            BuildTalentButton(labels),
             deps_.isFarmView() and BuildFarmControls(labels, actionButton) or BuildPlantShell(children.plantContent),
             BuildCollapseButton(),
+            SettingsView.BuildButton(),
             children.bagDetail,
             children.seedPackOverlay,
             children.seedPackOpeningOverlay,
+            SettingsView.BuildOverlay(),
+            FloatingToast.GetContainer(),
         },
     }
 end

@@ -79,7 +79,8 @@ function FarmSystem.CreateFarm(scene, unlockedPlotCount)
     for i = 1, config_.GridCols * config_.GridRows do
         local plotNode = scene:CreateChild("Plot" .. i)
         plotNode.position = FarmSystem.PlotWorldPosition(i)
-        plotNode.scale = Vector3(config_.PlotSize, 1.0, config_.PlotSize)
+        -- 初始 scale 为 0，等待弹出动画
+        plotNode.scale = Vector3(0, 0, 0)
         local unlocked = i <= unlockedPlotCount
         local baseMaterial = unlocked and materials_.soil or materials_.soilLocked
         local models = CreateRoundedPlotSurface(plotNode, baseMaterial)
@@ -93,6 +94,7 @@ function FarmSystem.CreateFarm(scene, unlockedPlotCount)
             selection = nil,
             unlocked = unlocked,
             lockNode = nil,
+            targetScale = Vector3(config_.PlotSize, 1.0, config_.PlotSize),
         }
         if not unlocked then
             plot.lockNode = nil

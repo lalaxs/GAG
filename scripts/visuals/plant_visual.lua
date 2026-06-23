@@ -10,6 +10,55 @@ local PlantVisual = {
     materials = {},
 }
 
+local EFFECT_DETAIL_INTERVAL = 0.045
+local EFFECT_AMBIENT_INTERVAL = 0.08
+
+local function ColorKey(color)
+    local r = math.floor((color.r or 0) * 255 + 0.5)
+    local g = math.floor((color.g or 0) * 255 + 0.5)
+    local b = math.floor((color.b or 0) * 255 + 0.5)
+    local a = math.floor((color.a or 1) * 255 + 0.5)
+    return string.format("%03d_%03d_%03d_%03d", r, g, b, a)
+end
+
+local function CountSpecials(mutation)
+    if mutation == nil or mutation.specials == nil then
+        return 0
+    end
+    return #mutation.specials
+end
+
+local function GetDominantAuraMaterial(mutation)
+    if PlantVisual.HasSpecial(mutation, "rainbow") or PlantVisual.HasSpecial(mutation, "stardust") then
+        return PlantVisual.materials.star
+    end
+    if PlantVisual.HasSpecial(mutation, "gold") then
+        return PlantVisual.materials.auraGold
+    end
+    if PlantVisual.HasSpecial(mutation, "frozen") then
+        return PlantVisual.materials.iceCrystal
+    end
+    if PlantVisual.HasSpecial(mutation, "wet") then
+        return PlantVisual.materials.waterDrop
+    end
+    if PlantVisual.HasSpecial(mutation, "void") then
+        return PlantVisual.materials.voidSpark
+    end
+    if PlantVisual.HasSpecial(mutation, "glow") then
+        return PlantVisual.materials.magicSpark
+    end
+    if PlantVisual.HasSpecial(mutation, "pollen") then
+        return PlantVisual.materials.pollen
+    end
+    if PlantVisual.HasSpecial(mutation, "cloud") or PlantVisual.HasSpecial(mutation, "ceramic") then
+        return PlantVisual.materials.cloud
+    end
+    if PlantVisual.HasSpecial(mutation, "chocolate") then
+        return PlantVisual.materials.chocolateSpark
+    end
+    return PlantVisual.materials.auraGreen
+end
+
 function PlantVisual.HasSpecial(mutation, key)
     for _, item in ipairs(mutation.specials) do
         if item.key == key then
@@ -52,14 +101,40 @@ function PlantVisual.CreateUnlitMaterial(name, color)
     return mat
 end
 
-function PlantVisual.AddModel(parent, name, modelPath, position, scale, material)
+function PlantVisual.CreateGlowMaterial(name, color, intensity)
+    local mat = Material:new()
+    mat:SetTechnique(0, cache:GetResource("Technique", "Techniques/PBR/PBRNoTexture.xml"))
+    mat:SetShaderParameter("MatDiffColor", Variant(color))
+    mat:SetShaderParameter("MatSpecColor", Variant(Color(0.7, 0.7, 0.7, 1.0)))
+    mat:SetShaderParameter("Metallic", Variant(0.0))
+    mat:SetShaderParameter("Roughness", Variant(0.24))
+    local power = intensity or 1.0
+    mat:SetShaderParameter("MatEmissiveColor", Variant(Color(color.r * power, color.g * power, color.b * power, 1.0)))
+    PlantVisual.materials[name] = mat
+    return mat
+end
+
+function PlantVisual.CreateBillboardMaterial(name, texturePath, color)
+    local mat = Material:new()
+    mat:SetTechnique(0, cache:GetResource("Technique", "Techniques/DiffAlpha.xml"))
+    mat:SetTexture(TU_DIFFUSE, cache:GetResource("Texture2D", texturePath))
+    mat:SetShaderParameter("MatDiffColor", Variant(color or Color(1, 1, 1, 1)))
+    mat:SetCullMode(CULL_NONE)
+    PlantVisual.materials[name] = mat
+    return mat
+end
+
+function PlantVisual.AddModel(parent, name, modelPath, position, scale, material, castShadows)
     local node = parent:CreateChild(name)
     node.position = position
     node.scale = scale
     local model = node:CreateComponent("StaticModel")
     model:SetModel(cache:GetResource("Model", modelPath))
     model:SetMaterial(material)
-    model.castShadows = true
+    if castShadows == nil then
+        castShadows = true
+    end
+    model.castShadows = castShadows
     return node
 end
 
@@ -75,26 +150,74 @@ function PlantVisual.InitMaterials()
     PlantVisual.CreateMaterial("stem", Color(0.14, 0.55, 0.18, 1.0), 0.0, 0.65)
     PlantVisual.CreateMaterial("leaf", Color(0.08, 0.72, 0.19, 1.0), 0.0, 0.55)
     PlantVisual.CreateMaterial("wood", Color(0.45, 0.25, 0.1, 1.0), 0.0, 0.72)
-    PlantVisual.CreateMaterial("gold", Color(1.0, 0.68, 0.12, 1.0), 1.0, 0.18, Color(0.25, 0.15, 0.02, 1.0))
+    PlantVisual.CreateMaterial("gold", Color(1.0, 0.72, 0.18, 1.0), 0.65, 0.12, Color(0.8, 0.42, 0.06, 1.0))
     PlantVisual.CreateMaterial("frozen", Color(0.55, 0.88, 1.0, 1.0), 0.0, 0.08, Color(0.04, 0.16, 0.25, 1.0))
-    PlantVisual.CreateMaterial("glow", Color(0.45, 0.15, 1.0, 1.0), 0.0, 0.18, Color(0.55, 0.12, 1.2, 1.0))
+    PlantVisual.CreateMaterial("wet", Color(0.46, 0.88, 0.98, 1.0), 0.0, 0.06, Color(0.035, 0.14, 0.22, 1.0))
+    PlantVisual.CreateMaterial("cloudPlant", Color(0.72, 0.92, 0.72, 1.0), 0.0, 0.5, Color(0.04, 0.08, 0.04, 1.0))
+    PlantVisual.CreateMaterial("pollenPlant", Color(0.96, 0.46, 0.74, 1.0), 0.0, 0.38, Color(0.12, 0.035, 0.085, 1.0))
+    PlantVisual.CreateMaterial("glow", Color(0.36, 0.16, 0.58, 1.0), 0.0, 0.34, Color(0.12, 0.03, 0.22, 1.0))
     PlantVisual.CreateMaterial("chocolate", Color(0.24, 0.1, 0.035, 1.0), 0.0, 0.38)
-    PlantVisual.CreateMaterial("ceramic", Color(0.9, 0.92, 0.86, 1.0), 0.0, 0.08)
-    PlantVisual.CreateMaterial("void", Color(0.01, 0.006, 0.02, 1.0), 0.0, 0.4, Color(0.14, 0.02, 0.35, 1.0))
+    PlantVisual.CreateMaterial("ceramic", Color(0.66, 0.32, 0.16, 1.0), 0.0, 0.18, Color(0.045, 0.018, 0.008, 1.0))
+    PlantVisual.CreateMaterial("ceramicBlue", Color(0.86, 0.47, 0.22, 1.0), 0.0, 0.22, Color(0.035, 0.012, 0.004, 1.0))
+    PlantVisual.CreateMaterial("ceramicDeepBlue", Color(0.28, 0.12, 0.055, 1.0), 0.0, 0.34, Color(0.015, 0.004, 0.0, 1.0))
+    PlantVisual.CreateMaterial("void", Color(0.008, 0.002, 0.025, 1.0), 0.0, 0.42, Color(0.07, 0.0, 0.18, 1.0))
     PlantVisual.CreateUnlitMaterial("select", Color(0.46, 0.82, 0.42, 1.0))
-    PlantVisual.CreateTransparentMaterial("waterDrop", Color(0.2, 0.65, 1.0, 0.62))
-    PlantVisual.CreateTransparentMaterial("cloud", Color(0.92, 0.95, 1.0, 0.5))
-    PlantVisual.CreateUnlitMaterial("star", Color(1.0, 0.9, 0.3, 1.0))
-    PlantVisual.CreateUnlitMaterial("pollen", Color(1.0, 0.82, 0.12, 1.0))
+    PlantVisual.CreateGlowMaterial("waterDrop", Color(0.16, 0.78, 1.0, 1.0), 1.15)
+    PlantVisual.CreateMaterial("wetRipple", Color(0.76, 0.98, 1.0, 1.0), 0.0, 0.05, Color(0.045, 0.16, 0.2, 1.0))
+    PlantVisual.CreateGlowMaterial("cloud", Color(0.82, 1.0, 0.86, 1.0), 0.45)
+    PlantVisual.CreateGlowMaterial("star", Color(1.0, 0.94, 0.28, 1.0), 1.25)
+    PlantVisual.CreateGlowMaterial("pollen", Color(1.0, 0.44, 0.78, 1.0), 0.95)
+    PlantVisual.CreateMaterial("pollenOrange", Color(1.0, 0.24, 0.58, 1.0), 0.0, 0.42, Color(0.14, 0.018, 0.06, 1.0))
+    PlantVisual.CreateGlowMaterial("auraGold", Color(1.0, 0.78, 0.16, 1.0), 1.25)
+    PlantVisual.CreateGlowMaterial("auraBlue", Color(0.16, 0.82, 1.0, 1.0), 1.05)
+    PlantVisual.CreateGlowMaterial("auraPurple", Color(0.62, 0.16, 0.78, 1.0), 0.62)
+    PlantVisual.CreateGlowMaterial("auraGreen", Color(0.28, 1.0, 0.36, 1.0), 0.8)
+    PlantVisual.CreateGlowMaterial("iceCrystal", Color(0.62, 0.94, 1.0, 1.0), 1.05)
+    PlantVisual.CreateGlowMaterial("rainbowRed", Color(1.0, 0.12, 0.08, 1.0), 1.25)
+    PlantVisual.CreateGlowMaterial("rainbowGreen", Color(0.12, 1.0, 0.34, 1.0), 1.25)
+    PlantVisual.CreateGlowMaterial("rainbowBlue", Color(0.12, 0.55, 1.0, 1.0), 1.25)
+    PlantVisual.CreateGlowMaterial("magicSpark", Color(0.56, 0.18, 0.72, 1.0), 0.5)
+    PlantVisual.CreateGlowMaterial("voidSpark", Color(0.24, 0.015, 0.48, 1.0), 0.55)
+    PlantVisual.CreateGlowMaterial("chocolateSpark", Color(0.9, 0.42, 0.12, 1.0), 0.65)
+    PlantVisual.CreateTransparentMaterial("softSmoke", Color(0.86, 0.92, 0.88, 0.28))
+    PlantVisual.CreateTransparentMaterial("magicSmoke", Color(0.72, 0.86, 1.0, 0.22))
+    PlantVisual.CreateTransparentMaterial("iceShell", Color(0.62, 0.9, 1.0, 0.2))
+    PlantVisual.CreateBillboardMaterial("smokeBillboard", "image/clean_mutation_smoke.png", Color(1.0, 1.0, 1.0, 0.42))
+    PlantVisual.CreateBillboardMaterial("sparkBillboard", "image/clean_mutation_glow.png", Color(1.0, 1.0, 1.0, 0.9))
+    PlantVisual.CreateBillboardMaterial("goldDustBillboard", "image/mutation_gold_dust_20260623162436.png", Color(1.0, 1.0, 1.0, 0.82))
+    PlantVisual.CreateBillboardMaterial("starSparkBillboard", "image/mutation_star_spark_20260623162432.png", Color(1.0, 1.0, 1.0, 0.84))
+    PlantVisual.CreateBillboardMaterial("wetStarBillboard", "image/mutation_wet_star_style_particle_20260623181155.png", Color(1.0, 1.0, 1.0, 0.2))
+    PlantVisual.CreateBillboardMaterial("cloudStarBillboard", "image/mutation_cloud_round_particle_20260623184031.png", Color(1.0, 1.0, 1.0, 0.25))
+    PlantVisual.CreateBillboardMaterial("pollenStarBillboard", "image/mutation_pollen_single_petal_particle_20260623184535.png", Color(1.0, 1.0, 1.0, 0.25))
+    PlantVisual.CreateBillboardMaterial("iceCrystalBillboard", "image/mutation_ice_crystal_20260623162431.png", Color(1.0, 1.0, 1.0, 0.76))
+    PlantVisual.CreateBillboardMaterial("voidShardBillboard", "image/mutation_void_shard_20260623162619.png", Color(1.0, 1.0, 1.0, 0.9))
+    PlantVisual.CreateBillboardMaterial("electricArcBillboard", "image/mutation_electric_arc_20260623162429.png", Color(1.0, 1.0, 1.0, 0.8))
 end
 
 
 function PlantVisual.ResolvePlantMaterial(plant, mutation)
+    local color = plant.color
+    if mutation.colorMutation ~= nil then
+        color = mutation.colorMutation.color
+    end
+    if PlantVisual.HasSpecial(mutation, "rainbow") then
+        local key = "plant_rainbow_" .. plant.name .. tostring(math.random(100000, 999999))
+        return PlantVisual.CreateMaterial(key, color, 0.0, 0.32, Color(0.2, 0.2, 0.2, 1.0))
+    end
     if PlantVisual.HasSpecial(mutation, "gold") then
         return PlantVisual.materials.gold
     end
     if PlantVisual.HasSpecial(mutation, "frozen") then
         return PlantVisual.materials.frozen
+    end
+    if PlantVisual.HasSpecial(mutation, "wet") then
+        return PlantVisual.materials.wet
+    end
+    if PlantVisual.HasSpecial(mutation, "cloud") then
+        return PlantVisual.materials.cloudPlant
+    end
+    if PlantVisual.HasSpecial(mutation, "pollen") then
+        return PlantVisual.materials.pollenPlant
     end
     if PlantVisual.HasSpecial(mutation, "glow") then
         return PlantVisual.materials.glow
@@ -109,11 +232,10 @@ function PlantVisual.ResolvePlantMaterial(plant, mutation)
         return PlantVisual.materials.void
     end
 
-    local color = plant.color
-    if mutation.colorMutation ~= nil then
-        color = mutation.colorMutation.color
+    local key = "plant_" .. plant.name .. "_" .. ColorKey(color)
+    if PlantVisual.materials[key] ~= nil then
+        return PlantVisual.materials[key]
     end
-    local key = "plant_" .. plant.name .. tostring(math.random(100000, 999999))
     return PlantVisual.CreateMaterial(key, color, 0.0, 0.42)
 end
 
@@ -143,6 +265,105 @@ local function CreateBlockFlowerHead(parent, material, y, petalCount)
         local rad = math.rad(angle)
         local petal = PlantVisual.AddModel(parent, "PetalBlock", "Models/Box.mdl", Vector3(math.cos(rad) * 0.22, y, math.sin(rad) * 0.22), Vector3(0.16, 0.12, 0.16), material)
         petal.rotation = Quaternion(angle, Vector3.UP)
+    end
+end
+
+local function AddFiredCeramicPattern(visual)
+    local warmSpot = PlantVisual.materials.ceramicBlue
+    local darkCrack = PlantVisual.materials.ceramicDeepBlue
+
+    -- Grow a Garden 风格陶瓷：赤陶烧制质感，少量深色裂纹和暖色烧斑，不做外部粒子。
+    local crackYs = { 0.32, 0.58 }
+    for layer, y in ipairs(crackYs) do
+        local radius = 0.31 + layer * 0.006
+        for i = 1, 5 do
+            local angle = math.rad((i - 1) * 72 + layer * 17)
+            local crack = PlantVisual.AddModel(visual, "CeramicCrack" .. layer .. "_" .. i, "Models/Box.mdl", Vector3(math.cos(angle) * radius, y, math.sin(angle) * radius), Vector3(0.058, 0.008, 0.012), darkCrack, false)
+            crack.rotation = Quaternion(math.deg(angle), Vector3.UP) * Quaternion(8 + i * 3, Vector3.RIGHT)
+        end
+    end
+
+    for i = 1, 4 do
+        local angle = math.rad(i * 91)
+        local radius = 0.27 + (i % 2) * 0.035
+        local spot = PlantVisual.AddModel(visual, "CeramicFiredSpot" .. i, "Models/Box.mdl", Vector3(math.cos(angle) * radius, 0.26 + i * 0.095, math.sin(angle) * radius), Vector3(0.05, 0.012, 0.034), warmSpot, false)
+        spot.rotation = Quaternion(math.deg(angle), Vector3.UP) * Quaternion(10, Vector3.RIGHT)
+    end
+end
+
+local function AddWetWaterPattern(visual)
+    local dropMat = PlantVisual.materials.waterDrop
+    local rippleMat = PlantVisual.materials.wetRipple
+
+    -- 潮湿变异：用青蓝色水滴和贴身水纹模型表现，避免和烟雾/花粉类粒子混淆。
+    for i = 1, 5 do
+        local angle = math.rad((i - 1) * 72 + 12)
+        local radius = 0.24 + (i % 2) * 0.045
+        local drop = PlantVisual.AddModel(visual, "WetDropOverlay" .. i, "Models/Sphere.mdl", Vector3(math.cos(angle) * radius, 0.38 + (i % 3) * 0.105, math.sin(angle) * radius), Vector3(0.038, 0.07, 0.038), dropMat, false)
+        drop.rotation = Quaternion(math.deg(angle), Vector3.UP) * Quaternion(10, Vector3.RIGHT)
+    end
+
+    for layer = 1, 2 do
+        local y = 0.22 + layer * 0.17
+        local radius = 0.29 + layer * 0.025
+        for i = 1, 4 do
+            local angle = math.rad((i - 1) * 90 + layer * 22)
+            local ripple = PlantVisual.AddModel(visual, "WetRipple" .. layer .. "_" .. i, "Models/Box.mdl", Vector3(math.cos(angle) * radius, y, math.sin(angle) * radius), Vector3(0.092, 0.009, 0.018), rippleMat, false)
+            ripple.rotation = Quaternion(math.deg(angle) + 8, Vector3.UP) * Quaternion(5, Vector3.RIGHT)
+        end
+    end
+end
+
+local function AddPollenClusterPattern(visual)
+    local yellowMat = PlantVisual.materials.pollen
+    local orangeMat = PlantVisual.materials.pollenOrange
+
+    -- 花粉变异：用黄橙色团簇和小花粉星点做贴身装饰，颜色与潮湿的蓝色明确区分。
+    for i = 1, 7 do
+        local angle = math.rad(i * 137.5)
+        local radius = 0.18 + (i % 3) * 0.045
+        local y = 0.3 + (i % 4) * 0.095
+        PlantVisual.AddModel(visual, "PollenCluster" .. i, "Models/Sphere.mdl", Vector3(math.cos(angle) * radius, y, math.sin(angle) * radius), Vector3(0.03, 0.03, 0.03), (i % 2 == 0) and orangeMat or yellowMat, false)
+    end
+
+    for i = 1, 4 do
+        local angle = math.rad((i - 1) * 90 + 30)
+        local radius = 0.3
+        local star = PlantVisual.AddModel(visual, "PollenStar" .. i, "Models/Box.mdl", Vector3(math.cos(angle) * radius, 0.54 + math.sin(i) * 0.035, math.sin(angle) * radius), Vector3(0.048, 0.008, 0.012), orangeMat, false)
+        star.rotation = Quaternion(math.deg(angle), Vector3.UP) * Quaternion(36, Vector3.RIGHT)
+    end
+end
+
+local function AddCloudPuffs(visual)
+    local root = visual:CreateChild("CloudPuffOverlayRoot")
+    for i = 1, 4 do
+        local angle = math.rad((i - 1) * 90 + 25)
+        local radius = 0.24 + (i % 2) * 0.045
+        local puff = PlantVisual.AddModel(root, "CloudPuffOverlay" .. i, "Models/Sphere.mdl", Vector3(math.cos(angle) * radius, 0.52 + math.sin(i) * 0.045, math.sin(angle) * radius), Vector3(0.12, 0.08, 0.12), PlantVisual.materials.cloud, false)
+        puff.rotation = Quaternion(math.deg(angle), Vector3.UP)
+    end
+    return root
+end
+
+local function AddFrozenShell(visual)
+    local shell = PlantVisual.AddModel(visual, "FrozenShell", "Models/Box.mdl", Vector3(0, 0.46, 0), Vector3(0.52, 0.62, 0.52), PlantVisual.materials.iceShell, false)
+    shell.rotation = Quaternion(8, Vector3.UP) * Quaternion(4, Vector3.RIGHT)
+end
+
+local function AddChocolateCoating(visual)
+    local mat = PlantVisual.materials.chocolateSpark
+    local topY = 0.72
+    for i = 1, 4 do
+        local angle = math.rad((i - 1) * 90 + 18)
+        local radius = 0.2 + (i % 2) * 0.05
+        local stripe = PlantVisual.AddModel(visual, "ChocolateStripe" .. i, "Models/Box.mdl", Vector3(math.cos(angle) * radius, topY - i * 0.035, math.sin(angle) * radius), Vector3(0.055, 0.16, 0.028), mat, false)
+        stripe.rotation = Quaternion(math.deg(angle), Vector3.UP) * Quaternion(8, Vector3.RIGHT)
+    end
+
+    for i = 1, 3 do
+        local angle = math.rad((i - 1) * 120 + 35)
+        local radius = 0.18
+        PlantVisual.AddModel(visual, "ChocolateDrop" .. i, "Models/Sphere.mdl", Vector3(math.cos(angle) * radius, 0.42 - i * 0.035, math.sin(angle) * radius), Vector3(0.045, 0.065, 0.045), mat, false)
     end
 end
 
@@ -610,40 +831,816 @@ function PlantVisual.CreatePlantVisual(parent, plant, mutation, material)
         CreateBlockFlowerHead(visual, material, 0.84, 6)
     end
 
+    if PlantVisual.HasSpecial(mutation, "ceramic") then
+        AddFiredCeramicPattern(visual)
+    end
+    if PlantVisual.HasSpecial(mutation, "frozen") then
+        AddFrozenShell(visual)
+    end
+    if PlantVisual.HasSpecial(mutation, "chocolate") then
+        AddChocolateCoating(visual)
+    end
+
     return visual
 end
 
-local function CreateOrbitEffect(parent, name, material, count, radius, y, scale)
+local function RegisterEffect(plantData, node, spinSpeed, bobSpeed, bobAmp, pulseSpeed, pulseAmp, updateInterval, particles)
+    table.insert(plantData.effectNodes, {
+        node = node,
+        particles = particles,
+        spinSpeed = spinSpeed or 28.0,
+        bobSpeed = bobSpeed or 1.5,
+        bobAmp = bobAmp or 0.03,
+        pulseSpeed = pulseSpeed or 0.0,
+        pulseAmp = pulseAmp or 0.0,
+        baseScale = node.scale,
+        basePosition = node.position,
+        updateInterval = updateInterval or EFFECT_DETAIL_INTERVAL,
+        updateTimer = math.random() * 0.05,
+    })
+    return node
+end
+
+local function AddGlowLightEffect(plantData, effectScale, baseY, height)
+    local root = plantData.root:CreateChild("GlowLightEffect")
+    root.position = Vector3(0, baseY + height * 0.55, 0)
+
+    local light = root:CreateComponent("Light")
+    light.lightType = LIGHT_POINT
+    light.color = Color(0.48, 0.14, 0.68, 1.0)
+    light.brightness = 2.25
+    light.range = 1.75 * effectScale
+    light.castShadows = false
+
+    PlantVisual.AddModel(root, "GlowCore", "Models/Sphere.mdl", Vector3(0, 0.02 * effectScale, 0), Vector3(0.052, 0.052, 0.052) * effectScale, PlantVisual.materials.magicSpark, false)
+
+    RegisterEffect(plantData, root, 0.0, 0.45, 0.003 * effectScale, 0.55, 0.018, EFFECT_AMBIENT_INTERVAL)
+end
+
+local function AddCloudPuffEffect(plantData, effectScale, baseY, height)
+    local root = plantData.root:CreateChild("CloudPuffEffect")
+    root.position = Vector3(0, 0, 0)
+    local particles = {}
+    for i = 1, 6 do
+        local angle = math.rad(i * 137.5 + 18)
+        local radius = (0.1 + ((i * 29) % 7) * 0.018) * effectScale
+        local y = baseY + height * (0.24 + ((i * 17) % 9) * 0.055)
+        local sx = (0.09 + ((i * 11) % 5) * 0.014) * effectScale
+        local sy = (0.062 + ((i * 7) % 4) * 0.01) * effectScale
+        local sz = (0.1 + ((i * 13) % 5) * 0.015) * effectScale
+        local basePosition = Vector3(math.cos(angle) * radius, y, math.sin(angle) * radius)
+        local baseScale = Vector3(sx, sy, sz)
+        local puff = PlantVisual.AddModel(root, "CloudPuff" .. i, "Models/Sphere.mdl", basePosition, baseScale, PlantVisual.materials.cloud, false)
+        puff.rotation = Quaternion(math.deg(angle), Vector3.UP)
+        table.insert(particles, {
+            kind = "fleck",
+            mode = "drift",
+            node = puff,
+            basePosition = basePosition,
+            baseScale = baseScale,
+            angle = angle,
+            orbitRadius = radius,
+            baseY = y,
+            phase = i * 0.83,
+            riseSpeed = 0.12 + i * 0.015,
+            riseHeight = height * (0.2 + (i % 3) * 0.05),
+            bobSpeed = 0.65 + i * 0.21,
+            bobAmp = (0.012 + (i % 3) * 0.008) * effectScale,
+            swaySpeed = 0.4 + i * 0.13,
+            swayAmp = (0.006 + (i % 4) * 0.004) * effectScale,
+            pulseSpeed = 0.72 + i * 0.27,
+            pulseAmp = 0.09 + (i % 4) * 0.035,
+            spinSpeed = 1.2 + i * 1.4,
+            burstSpeed = 0.4,
+            spiralSpeed = 0.6,
+            snapOffset = i * 0.31,
+        })
+    end
+    RegisterEffect(plantData, root, 0.0, 0.0, 0.0, 0.0, 0.0, EFFECT_AMBIENT_INTERVAL, particles)
+end
+
+local function AddWetOrbitEffect(plantData, effectScale, baseY, height)
+    local root = plantData.root:CreateChild("WetOrbitEffect")
+    root.position = Vector3(0, 0, 0)
+    local particles = {}
+
+    for i = 1, 6 do
+        local angle = math.rad(i * 137.5 + 12)
+        local radius = (0.34 + (i % 3) * 0.035) * effectScale
+        local y = baseY + height * (0.28 + (i % 4) * 0.11)
+        local basePosition = Vector3(math.cos(angle) * radius, y, math.sin(angle) * radius)
+        local baseScale = Vector3(0.032, 0.06, 0.032) * effectScale
+        local drop = PlantVisual.AddModel(root, "WetOrbitDrop" .. i, "Models/Sphere.mdl", basePosition, baseScale, PlantVisual.materials.waterDrop, false)
+        drop.rotation = Quaternion(math.deg(angle), Vector3.UP) * Quaternion(10, Vector3.RIGHT)
+        table.insert(particles, {
+            kind = "fleck",
+            mode = "pollenOrbit",
+            node = drop,
+            basePosition = basePosition,
+            baseScale = baseScale,
+            angle = angle,
+            orbitRadius = radius,
+            baseY = y,
+            phase = i * 0.61,
+            riseSpeed = 0.12 + i * 0.01,
+            riseHeight = height * 0.18,
+            bobSpeed = 0.9 + i * 0.17,
+            bobAmp = (0.018 + (i % 3) * 0.008) * effectScale,
+            swaySpeed = 0.52 + i * 0.12,
+            swayAmp = (0.008 + (i % 4) * 0.003) * effectScale,
+            pulseSpeed = 0.9 + i * 0.21,
+            pulseAmp = 0.08 + (i % 3) * 0.035,
+            spinSpeed = 2.0 + i * 1.6,
+            burstSpeed = 0.42,
+            spiralSpeed = 0.7,
+            snapOffset = i * 0.27,
+        })
+    end
+
+    for i = 1, 5 do
+        local angle = math.rad((i - 1) * 72 + 28)
+        local radius = (0.39 + (i % 2) * 0.025) * effectScale
+        local y = baseY + height * (0.2 + (i % 3) * 0.12)
+        local basePosition = Vector3(math.cos(angle) * radius, y, math.sin(angle) * radius)
+        local baseScale = Vector3(0.07, 0.008, 0.016) * effectScale
+        local ripple = PlantVisual.AddModel(root, "WetOrbitRipple" .. i, "Models/Box.mdl", basePosition, baseScale, PlantVisual.materials.wetRipple, false)
+        ripple.rotation = Quaternion(math.deg(angle) + 8, Vector3.UP) * Quaternion(5, Vector3.RIGHT)
+        table.insert(particles, {
+            kind = "fleck",
+            mode = "pollenOrbit",
+            node = ripple,
+            basePosition = basePosition,
+            baseScale = baseScale,
+            angle = angle,
+            orbitRadius = radius,
+            baseY = y,
+            phase = i * 0.77 + 0.35,
+            riseSpeed = 0.11 + i * 0.012,
+            riseHeight = height * 0.16,
+            bobSpeed = 0.76 + i * 0.19,
+            bobAmp = (0.014 + (i % 3) * 0.007) * effectScale,
+            swaySpeed = 0.48 + i * 0.11,
+            swayAmp = (0.006 + (i % 4) * 0.003) * effectScale,
+            pulseSpeed = 0.82 + i * 0.24,
+            pulseAmp = 0.07 + (i % 3) * 0.03,
+            spinSpeed = 1.5 + i * 1.2,
+            burstSpeed = 0.38,
+            spiralSpeed = 0.62,
+            snapOffset = i * 0.33,
+        })
+    end
+
+    RegisterEffect(plantData, root, 0.0, 0.0, 0.0, 0.0, 0.0, EFFECT_AMBIENT_INTERVAL, particles)
+end
+
+local function AddGoldGlowEffect(plantData, effectScale, baseY, height)
+    local root = plantData.root:CreateChild("GoldGlowEffect")
+    root.position = Vector3(0, baseY + height * 0.55, 0)
+
+    local light = root:CreateComponent("Light")
+    light.lightType = LIGHT_POINT
+    light.color = Color(1.0, 0.72, 0.22, 1.0)
+    light.brightness = 2.15
+    light.range = 1.65 * effectScale
+    light.castShadows = false
+
+    RegisterEffect(plantData, root, 0.0, 0.35, 0.003 * effectScale, 0.65, 0.018, EFFECT_AMBIENT_INTERVAL)
+end
+
+local function AddVoidGlowEffect(plantData, effectScale, baseY, height)
+    local root = plantData.root:CreateChild("VoidGlowEffect")
+    root.position = Vector3(0, baseY + height * 0.55, 0)
+
+    local light = root:CreateComponent("Light")
+    light.lightType = LIGHT_POINT
+    light.color = Color(0.22, 0.02, 0.55, 1.0)
+    light.brightness = 1.65
+    light.range = 1.55 * effectScale
+    light.castShadows = false
+
+    RegisterEffect(plantData, root, 0.0, 0.35, 0.003 * effectScale, 0.65, 0.018, EFFECT_AMBIENT_INTERVAL)
+end
+
+local function CreateOrbitEffect(parent, name, material, count, radius, y, scale, modelPath, verticalJitter)
     local root = parent:CreateChild(name)
+    modelPath = modelPath or "Models/Box.mdl"
+    verticalJitter = verticalJitter or 0.0
     for i = 1, count do
         local angle = math.rad((i - 1) * (360 / count))
-        PlantVisual.AddModel(root, name .. i, "Models/Sphere.mdl", Vector3(math.cos(angle) * radius, y, math.sin(angle) * radius), scale, material)
+        local waveY = y + math.sin(angle * 2.0) * verticalJitter
+        local particle = PlantVisual.AddModel(root, name .. i, modelPath, Vector3(math.cos(angle) * radius, waveY, math.sin(angle) * radius), scale * 1.25, material, false)
+        particle.rotation = Quaternion(math.deg(angle), Vector3.UP) * Quaternion(28 + i * 11, Vector3.RIGHT)
     end
     return root
+end
+
+local function CreateRingEffect(parent, name, material, count, radius, y, width, height)
+    local root = parent:CreateChild(name)
+    for i = 1, count do
+        local angle = (i - 1) * (360 / count)
+        local rad = math.rad(angle)
+        local segment = PlantVisual.AddModel(root, name .. i, "Models/Box.mdl", Vector3(math.cos(rad) * radius, y, math.sin(rad) * radius), Vector3(width * 1.18, height * 1.35, 0.032), material, false)
+        segment.rotation = Quaternion(-angle, Vector3.UP)
+    end
+    return root
+end
+
+local function CreateVoxelCloud(parent, name, material, count, radius, centerY, height, minScale, maxScale)
+    local root = parent:CreateChild(name)
+    for i = 1, count do
+        local t = (i - 1) / math.max(1, count - 1)
+        local angle = math.rad(i * 137.5)
+        local ring = radius * (0.35 + 0.65 * ((i * 17) % 9) / 8)
+        local y = centerY + (t - 0.5) * height + math.sin(i * 1.73) * height * 0.14
+        local s = (minScale + (maxScale - minScale) * (((i * 23) % 11) / 10)) * 1.35
+        local particle = PlantVisual.AddModel(root, name .. i, "Models/Box.mdl", Vector3(math.cos(angle) * ring, y, math.sin(angle) * ring), Vector3(s, s, s), material, false)
+        particle.rotation = Quaternion(i * 31, Vector3.UP) * Quaternion(18 + i * 7, Vector3.RIGHT)
+    end
+    return root
+end
+
+local function CreateVoxelBurst(parent, name, material, count, radius, centerY, scale)
+    local root = parent:CreateChild(name)
+    for i = 1, count do
+        local angle = math.rad(i * 137.5)
+        local tier = (i % 3) - 1
+        local r = radius * (0.45 + 0.55 * ((i * 13) % 7) / 6)
+        local particle = PlantVisual.AddModel(root, name .. i, "Models/Box.mdl", Vector3(math.cos(angle) * r, centerY + tier * 0.11, math.sin(angle) * r), scale * 1.25, material, false)
+        particle.rotation = Quaternion(i * 41, Vector3.UP) * Quaternion(35, Vector3.RIGHT)
+    end
+    return root
+end
+
+local function CreateSparkColumn(parent, name, material, count, radius, minY, maxY, scale)
+    local root = parent:CreateChild(name)
+    for i = 1, count do
+        local t = (i - 1) / math.max(1, count - 1)
+        local angle = math.rad(i * 137.5)
+        local y = minY + (maxY - minY) * t
+        local spark = PlantVisual.AddModel(root, name .. i, "Models/Box.mdl", Vector3(math.cos(angle) * radius, y, math.sin(angle) * radius), scale * 1.25, material, false)
+        spark.rotation = Quaternion(i * 37, Vector3.UP) * Quaternion(35, Vector3.RIGHT)
+    end
+    return root
+end
+
+local function CreateBillboardParticles(parent, name, material, count, spread, baseY, height, minSize, maxSize, color, kind, mode)
+    local root = parent:CreateChild(name)
+    local billboardSet = root:CreateComponent("BillboardSet")
+    billboardSet:SetMaterial(material)
+    billboardSet:SetNumBillboards(count)
+    billboardSet:SetRelative(true)
+    billboardSet:SetScaled(true)
+    billboardSet:SetSorted(true)
+    billboardSet:SetFaceCameraMode(FC_LOOKAT_XYZ)
+
+    local particles = {}
+    for i = 1, count do
+        local angle = math.random() * math.pi * 2.0
+        local distance = spread * (0.12 + math.random() * 0.9)
+        local y = baseY + height * math.random()
+        local size = minSize + (maxSize - minSize) * math.random()
+        local basePosition = Vector3(math.cos(angle) * distance, y, math.sin(angle) * distance)
+        local billboard = billboardSet:GetBillboard(i - 1)
+        billboard.position = basePosition
+        billboard.size = Vector2(size, size)
+        billboard.color = color
+        billboard.rotation = math.random() * 360.0
+        billboard.enabled = true
+        table.insert(particles, {
+            kind = kind,
+            mode = mode or "rise",
+            billboardSet = billboardSet,
+            index = i - 1,
+            basePosition = basePosition,
+            baseSize = size,
+            baseColor = color,
+            angle = angle,
+            orbitRadius = distance,
+            phase = math.random() * 6.0,
+            riseSpeed = 0.1 + math.random() * 0.18,
+            riseHeight = height * (0.32 + math.random() * 0.42),
+            drift = Vector3((math.random() - 0.5) * 0.12, 0, (math.random() - 0.5) * 0.12),
+            swaySpeed = 0.45 + math.random() * 1.1,
+            swayAmp = 0.008 + math.random() * 0.022,
+            pulseSpeed = 0.8 + math.random() * 1.4,
+            pulseAmp = 0.06 + math.random() * 0.1,
+            spinSpeed = -14.0 + math.random() * 28.0,
+        })
+    end
+    billboardSet:Commit()
+    return root, particles
+end
+
+local function CreateMutationFlecks(parent, name, materials, count, spread, baseY, height, minScale, maxScale, motionMode, modelPaths, shapeMode)
+    local root = parent:CreateChild(name)
+    local particles = {}
+    motionMode = motionMode or "float"
+    modelPaths = modelPaths or { "Models/Sphere.mdl" }
+    shapeMode = shapeMode or "spark"
+
+    for i = 1, count do
+        local mat = materials[math.random(1, #materials)]
+        local modelPath = modelPaths[math.random(1, #modelPaths)]
+        local angle = math.random() * math.pi * 2.0
+        local distance = spread * (0.22 + math.random() * 0.9)
+        local y = baseY + height * (0.14 + math.random() * 0.92)
+        local sx = minScale + (maxScale - minScale) * math.random()
+        local sy = sx
+        local sz = sx
+        if shapeMode == "orb" then
+            sy = sx
+            sz = sx
+        elseif shapeMode == "drop" then
+            sy = sx * (1.65 + math.random() * 0.55)
+            sz = sx * 0.92
+        elseif shapeMode == "coin" then
+            sy = sx * 0.42
+            sz = sx * 1.08
+        elseif shapeMode == "shard" then
+            sy = sx * (1.55 + math.random() * 0.7)
+            sz = sx * 0.58
+        elseif shapeMode == "pollen" then
+            sy = sx * 0.95
+            sz = sx * 0.95
+        elseif shapeMode == "star" then
+            sy = sx * 0.38
+            sz = sx * 0.38
+        elseif shapeMode == "icicle" then
+            sy = sx * (2.45 + math.random() * 0.65)
+            sz = sx * 0.42
+        elseif shapeMode == "voidShard" then
+            sy = sx * (1.1 + math.random() * 0.55)
+            sz = sx * 0.34
+        elseif shapeMode == "mist" then
+            sy = sx * 0.8
+            sz = sx * 1.35
+        else
+            sy = sx * (0.78 + math.random() * 0.35)
+            sz = sx * (0.6 + math.random() * 0.4)
+        end
+        local basePosition = Vector3(math.cos(angle) * distance, y, math.sin(angle) * distance)
+        local baseScale = Vector3(sx, sy, sz)
+        local fleck = PlantVisual.AddModel(root, name .. "Fleck" .. i, modelPath, basePosition, baseScale, mat, false)
+        fleck.rotation = Quaternion(math.random(0, 359), Vector3.UP) * Quaternion(10 + math.random() * 55, Vector3.RIGHT)
+        table.insert(particles, {
+            kind = "fleck",
+            mode = motionMode,
+            node = fleck,
+            basePosition = basePosition,
+            baseScale = baseScale,
+            angle = angle,
+            orbitRadius = distance,
+            baseY = y,
+            phase = math.random() * 6.0,
+            riseSpeed = 0.18 + math.random() * 0.22,
+            riseHeight = height * (0.45 + math.random() * 0.55),
+            bobSpeed = 1.05 + math.random() * 1.25,
+            bobAmp = (motionMode == "pollenOrbit") and (0.028 + math.random() * 0.026) or (0.012 + math.random() * 0.03),
+            swaySpeed = 0.65 + math.random() * 1.0,
+            swayAmp = 0.006 + math.random() * 0.018,
+            pulseSpeed = 1.25 + math.random() * 1.45,
+            pulseAmp = 0.035 + math.random() * 0.075,
+            spinSpeed = 3.0 + math.random() * 14.0,
+            burstSpeed = 0.55 + math.random() * 0.6,
+            spiralSpeed = 1.2 + math.random() * 0.9,
+            snapOffset = 0.25 + math.random() * 0.45,
+        })
+    end
+    return root, particles
+end
+
+local function AddMutationEmitterEffects(plantData, mutation, effectScale, baseY, height)
+    local root = plantData.root
+    local spread = 0.46 * effectScale
+    local particleBaseY = baseY + height * 0.12
+    local particleHeight = math.max(0.16, height * 0.74)
+
+    local function addEmitter(name, material, count, color, sizeMin, sizeMax, mode, spreadScale, baseOffsetScale, heightScale)
+        local emitterBaseY = particleBaseY + height * (baseOffsetScale or 0.0)
+        local emitterHeight = particleHeight * (heightScale or 1.0)
+        local emitterRoot, particles = CreateBillboardParticles(root, name, material, count, spread * (spreadScale or 1.0), emitterBaseY, emitterHeight, sizeMin * effectScale, sizeMax * effectScale, color, "billboardSpark", mode)
+        RegisterEffect(plantData, emitterRoot, 0.0, 0.0, 0.0, 0.0, 0.0, EFFECT_DETAIL_INTERVAL, particles)
+    end
+
+    if PlantVisual.HasSpecial(mutation, "wet") then
+        addEmitter("WetStarEmitter", PlantVisual.materials.wetStarBillboard, 8, Color(1.0, 1.0, 1.0, 0.2), 0.09, 0.195, "steam", 1.75)
+    elseif PlantVisual.HasSpecial(mutation, "stardust") then
+        addEmitter("StarDustEmitter", PlantVisual.materials.starSparkBillboard, 8, Color(1.0, 0.94, 0.42, 0.86), 0.09, 0.19, "twinkle", 1.95)
+    elseif PlantVisual.HasSpecial(mutation, "cloud") then
+        addEmitter("CloudStarEmitter", PlantVisual.materials.cloudStarBillboard, 14, Color(1.0, 1.0, 1.0, 0.25), 0.23, 0.46, "cloudDrift", 1.3, -0.28, 0.46)
+    elseif PlantVisual.HasSpecial(mutation, "pollen") then
+        addEmitter("PollenPetalEmitter", PlantVisual.materials.pollenStarBillboard, 8, Color(1.0, 1.0, 1.0, 0.25), 0.05, 0.105, "orbit", 1.75)
+    end
+end
+
+local function CreateCrystalCrown(parent, name, material, count, radius, y, height)
+    local root = parent:CreateChild(name)
+    for i = 1, count do
+        local angle = (i - 1) * (360 / count)
+        local rad = math.rad(angle)
+        local crystal = PlantVisual.AddModel(root, name .. i, "Models/Box.mdl", Vector3(math.cos(rad) * radius, y, math.sin(rad) * radius), Vector3(0.045, height, 0.045), material, false)
+        crystal.rotation = Quaternion(angle, Vector3.UP) * Quaternion(24, Vector3.RIGHT)
+    end
+    return root
+end
+
+local function CreateColorAuraMaterial(mutation)
+    if mutation.colorMutation == nil then
+        return nil
+    end
+    local c = mutation.colorMutation.color
+    local key = "colorAura_" .. ColorKey(c)
+    if PlantVisual.materials[key] ~= nil then
+        return PlantVisual.materials[key]
+    end
+    return PlantVisual.CreateUnlitMaterial(key, Color(math.min(1.0, c.r * 1.25 + 0.1), math.min(1.0, c.g * 1.25 + 0.1), math.min(1.0, c.b * 1.25 + 0.1), 1.0))
+end
+
+local function CreateMutationBeacon(parent, name, material, size, tier)
+    local root = parent:CreateChild(name)
+    local height = 1.18 + tier * 0.1
+    PlantVisual.AddModel(root, name .. "Core", "Models/Box.mdl", Vector3(0, height, 0), Vector3(0.13, 0.13, 0.13) * size, material, false)
+    for i = 1, 4 do
+        local angle = math.rad((i - 1) * 90 + 45)
+        local shard = PlantVisual.AddModel(root, name .. "Shard" .. i, "Models/Box.mdl", Vector3(math.cos(angle) * 0.24 * size, height - 0.08, math.sin(angle) * 0.24 * size), Vector3(0.045, 0.2, 0.045) * size, material, false)
+        shard.rotation = Quaternion(math.deg(angle), Vector3.UP) * Quaternion(28, Vector3.RIGHT)
+    end
+    return root
+end
+
+local function CreateSignatureStructure(parent, name, mutation, materials, spread, baseY, height)
+    local root = parent:CreateChild(name)
+    local accent = materials[1]
+    local topY = baseY + height * 0.82
+
+    if PlantVisual.HasSpecial(mutation, "gold") then
+        PlantVisual.AddModel(root, "GoldCore", "Models/Sphere.mdl", Vector3(0, topY + 0.04, 0), Vector3(0.1, 0.1, 0.1), PlantVisual.materials.auraGold, false)
+        for i = 1, 5 do
+            local angle = math.rad((i - 1) * 72)
+            local halo = PlantVisual.AddModel(root, "GoldGlowDot" .. i, "Models/Sphere.mdl", Vector3(math.cos(angle) * spread * 0.36, topY + math.sin(i) * 0.018, math.sin(angle) * spread * 0.36), Vector3(0.034, 0.034, 0.034), PlantVisual.materials.auraGold, false)
+            halo.rotation = Quaternion(math.deg(angle), Vector3.UP)
+        end
+    elseif PlantVisual.HasSpecial(mutation, "frozen") then
+        for i = 1, 4 do
+            local angle = math.rad((i - 1) * 90)
+            local crystal = PlantVisual.AddModel(root, "IceSpike" .. i, "Models/Cone.mdl", Vector3(math.cos(angle) * spread * 0.42, topY - 0.05, math.sin(angle) * spread * 0.42), Vector3(0.045, 0.13, 0.045), PlantVisual.materials.iceCrystal, false)
+            crystal.rotation = Quaternion(math.deg(angle), Vector3.UP) * Quaternion(18, Vector3.RIGHT)
+        end
+        PlantVisual.AddModel(root, "IceCore", "Models/Sphere.mdl", Vector3(0, topY + 0.02, 0), Vector3(0.09, 0.09, 0.09), PlantVisual.materials.auraBlue, false)
+    elseif PlantVisual.HasSpecial(mutation, "wet") then
+        for i = 1, 3 do
+            local angle = math.rad((i - 1) * 120 + 18)
+            local drop = PlantVisual.AddModel(root, "WaterDrop" .. i, "Models/Sphere.mdl", Vector3(math.cos(angle) * spread * 0.4, topY - 0.02, math.sin(angle) * spread * 0.4), Vector3(0.045, 0.075, 0.045), PlantVisual.materials.waterDrop, false)
+            drop.rotation = Quaternion(math.deg(angle), Vector3.UP)
+        end
+    elseif PlantVisual.HasSpecial(mutation, "cloud") then
+        for i = 1, 3 do
+            local angle = math.rad((i - 1) * 120)
+            local radius = spread * (0.16 + (i % 2) * 0.12)
+            PlantVisual.AddModel(root, "CloudPuff" .. i, "Models/Sphere.mdl", Vector3(math.cos(angle) * radius, topY + math.sin(i) * 0.025, math.sin(angle) * radius), Vector3(0.06, 0.048, 0.06), PlantVisual.materials.cloud, false)
+        end
+    elseif PlantVisual.HasSpecial(mutation, "ceramic") then
+        PlantVisual.AddModel(root, "CeramicPearl", "Models/Sphere.mdl", Vector3(0, topY + 0.01, 0), Vector3(0.055, 0.055, 0.055), PlantVisual.materials.ceramic, false)
+        for i = 1, 2 do
+            local angle = math.rad((i - 1) * 180 + 35)
+            local chip = PlantVisual.AddModel(root, "CeramicBlueInlay" .. i, "Models/Box.mdl", Vector3(math.cos(angle) * spread * 0.26, topY - 0.01, math.sin(angle) * spread * 0.26), Vector3(0.04, 0.012, 0.026), PlantVisual.materials.ceramicBlue, false)
+            chip.rotation = Quaternion(math.deg(angle), Vector3.UP) * Quaternion(12, Vector3.RIGHT)
+        end
+    elseif PlantVisual.HasSpecial(mutation, "pollen") then
+        for i = 1, 4 do
+            local angle = math.rad(i * 137.5)
+            local radius = spread * (0.18 + (i % 2) * 0.12)
+            PlantVisual.AddModel(root, "PollenOrb" .. i, "Models/Sphere.mdl", Vector3(math.cos(angle) * radius, baseY + height * (0.36 + (i % 3) * 0.16), math.sin(angle) * radius), Vector3(0.032, 0.032, 0.032), PlantVisual.materials.pollen, false)
+        end
+    elseif PlantVisual.HasSpecial(mutation, "void") then
+        for i = 1, 6 do
+            local angle = math.rad((i - 1) * 60 + 18)
+            local radius = spread * (0.32 + (i % 2) * 0.16)
+            local spike = PlantVisual.AddModel(root, "VoidShard" .. i, "Models/Cone.mdl", Vector3(math.cos(angle) * radius, topY - 0.04 + math.sin(i) * 0.025, math.sin(angle) * radius), Vector3(0.026, 0.16, 0.026), PlantVisual.materials.voidSpark, false)
+            spike.rotation = Quaternion(math.deg(angle) + 180, Vector3.UP) * Quaternion(72, Vector3.RIGHT)
+        end
+        PlantVisual.AddModel(root, "VoidCore", "Models/Sphere.mdl", Vector3(0, topY - 0.02, 0), Vector3(0.062, 0.062, 0.062), PlantVisual.materials.void, false)
+    elseif PlantVisual.HasSpecial(mutation, "chocolate") then
+        PlantVisual.AddModel(root, "ChocoAccent", "Models/Sphere.mdl", Vector3(0, topY - 0.02, 0), Vector3(0.04, 0.05, 0.04), PlantVisual.materials.chocolateSpark, false)
+    elseif PlantVisual.HasSpecial(mutation, "glow") then
+        PlantVisual.AddModel(root, "GlowCore", "Models/Sphere.mdl", Vector3(0, topY + 0.02, 0), Vector3(0.09, 0.09, 0.09), PlantVisual.materials.magicSpark, false)
+        for i = 1, 5 do
+            local angle = math.rad((i - 1) * 72)
+            local ray = PlantVisual.AddModel(root, "GlowShard" .. i, "Models/Cone.mdl", Vector3(math.cos(angle) * spread * 0.42, topY, math.sin(angle) * spread * 0.42), Vector3(0.035, 0.15, 0.035), PlantVisual.materials.auraPurple, false)
+            ray.rotation = Quaternion(math.deg(angle), Vector3.UP) * Quaternion(68, Vector3.RIGHT)
+        end
+    elseif PlantVisual.HasSpecial(mutation, "stardust") then
+        PlantVisual.AddModel(root, "StarCore", "Models/Sphere.mdl", Vector3(0, topY + 0.02, 0), Vector3(0.05, 0.05, 0.05), PlantVisual.materials.star, false)
+        for i = 1, 5 do
+            local angle = math.rad((i - 1) * 72)
+            local radius = spread * (0.22 + (i % 2) * 0.1)
+            local star = PlantVisual.AddModel(root, "StarPoint" .. i, "Models/Box.mdl", Vector3(math.cos(angle) * radius, topY + math.sin(i) * 0.026, math.sin(angle) * radius), Vector3(0.055, 0.012, 0.012), (i % 2 == 0) and PlantVisual.materials.star or PlantVisual.materials.auraBlue, false)
+            star.rotation = Quaternion(math.deg(angle), Vector3.UP) * Quaternion(45, Vector3.RIGHT)
+        end
+    elseif PlantVisual.HasSpecial(mutation, "rainbow") then
+        for i = 1, 3 do
+            local angle = math.rad((i - 1) * 120)
+            local mat = materials[((i - 1) % #materials) + 1]
+            local prism = PlantVisual.AddModel(root, "Prism" .. i, "Models/Cone.mdl", Vector3(math.cos(angle) * spread * 0.42, topY + 0.02, math.sin(angle) * spread * 0.42), Vector3(0.04, 0.12, 0.04), mat, false)
+            prism.rotation = Quaternion(math.deg(angle), Vector3.UP) * Quaternion(34, Vector3.RIGHT)
+        end
+    end
+
+    return root
+end
+
+local function UsesEmitterStyle(mutation)
+    return PlantVisual.HasSpecial(mutation, "wet")
+        or PlantVisual.HasSpecial(mutation, "stardust")
+        or PlantVisual.HasSpecial(mutation, "cloud")
+        or PlantVisual.HasSpecial(mutation, "pollen")
 end
 
 function PlantVisual.CreateSpecialEffects(plantData)
     local root = plantData.root
     plantData.effectNodes = {}
     local mutation = plantData.mutation
+    local size = mutation.sizeScale
+    local specialCount = CountSpecials(mutation)
+    if specialCount <= 0 then
+        return
+    end
 
-    if PlantVisual.HasSpecial(mutation, "wet") then
-        table.insert(plantData.effectNodes, CreateOrbitEffect(root, "WaterDrops", PlantVisual.materials.waterDrop, 8, 0.55 * mutation.sizeScale, 0.8, Vector3(0.055, 0.11, 0.055)))
+    local accent = GetDominantAuraMaterial(mutation)
+    local fleckMaterials = { accent }
+    if mutation.colorMutation ~= nil then
+        table.insert(fleckMaterials, CreateColorAuraMaterial(mutation))
     end
     if PlantVisual.HasSpecial(mutation, "stardust") then
-        table.insert(plantData.effectNodes, CreateOrbitEffect(root, "Stars", PlantVisual.materials.star, 10, 0.75 * mutation.sizeScale, 1.2, Vector3(0.06, 0.06, 0.06)))
+        fleckMaterials = { PlantVisual.materials.star, PlantVisual.materials.auraBlue }
+    elseif PlantVisual.HasSpecial(mutation, "rainbow") then
+        fleckMaterials = { PlantVisual.materials.rainbowRed, PlantVisual.materials.rainbowGreen, PlantVisual.materials.rainbowBlue, PlantVisual.materials.star }
+    elseif PlantVisual.HasSpecial(mutation, "gold") then
+        fleckMaterials = { PlantVisual.materials.auraGold, PlantVisual.materials.gold }
+    elseif PlantVisual.HasSpecial(mutation, "wet") then
+        fleckMaterials = { PlantVisual.materials.waterDrop, PlantVisual.materials.auraBlue }
+    elseif PlantVisual.HasSpecial(mutation, "frozen") then
+        fleckMaterials = { PlantVisual.materials.iceCrystal, PlantVisual.materials.auraBlue }
+    elseif PlantVisual.HasSpecial(mutation, "cloud") then
+        fleckMaterials = { PlantVisual.materials.cloud }
+    elseif PlantVisual.HasSpecial(mutation, "ceramic") then
+        fleckMaterials = { PlantVisual.materials.ceramicBlue, PlantVisual.materials.ceramicDeepBlue }
+    elseif PlantVisual.HasSpecial(mutation, "pollen") then
+        fleckMaterials = { PlantVisual.materials.pollen, PlantVisual.materials.pollenOrange }
+    elseif PlantVisual.HasSpecial(mutation, "void") then
+        fleckMaterials = { PlantVisual.materials.voidSpark, PlantVisual.materials.auraPurple, PlantVisual.materials.void }
+    elseif PlantVisual.HasSpecial(mutation, "glow") then
+        fleckMaterials = { PlantVisual.materials.magicSpark, PlantVisual.materials.auraPurple }
+    elseif PlantVisual.HasSpecial(mutation, "chocolate") then
+        fleckMaterials = { PlantVisual.materials.chocolateSpark, PlantVisual.materials.chocolate }
     end
-    if PlantVisual.HasSpecial(mutation, "cloud") then
-        table.insert(plantData.effectNodes, CreateOrbitEffect(root, "Clouds", PlantVisual.materials.cloud, 5, 0.5 * mutation.sizeScale, 0.95, Vector3(0.2, 0.12, 0.14)))
+
+    local visualScale = 0.42 * size
+    local effectScale = math.max(0.38, visualScale)
+    local fleckCount = 4
+    local spread = 0.72 * effectScale
+    local baseY = 1.05 * effectScale
+    local height = 0.78 * effectScale
+    if UsesEmitterStyle(mutation) then
+        AddMutationEmitterEffects(plantData, mutation, effectScale, baseY, height)
     end
-    if PlantVisual.HasSpecial(mutation, "pollen") then
-        table.insert(plantData.effectNodes, CreateOrbitEffect(root, "Pollen", PlantVisual.materials.pollen, 12, 0.65 * mutation.sizeScale, 0.9, Vector3(0.035, 0.035, 0.035)))
+    local minScale = 0.066 * effectScale
+    local maxScale = 0.124 * effectScale
+    local primaryMotion = "float"
+    local secondaryMotion = "rise"
+    local primaryModels = { "Models/Sphere.mdl" }
+    local secondaryModels = { "Models/Cone.mdl", "Models/Sphere.mdl" }
+    local signatureModels = { "Models/Cone.mdl" }
+    local primaryShape = "orb"
+    local secondaryShape = "shard"
+    local signatureShape = "shard"
+    local signatureMotion = "burst"
+    local signatureCount = 3
+    local signatureScale = 1.0
+
+    if PlantVisual.HasSpecial(mutation, "gold") or PlantVisual.HasSpecial(mutation, "void") then
+        fleckCount = 4
+        height = height * 0.58
     end
+
+    if PlantVisual.HasSpecial(mutation, "stardust") then
+        fleckCount = 3
+        primaryMotion = "twinkle"
+        secondaryMotion = "snap"
+        signatureMotion = "snap"
+        primaryModels = { "Models/Sphere.mdl", "Models/Box.mdl" }
+        secondaryModels = { "Models/Box.mdl", "Models/Box.mdl" }
+        signatureModels = { "Models/Box.mdl", "Models/Sphere.mdl" }
+        primaryShape = "star"
+        secondaryShape = "star"
+        signatureShape = "star"
+        signatureCount = 2
+        signatureScale = 0.58
+        spread = spread * 0.46
+        height = height * 0.28
+        minScale = minScale * 0.58
+        maxScale = maxScale * 0.68
+    elseif PlantVisual.HasSpecial(mutation, "glow") then
+        fleckCount = 0
+        primaryMotion = "pulse"
+        secondaryMotion = "pulse"
+        signatureMotion = "pulse"
+        primaryModels = { "Models/Sphere.mdl", "Models/Sphere.mdl" }
+        secondaryModels = { "Models/Sphere.mdl", "Models/Sphere.mdl" }
+        signatureModels = { "Models/Sphere.mdl", "Models/Sphere.mdl" }
+        primaryShape = "orb"
+        secondaryShape = "orb"
+        signatureShape = "orb"
+        signatureCount = 0
+        signatureScale = 0.0
+        spread = spread * 0.45
+        height = height * 0.45
+    elseif PlantVisual.HasSpecial(mutation, "rainbow") then
+        fleckCount = 0
+        signatureCount = 0
+        signatureScale = 0.0
+    elseif PlantVisual.HasSpecial(mutation, "gold") then
+        fleckCount = 0
+        primaryMotion = "pulse"
+        secondaryMotion = "pulse"
+        signatureMotion = "pulse"
+        primaryModels = { "Models/Sphere.mdl", "Models/Sphere.mdl" }
+        secondaryModels = { "Models/Sphere.mdl", "Models/Sphere.mdl" }
+        signatureModels = { "Models/Sphere.mdl", "Models/Sphere.mdl" }
+        primaryShape = "orb"
+        secondaryShape = "orb"
+        signatureShape = "orb"
+        signatureCount = 0
+        signatureScale = 0.0
+        spread = spread * 0.48
+        height = height * 0.38
+        minScale = minScale * 0.58
+        maxScale = maxScale * 0.68
+    elseif PlantVisual.HasSpecial(mutation, "wet") then
+        fleckCount = 4
+        primaryMotion = "pollenOrbit"
+        secondaryMotion = "pollenOrbit"
+        signatureMotion = "pollenOrbit"
+        primaryModels = { "Models/Sphere.mdl", "Models/Sphere.mdl" }
+        secondaryModels = { "Models/Sphere.mdl", "Models/Sphere.mdl" }
+        signatureModels = { "Models/Sphere.mdl", "Models/Sphere.mdl" }
+        primaryShape = "drop"
+        secondaryShape = "drop"
+        signatureShape = "drop"
+        signatureCount = 2
+        signatureScale = 0.72
+        spread = spread * 0.58
+        height = height * 0.52
+        minScale = minScale * 0.48
+        maxScale = maxScale * 0.62
+    elseif PlantVisual.HasSpecial(mutation, "frozen") then
+        fleckCount = 3
+        primaryMotion = "snap"
+        secondaryMotion = "twinkle"
+        signatureMotion = "beam"
+        primaryModels = { "Models/Cone.mdl", "Models/Box.mdl" }
+        secondaryModels = { "Models/Box.mdl", "Models/Cone.mdl" }
+        signatureModels = { "Models/Cone.mdl", "Models/Cone.mdl" }
+        primaryShape = "icicle"
+        secondaryShape = "shard"
+        signatureShape = "icicle"
+        signatureCount = 2
+        signatureScale = 0.95
+        spread = spread * 0.52
+        height = height * 0.52
+        minScale = minScale * 0.62
+        maxScale = maxScale * 0.72
+    elseif PlantVisual.HasSpecial(mutation, "cloud") then
+        primaryMotion = "drift"
+        secondaryMotion = "rise"
+        signatureMotion = "drift"
+        primaryModels = { "Models/Sphere.mdl", "Models/Sphere.mdl" }
+        secondaryModels = { "Models/Sphere.mdl", "Models/Cylinder.mdl" }
+        signatureModels = { "Models/Sphere.mdl", "Models/Sphere.mdl" }
+        primaryShape = "mist"
+        secondaryShape = "mist"
+        signatureShape = "mist"
+        signatureCount = 3
+        signatureScale = 1.7
+    elseif PlantVisual.HasSpecial(mutation, "ceramic") then
+        fleckCount = 0
+        primaryMotion = "orbit"
+        secondaryMotion = "orbit"
+        signatureMotion = "orbit"
+        primaryModels = { "Models/Box.mdl", "Models/Box.mdl" }
+        secondaryModels = { "Models/Box.mdl", "Models/Box.mdl" }
+        signatureModels = { "Models/Box.mdl", "Models/Box.mdl" }
+        primaryShape = "star"
+        secondaryShape = "star"
+        signatureShape = "star"
+        signatureCount = 0
+        signatureScale = 0.0
+    elseif PlantVisual.HasSpecial(mutation, "pollen") then
+        fleckCount = 3
+        primaryMotion = "pollenOrbit"
+        secondaryMotion = "pollenOrbit"
+        signatureMotion = "pollenOrbit"
+        primaryModels = { "Models/Sphere.mdl", "Models/Sphere.mdl" }
+        secondaryModels = { "Models/Sphere.mdl", "Models/Sphere.mdl" }
+        signatureModels = { "Models/Sphere.mdl", "Models/Sphere.mdl" }
+        primaryShape = "pollen"
+        secondaryShape = "pollen"
+        signatureShape = "pollen"
+        signatureCount = 2
+        signatureScale = 0.72
+        spread = spread * 0.62
+        height = height * 0.45
+        minScale = minScale * 0.42
+        maxScale = maxScale * 0.52
+    elseif PlantVisual.HasSpecial(mutation, "void") then
+        fleckCount = 0
+        primaryMotion = "pulse"
+        secondaryMotion = "pulse"
+        signatureMotion = "pulse"
+        primaryModels = { "Models/Sphere.mdl", "Models/Sphere.mdl" }
+        secondaryModels = { "Models/Sphere.mdl", "Models/Sphere.mdl" }
+        signatureModels = { "Models/Sphere.mdl", "Models/Sphere.mdl" }
+        primaryShape = "orb"
+        secondaryShape = "orb"
+        signatureShape = "orb"
+        signatureCount = 0
+        signatureScale = 0.0
+        spread = spread * 0.48
+        height = height * 0.38
+        minScale = minScale * 0.48
+        maxScale = maxScale * 0.62
+    elseif PlantVisual.HasSpecial(mutation, "chocolate") then
+        fleckCount = 4
+        height = height * 0.45
+        spread = spread * 0.58
+        primaryMotion = "pollenOrbit"
+        secondaryMotion = "pollenOrbit"
+        signatureMotion = "pollenOrbit"
+        primaryModels = { "Models/Sphere.mdl", "Models/Sphere.mdl" }
+        secondaryModels = { "Models/Sphere.mdl", "Models/Sphere.mdl" }
+        signatureModels = { "Models/Sphere.mdl", "Models/Sphere.mdl" }
+        primaryShape = "drop"
+        secondaryShape = "drop"
+        signatureShape = "drop"
+        signatureCount = 2
+        signatureScale = 0.68
+    end
+
+    local closeFleckCount = math.max(2, math.floor(fleckCount * 0.45))
+    local highFleckCount = math.max(1, math.floor(fleckCount * 0.2))
+    local signatureFleckCount = math.max(1, signatureCount)
+    if PlantVisual.HasSpecial(mutation, "chocolate") then
+        closeFleckCount = 3
+        highFleckCount = 1
+        signatureFleckCount = 1
+    elseif PlantVisual.HasSpecial(mutation, "rainbow") then
+        closeFleckCount = 0
+        highFleckCount = 0
+        signatureFleckCount = 0
+    elseif PlantVisual.HasSpecial(mutation, "wet") then
+        closeFleckCount = 0
+        highFleckCount = 0
+        signatureFleckCount = 0
+    elseif PlantVisual.HasSpecial(mutation, "glow") or PlantVisual.HasSpecial(mutation, "ceramic") or PlantVisual.HasSpecial(mutation, "frozen") or PlantVisual.HasSpecial(mutation, "gold") or PlantVisual.HasSpecial(mutation, "void") or UsesEmitterStyle(mutation) then
+        closeFleckCount = 0
+        highFleckCount = 0
+        signatureFleckCount = 0
+    elseif PlantVisual.HasSpecial(mutation, "pollen") then
+        closeFleckCount = 3
+        highFleckCount = 1
+        signatureFleckCount = 1
+    end
+
+    if closeFleckCount > 0 then
+        local closeFleckRoot, closeFleckParticles = CreateMutationFlecks(root, "MutationFlecks", fleckMaterials, closeFleckCount, spread * 0.82, baseY + 0.08 * effectScale, height * 0.78, minScale * 0.72, maxScale * 0.78, primaryMotion, primaryModels, primaryShape)
+        RegisterEffect(plantData, closeFleckRoot, 0.0, 0.0, 0.0, 0.0, 0.0, EFFECT_AMBIENT_INTERVAL, closeFleckParticles)
+    end
+
+    if highFleckCount > 0 then
+        local highFleckRoot, highFleckParticles = CreateMutationFlecks(root, "MutationGlints", fleckMaterials, highFleckCount, spread * 1.04, baseY + 0.16 * effectScale, height * 0.72, minScale * 0.48, maxScale * 0.58, secondaryMotion, secondaryModels, secondaryShape)
+        RegisterEffect(plantData, highFleckRoot, 0.0, 0.0, 0.0, 0.0, 0.0, EFFECT_DETAIL_INTERVAL, highFleckParticles)
+    end
+
+    if signatureFleckCount > 0 then
+        local signatureRoot, signatureParticles = CreateMutationFlecks(root, "MutationSignature", fleckMaterials, signatureFleckCount, spread * 0.98, baseY + 0.1 * effectScale, height * 0.66, minScale * 0.9 * signatureScale, maxScale * 1.1 * signatureScale, signatureMotion, signatureModels, signatureShape)
+        RegisterEffect(plantData, signatureRoot, 0.0, 0.0, 0.0, 0.0, 0.0, EFFECT_DETAIL_INTERVAL, signatureParticles)
+    end
+
+    if PlantVisual.HasSpecial(mutation, "gold") then
+        AddGoldGlowEffect(plantData, effectScale, baseY, height)
+    end
+
     if PlantVisual.HasSpecial(mutation, "void") then
-        table.insert(plantData.effectNodes, CreateOrbitEffect(root, "VoidRing", PlantVisual.materials.void, 14, 0.8 * mutation.sizeScale, 0.9, Vector3(0.045, 0.045, 0.045)))
+        AddVoidGlowEffect(plantData, effectScale, baseY, height)
     end
-    if PlantVisual.HasSpecial(mutation, "frozen") then
-        table.insert(plantData.effectNodes, CreateOrbitEffect(root, "ColdMist", PlantVisual.materials.cloud, 6, 0.42 * mutation.sizeScale, 0.35, Vector3(0.12, 0.05, 0.12)))
+
+    if PlantVisual.HasSpecial(mutation, "glow") then
+        AddGlowLightEffect(plantData, effectScale, baseY, height)
+    end
+
+    if not PlantVisual.HasSpecial(mutation, "glow") and not PlantVisual.HasSpecial(mutation, "ceramic") and not PlantVisual.HasSpecial(mutation, "wet") and not PlantVisual.HasSpecial(mutation, "pollen") and not PlantVisual.HasSpecial(mutation, "rainbow") and not PlantVisual.HasSpecial(mutation, "frozen") and not PlantVisual.HasSpecial(mutation, "gold") and not PlantVisual.HasSpecial(mutation, "void") and not UsesEmitterStyle(mutation) then
+        local structureRoot = CreateSignatureStructure(root, "MutationStructure", mutation, fleckMaterials, spread, baseY, height)
+        RegisterEffect(plantData, structureRoot, 10.0, 0.75, 0.018, 1.2, 0.08, EFFECT_AMBIENT_INTERVAL)
     end
 end
 

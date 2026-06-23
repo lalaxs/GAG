@@ -10,6 +10,7 @@
 -- ============================================================================
 
 local UI = require("urhox-libs/UI")
+local ModalAnim = require("ui.modal_anim")
 
 local Shop = {}
 
@@ -38,45 +39,59 @@ local RARITY_COLORS = {
     ["传奇"] = {255, 148, 20, 255},
 }
 
+-- 品质名称文字色（深底 + 微弱品质色调倾向，不刺眼）
+local RARITY_NAME_COLORS = {
+    ["普通"] = {72, 62, 45, 255},
+    ["罕见"] = {45, 72, 50, 255},
+    ["稀有"] = {40, 55, 85, 255},
+    ["史诗"] = {68, 42, 82, 255},
+    ["传奇"] = {90, 62, 30, 255},
+}
+
 -- 种子商店配置
--- showInShop: 是否会在商店中出现（刷新时是否可能出现库存）
--- unlockLevel: 花园等级达到多少时解锁显示
--- refreshStock: 每次刷新时补充的库存数量
+-- 刷新规则：
+--   1. 胡萝卜、玉米固定上架，库存固定 50
+--   2. 番茄、葡萄以及罕见到史诗作物每轮按概率独立刷新，不保证出现
+--   3. 商店列表始终展示普通到史诗全部作物，未刷出或售罄显示为“售罄”
 local SEED_SHOP_CONFIG = {
-    -- 普通
-    { name = "胡萝卜",  showInShop = true,  unlockLevel = 1, refreshStock = 5 },
-    { name = "番茄",    showInShop = true,  unlockLevel = 1, refreshStock = 4 },
-    { name = "玉米",    showInShop = true,  unlockLevel = 1, refreshStock = 5 },
-    { name = "葡萄",    showInShop = true,  unlockLevel = 1, refreshStock = 4 },
-    -- 罕见
-    { name = "草莓",    showInShop = true,  unlockLevel = 2, refreshStock = 3 },
-    { name = "花椰菜",  showInShop = true,  unlockLevel = 2, refreshStock = 3 },
-    { name = "南瓜",    showInShop = true,  unlockLevel = 2, refreshStock = 2 },
-    { name = "凤梨",    showInShop = true,  unlockLevel = 3, refreshStock = 2 },
-    { name = "芒果",    showInShop = true,  unlockLevel = 2, refreshStock = 3 },
-    { name = "香蕉",    showInShop = true,  unlockLevel = 3, refreshStock = 2 },
-    -- 稀有
-    { name = "郁金香",  showInShop = true,  unlockLevel = 3, refreshStock = 2 },
-    { name = "西瓜",    showInShop = true,  unlockLevel = 3, refreshStock = 2 },
-    { name = "蘑菇",    showInShop = true,  unlockLevel = 4, refreshStock = 1 },
-    { name = "仙人掌",  showInShop = true,  unlockLevel = 4, refreshStock = 1 },
-    { name = "竹子",    showInShop = true,  unlockLevel = 4, refreshStock = 2 },
-    { name = "椰子",    showInShop = true,  unlockLevel = 4, refreshStock = 1 },
-    -- 史诗
-    { name = "波斯菊",  showInShop = true,  unlockLevel = 5, refreshStock = 1 },
-    { name = "向日葵",  showInShop = true,  unlockLevel = 5, refreshStock = 1 },
-    { name = "辣椒",    showInShop = true,  unlockLevel = 5, refreshStock = 1 },
-    { name = "百合",    showInShop = true,  unlockLevel = 6, refreshStock = 1 },
-    { name = "杜鹃",    showInShop = true,  unlockLevel = 5, refreshStock = 1 },
-    { name = "玉兰",    showInShop = true,  unlockLevel = 6, refreshStock = 1 },
-    -- 传奇
-    { name = "三色堇",  showInShop = false, unlockLevel = 7, refreshStock = 0 },
-    { name = "玫瑰",    showInShop = true,  unlockLevel = 7, refreshStock = 1 },
-    { name = "蒲公英",  showInShop = true,  unlockLevel = 7, refreshStock = 1 },
-    { name = "风信子",  showInShop = false, unlockLevel = 8, refreshStock = 0 },
-    { name = "绣球花",  showInShop = false, unlockLevel = 8, refreshStock = 0 },
-    { name = "杨桃",    showInShop = false, unlockLevel = 9, refreshStock = 0 },
-    { name = "牡丹",    showInShop = false, unlockLevel = 8, refreshStock = 0 },
+    { name = "胡萝卜", rarity = "普通" },
+    { name = "番茄",   rarity = "普通" },
+    { name = "玉米",   rarity = "普通" },
+    { name = "葡萄",   rarity = "普通" },
+
+    { name = "草莓",   rarity = "罕见" },
+    { name = "花椰菜", rarity = "罕见" },
+    { name = "南瓜",   rarity = "罕见" },
+    { name = "凤梨",   rarity = "罕见" },
+    { name = "芒果",   rarity = "罕见" },
+    { name = "香蕉",   rarity = "罕见" },
+
+    { name = "郁金香", rarity = "稀有" },
+    { name = "西瓜",   rarity = "稀有" },
+    { name = "蘑菇",   rarity = "稀有" },
+    { name = "仙人掌", rarity = "稀有" },
+    { name = "竹子",   rarity = "稀有" },
+    { name = "椰子",   rarity = "稀有" },
+
+    { name = "波斯菊", rarity = "史诗" },
+    { name = "向日葵", rarity = "史诗" },
+    { name = "辣椒",   rarity = "史诗" },
+    { name = "百合",   rarity = "史诗" },
+    { name = "杜鹃",   rarity = "史诗" },
+    { name = "玉兰",   rarity = "史诗" },
+}
+
+local SEED_SHOP_REFRESH_RULES = {
+    guaranteed = {
+        names = { "胡萝卜", "玉米" },
+        stock = 50,
+    },
+    random = {
+        ["普通"] = { names = { "番茄", "葡萄" }, chance = 0.65, minStock = 25, maxStock = 45 },
+        ["罕见"] = { chance = 0.50, minStock = 8, maxStock = 15 },
+        ["稀有"] = { chance = 0.35, minStock = 3, maxStock = 7 },
+        ["史诗"] = { chance = 0.22, minStock = 1, maxStock = 4 },
+    },
 }
 
 -- 工具商店配置（预留）
@@ -108,6 +123,7 @@ local REFRESH_CONFIG = {
 local state_ = {
     seed = {
         stock = {},         -- { [seedName] = quantity }
+        items = {},         -- 当前轮上架种子名数组
         timer = 0,          -- 倒计时剩余秒数
         lastRefreshRealTime = 0,
     },
@@ -132,7 +148,11 @@ local gameRef_ = {
 }
 
 -- UI 引用
-local shopContentMinHeight_ = 400  -- 会在 Open 时根据屏幕高度重新计算
+local SHOP_MODAL_CHROME_HEIGHT = 130
+local SHOP_BODY_MIN_HEIGHT = 280
+local SHOP_LIST_HEADER_HEIGHT = 46
+local SHOP_LIST_MIN_HEIGHT = 180
+local shopContentMinHeight_ = 400  -- 会在 Open 时根据屏幕高度重新计算，作为商店内容区固定高度
 local shopModal_ = nil
 local seedListPanel_ = nil
 local toolListPanel_ = nil
@@ -180,31 +200,47 @@ local function FindPlantIndex(name)
     return nil
 end
 
---- 获取种子在商店配置中的信息
-local function GetSeedShopInfo(seedName)
+local function GetSeedNamesByRarity(rarity)
+    local result = {}
     for _, cfg in ipairs(SEED_SHOP_CONFIG) do
-        if cfg.name == seedName then
-            return cfg
+        if cfg.rarity == rarity then
+            table.insert(result, cfg.name)
         end
     end
-    return nil
+    return result
+end
+
+local function AddSeedShopItem(items, seedName, stock)
+    state_.seed.stock[seedName] = stock
+    table.insert(items, seedName)
 end
 
 --- 执行一次种子商店刷新
---- 规则：刷新后库存不叠加，但未购买的库存也不归零
+--- 规则：胡萝卜、玉米必定上架；其他普通到史诗作物按概率独立随机上架
 local function RefreshSeedStock()
-    for _, cfg in ipairs(SEED_SHOP_CONFIG) do
-        if cfg.showInShop and cfg.refreshStock > 0 then
-            local currentStock = state_.seed.stock[cfg.name] or 0
-            -- 设置为刷新数量（不叠加，但不归零已有的）
-            -- 即: new_stock = max(currentStock, refreshStock)
-            local newStock = math.max(currentStock, cfg.refreshStock)
-            state_.seed.stock[cfg.name] = newStock
+    state_.seed.stock = {}
+    local items = {}
+
+    for _, seedName in ipairs(SEED_SHOP_REFRESH_RULES.guaranteed.names) do
+        AddSeedShopItem(items, seedName, SEED_SHOP_REFRESH_RULES.guaranteed.stock)
+    end
+
+    for _, rarity in ipairs({ "普通", "罕见", "稀有", "史诗" }) do
+        local rule = SEED_SHOP_REFRESH_RULES.random[rarity]
+        if rule ~= nil then
+            local pool = rule.names or GetSeedNamesByRarity(rarity)
+            for _, seedName in ipairs(pool) do
+                if state_.seed.stock[seedName] == nil and math.random() <= rule.chance then
+                    AddSeedShopItem(items, seedName, math.random(rule.minStock, rule.maxStock))
+                end
+            end
         end
     end
+
+    state_.seed.items = items
     state_.seed.timer = REFRESH_CONFIG.seed.interval
     state_.seed.lastRefreshRealTime = os.time()
-    print("[Shop] 种子商店已刷新")
+    print(string.format("[Shop] 种子商店已刷新：必出%d种，随机上架%d种，总库存条目%d；未上架作物显示售罄", #SEED_SHOP_REFRESH_RULES.guaranteed.names, math.max(0, #items - #SEED_SHOP_REFRESH_RULES.guaranteed.names), #items))
 end
 
 --- 执行一次工具商店刷新
@@ -253,31 +289,29 @@ local function FormatTimer(seconds)
     return string.format("%d:%02d", m, s)
 end
 
---- 获取已解锁的种子列表（按稀有度排序）
-local function GetUnlockedSeeds()
-    local level = gameRef_.gardenLevel and gameRef_.gardenLevel() or 1
+--- 获取当前种子商店列表（始终显示普通到传奇全部作物）
+local function GetCurrentSeedShopItems()
     local result = {}
 
     for _, cfg in ipairs(SEED_SHOP_CONFIG) do
-        if cfg.unlockLevel <= level then
-            local plantIdx = FindPlantIndex(cfg.name)
-            if plantIdx ~= nil then
-                local plant = gameRef_.PLANTS[plantIdx]
-                table.insert(result, {
-                    name = cfg.name,
-                    plantIndex = plantIdx,
-                    plant = plant,
-                    shopCfg = cfg,
-                    stock = state_.seed.stock[cfg.name] or 0,
-                    rarity = plant.rarity,
-                    rarityOrder = RARITY_ORDER[plant.rarity] or 0,
-                    price = plant.seedPrice,
-                })
-            end
+        local seedName = cfg.name
+        local plantIdx = FindPlantIndex(seedName)
+        if plantIdx ~= nil then
+            local plant = gameRef_.PLANTS[plantIdx]
+            table.insert(result, {
+                name = seedName,
+                plantIndex = plantIdx,
+                plant = plant,
+                shopCfg = cfg,
+                stock = state_.seed.stock[seedName] or 0,
+                rarity = plant.rarity,
+                rarityOrder = RARITY_ORDER[plant.rarity] or 0,
+                price = plant.seedPrice,
+                nameColor = RARITY_NAME_COLORS[plant.rarity] or {62, 48, 32, 255},
+            })
         end
     end
 
-    -- 按稀有度从低到高排序
     table.sort(result, function(a, b)
         if a.rarityOrder ~= b.rarityOrder then
             return a.rarityOrder < b.rarityOrder
@@ -292,7 +326,7 @@ end
 local function BuySeed(seedName)
     local stock = state_.seed.stock[seedName] or 0
     if stock <= 0 then
-        if gameRef_.showToast then gameRef_.showToast("该种子暂无库存") end
+        if gameRef_.showToast then gameRef_.showToast("该种子已售罄") end
         return false
     end
 
@@ -439,6 +473,7 @@ local function ShowBuyConfirm(seedData)
             },
         },
     })
+    ModalAnim.Apply(buyConfirmModal_)
     buyConfirmModal_:Open()
 end
 
@@ -459,116 +494,110 @@ local function ShowSeedDetail(seedData)
             UI.Label { text = "成熟时长: " .. plant.growTime .. " 秒", fontSize = 13, fontColor = {80, 60, 40, 255} },
             UI.Label { text = "基础售价: " .. plant.fruitPrice .. " 金币", fontSize = 13, fontColor = {80, 60, 40, 255} },
             UI.Label { text = "种子价格: " .. plant.seedPrice .. " 金币", fontSize = 13, fontColor = {80, 60, 40, 255} },
-            UI.Label { text = string.format("变异概率: 颜色%.0f%% 特殊%.0f%%", plant.colorProb * 100, plant.specialProb * 100), fontSize = 12, fontColor = {120, 100, 80, 200} },
+            UI.Label { text = "变异规则: 每株必定出现 1 种变异", fontSize = 12, fontColor = {120, 100, 80, 200} },
         },
     })
+    ModalAnim.Apply(detailModal)
     detailModal:Open()
 end
 
-local function BuildSeedItemRow(seedData, itemAlpha)
+--- 品质底色（动森风柔和色调）
+local RARITY_BG_COLORS = {
+    ["普通"] = {242, 238, 225, 255},
+    ["罕见"] = {218, 242, 220, 255},
+    ["稀有"] = {215, 232, 252, 255},
+    ["史诗"] = {235, 218, 252, 255},
+    ["传奇"] = {255, 235, 200, 255},
+}
+
+local function BuildSeedGridItem(seedData, itemAlpha)
     itemAlpha = itemAlpha or 1.0
     local hasStock = seedData.stock > 0
-    local canAppear = seedData.shopCfg.showInShop
-    local rarityColor = RARITY_COLORS[seedData.rarity] or {200, 200, 200, 255}
-    local plantColor = seedData.plant.color
+    local bgColor = RARITY_BG_COLORS[seedData.rarity] or {240, 238, 230, 255}
     local a = itemAlpha
 
-    -- 种子图标色块（取作物主色）
-    local iconBg = ApplyAlpha({
-        math.floor(plantColor.r * 255),
-        math.floor(plantColor.g * 255),
-        math.floor(plantColor.b * 255), 255
-    }, a)
+    -- 售罄时略降低背景饱和度
+    if not hasStock then
+        bgColor = {
+            math.floor(bgColor[1] * 0.88 + 235 * 0.12),
+            math.floor(bgColor[2] * 0.88 + 232 * 0.12),
+            math.floor(bgColor[3] * 0.88 + 228 * 0.12),
+            210
+        }
+    end
 
     return UI.Panel {
-        flexDirection = "row",
+        width = "30%",
         alignItems = "center",
-        paddingTop = 12,
-        paddingBottom = 12,
-        paddingLeft = 12,
-        paddingRight = 12,
-        marginBottom = 6,
-        backgroundColor = ApplyAlpha(hasStock and {255, 253, 245, 255} or {240, 238, 230, 200}, a),
-        borderRadius = 12,
-        borderWidth = 1,
-        borderColor = ApplyAlpha(hasStock and {195, 180, 150, 150} or {180, 175, 165, 80}, a),
+        paddingTop = 10,
+        paddingBottom = 10,
+        paddingLeft = 3,
+        paddingRight = 3,
+        marginBottom = 10,
+        backgroundColor = ApplyAlpha(bgColor, a),
+        borderRadius = 14,
         onClick = function()
             if hasStock then
                 ShowBuyConfirm(seedData)
             else
-                if gameRef_.showToast then gameRef_.showToast("库存不足，等待刷新") end
+                if gameRef_.showToast then gameRef_.showToast("已售罄，等待刷新") end
             end
         end,
         children = {
-            -- 左：种子3D图标（无圆角裁剪）
+            -- 种子图标
             UI.Panel {
-                width = 48, height = 48,
-                marginRight = 12,
+                width = 46, height = 46,
+                marginBottom = 5,
                 children = {
                     UI.Panel {
-                        width = 48, height = 48,
+                        width = 46, height = 46,
                         backgroundImage = string.format(SEED_ICON_PATH, seedData.plantIndex),
                         backgroundSize = "contain",
                     },
                 },
             },
-            -- 中：名称 + 库存 + 价格
-            UI.Panel {
-                flexGrow = 1, flexShrink = 1, gap = 3,
+            -- 名称（带品质色调倾向）
+            UI.Label {
+                text = seedData.name .. "种子",
+                fontSize = 13, fontWeight = "bold",
+                fontColor = ApplyAlpha(seedData.nameColor, a),
+                marginBottom = 3,
+            },
+            -- 库存数量
+            UI.Label {
+                text = "库存 " .. seedData.stock,
+                fontSize = 11,
+                fontColor = ApplyAlpha(hasStock and {95, 130, 100, 255} or {160, 140, 115, 255}, a),
+                marginBottom = 6,
+            },
+            -- 按钮：有库存显示金币+价格，售罄仅显示文本
+            hasStock and UI.Panel {
+                width = "94%", height = 30,
+                flexDirection = "row",
+                justifyContent = "center", alignItems = "center",
+                gap = 4,
+                backgroundColor = ApplyAlpha({218, 208, 182, 255}, a),
+                borderRadius = 10,
                 children = {
-                    UI.Label {
-                        text = seedData.name .. "种子",
-                        fontSize = 15, fontWeight = "bold",
-                        fontColor = ApplyAlpha({70, 50, 35, 255}, a),
-                    },
                     UI.Panel {
-                        flexDirection = "row", alignItems = "center", gap = 12,
+                        width = 14, height = 14,
+                        justifyContent = "center", alignItems = "center",
                         children = {
-                            UI.Label {
-                                text = hasStock and ("x" .. seedData.stock .. " 库存") or "无库存",
-                                fontSize = 13,
-                                fontColor = ApplyAlpha(hasStock and {90, 150, 100, 255} or {180, 100, 80, 255}, a),
-                            },
-                            -- 金币图标 + 价格
-                            UI.Panel {
-                                flexDirection = "row", alignItems = "center", gap = 3,
-                                children = {
-                                    UI.Panel {
-                                        width = 14, height = 14,
-                                        justifyContent = "center", alignItems = "center",
-                                        children = {
-                                            UI.Panel { width = 14, height = 14, borderRadius = 7, backgroundColor = ApplyAlpha({255, 205, 60, 255}, a) },
-                                            UI.Label { position = "absolute", text = "$", fontSize = 8, fontWeight = "bold", fontColor = ApplyAlpha({180, 130, 20, 255}, a) },
-                                        },
-                                    },
-                                    UI.Label {
-                                        text = tostring(seedData.price),
-                                        fontSize = 13, fontWeight = "bold",
-                                        fontColor = ApplyAlpha({80, 160, 60, 255}, a),
-                                    },
-                                },
-                            },
-                            -- 限量标识（稀有度≥史诗）
-                            (seedData.rarityOrder >= 4 and not hasStock) and UI.Label {
-                                text = "限量!",
-                                fontSize = 10, fontWeight = "bold",
-                                fontColor = ApplyAlpha({220, 60, 50, 255}, a),
-                            } or nil,
+                            UI.Panel { width = 14, height = 14, borderRadius = 7, backgroundColor = ApplyAlpha({255, 220, 80, 255}, a) },
+                            UI.Label { position = "absolute", text = "$", fontSize = 8, fontWeight = "bold", fontColor = ApplyAlpha({140, 100, 10, 255}, a) },
                         },
                     },
+                    UI.Label {
+                        text = tostring(seedData.price),
+                        fontSize = 13, fontWeight = "bold",
+                        fontColor = ApplyAlpha({55, 42, 20, 255}, a),
+                    },
                 },
-            },
-            -- 右：稀有度标签（可点击查看详情）
-            UI.Button {
-                text = seedData.rarity,
-                height = 30, fontSize = 12, fontWeight = "bold",
-                paddingLeft = 10, paddingRight = 10,
-                backgroundColor = ApplyAlpha(rarityColor, a),
-                fontColor = ApplyAlpha({255, 255, 255, 255}, a),
-                borderRadius = 8,
-                onClick = function()
-                    ShowSeedDetail(seedData)
-                end,
+            } or UI.Label {
+                text = "售罄",
+                fontSize = 12,
+                fontColor = ApplyAlpha({160, 140, 115, 255}, a),
+                marginTop = 2,
             },
         },
     }
@@ -662,10 +691,10 @@ end
 
 --- 构建种子商店内容
 local function BuildSeedShopContent()
-    local seeds = GetUnlockedSeeds()
-    local items = {}
+    local seeds = GetCurrentSeedShopItems()
+    local listItems = {}
 
-    -- 倒计时 + 黄色刷新按钮
+    -- 倒计时 + 黄色刷新按钮固定在列表上方，不参与滚动，避免撑高商店底图
     local timerSec = math.max(0, math.floor(state_.seed.timer))
     local m = math.floor(timerSec / 60)
     local s = timerSec % 60
@@ -692,30 +721,26 @@ local function BuildSeedShopContent()
         end,
     }
 
-    table.insert(items, UI.Panel {
+    local header = UI.Panel {
+        height = SHOP_LIST_HEADER_HEIGHT,
         flexDirection = "row",
         justifyContent = "space-between",
         alignItems = "center",
-        marginBottom = 8,
-        paddingLeft = 4,
-        paddingRight = 4,
+        paddingLeft = 12,
+        paddingRight = 12,
         children = {
             seedTimerLabel_,
             refreshBtnSeed_,
         },
-    })
+    }
 
-    -- 种子列表（逐条渐显）
-    staggerTotalCount_ = #seeds
+    -- 种子网格
     for i, seedData in ipairs(seeds) do
-        local alpha = GetItemAlpha(i)
-        if alpha > 0 then
-            table.insert(items, BuildSeedItemRow(seedData, alpha))
-        end
+        table.insert(listItems, BuildSeedGridItem(seedData, 1.0))
     end
 
     if #seeds == 0 then
-        table.insert(items, UI.Panel {
+        table.insert(listItems, UI.Panel {
             height = 80,
             justifyContent = "center",
             alignItems = "center",
@@ -729,22 +754,42 @@ local function BuildSeedShopContent()
         })
     end
 
-    return UI.ScrollView {
-        flexGrow = 1,
-        flexBasis = 0,
-        minHeight = shopContentMinHeight_,
+    local listHeight = math.max(SHOP_LIST_MIN_HEIGHT, shopContentMinHeight_ - SHOP_LIST_HEADER_HEIGHT)
+
+    local gridContainer = UI.Panel {
+        width = "100%",
+        flexDirection = "row",
+        flexWrap = "wrap",
+        justifyContent = "flex-start",
+        gap = 4,
+        paddingLeft = 4,
+        paddingRight = 4,
+        children = listItems,
+    }
+
+    seedListPanel_ = UI.ScrollView {
+        height = listHeight,
         scrollY = true,
-        padding = 8,
-        children = items,
+        showScrollbar = false,
+        bounces = false,
+        children = { gridContainer },
+    }
+
+    return UI.Panel {
+        height = shopContentMinHeight_,
+        children = {
+            header,
+            seedListPanel_,
+        },
     }
 end
 
 --- 构建工具商店内容
 local function BuildToolShopContent()
-    local items = {}
+    local listItems = {}
     local level = gameRef_.gardenLevel and gameRef_.gardenLevel() or 1
 
-    -- 倒计时 + 刷新按钮行
+    -- 倒计时 + 刷新按钮行固定在列表上方，不参与滚动，避免撑高商店底图
     local refreshText = state_.adTickets > 0
         and ("刷新 (券x" .. state_.adTickets .. ")")
         or "刷新 (看广告)"
@@ -767,37 +812,31 @@ local function BuildToolShopContent()
         end,
     }
 
-    table.insert(items, UI.Panel {
+    local header = UI.Panel {
+        height = SHOP_LIST_HEADER_HEIGHT,
         flexDirection = "row",
         justifyContent = "space-between",
         alignItems = "center",
-        marginBottom = 8,
-        paddingLeft = 4,
-        paddingRight = 4,
+        paddingLeft = 12,
+        paddingRight = 12,
         children = {
             toolTimerLabel_,
             refreshBtnTool_,
         },
-    })
+    }
 
-    -- 工具列表（逐条渐显）
+    -- 工具列表
     local hasAny = false
-    local toolIndex = 0
     for _, cfg in ipairs(TOOL_SHOP_CONFIG) do
         if cfg.unlockLevel <= level then
             hasAny = true
-            toolIndex = toolIndex + 1
-            local alpha = GetItemAlpha(toolIndex)
-            if alpha > 0 then
-                local row = BuildToolItemRow(cfg)
-                if row then table.insert(items, row) end
-            end
+            local row = BuildToolItemRow(cfg)
+            if row then table.insert(listItems, row) end
         end
     end
-    staggerTotalCount_ = toolIndex
 
     if not hasAny then
-        table.insert(items, UI.Panel {
+        table.insert(listItems, UI.Panel {
             height = 80,
             justifyContent = "center",
             alignItems = "center",
@@ -811,13 +850,22 @@ local function BuildToolShopContent()
         })
     end
 
-    return UI.ScrollView {
-        flexGrow = 1,
-        flexBasis = 0,
-        minHeight = shopContentMinHeight_,
+    local listHeight = math.max(SHOP_LIST_MIN_HEIGHT, shopContentMinHeight_ - SHOP_LIST_HEADER_HEIGHT)
+    toolListPanel_ = UI.ScrollView {
+        height = listHeight,
         scrollY = true,
+        showScrollbar = true,
+        bounces = false,
         padding = 8,
-        children = items,
+        children = listItems,
+    }
+
+    return UI.Panel {
+        height = shopContentMinHeight_,
+        children = {
+            header,
+            toolListPanel_,
+        },
     }
 end
 
@@ -880,9 +928,10 @@ end
 function Shop.Open()
     state_.isOpen = true
 
-    -- 计算目标高度（屏幕70%）用于 ScrollView minHeight
+    -- 计算固定商店高度：弹窗高度固定在屏幕 88%，列表超出时只在列表区域内滚动
     local screenH = graphics:GetHeight() / graphics:GetDPR()
-    shopContentMinHeight_ = math.floor(screenH * 0.70) - 120  -- 减去标题+tabs+padding
+    local modalFixedHeight = math.max(SHOP_BODY_MIN_HEIGHT + SHOP_MODAL_CHROME_HEIGHT, math.floor(screenH * 0.88))
+    shopContentMinHeight_ = modalFixedHeight - SHOP_MODAL_CHROME_HEIGHT
 
     -- 重置逐条渐显动画
     staggerTimer_ = 0
@@ -896,6 +945,7 @@ function Shop.Open()
         showCloseButton = true,
         contentPadding = {8, 12, 8, 12},
         contentGap = 6,
+        headerContentGap = 8,
         onClose = function()
             state_.isOpen = false
             shopModal_ = nil
@@ -903,150 +953,8 @@ function Shop.Open()
     }
 
     Shop.RebuildShopContent()
+    ModalAnim.Apply(shopModal_, { fixedHeight = modalFixedHeight })
     shopModal_:Open()
-
-    -- 减慢动画速度（默认 speed=8 太快，改为 3）
-    local origUpdate = shopModal_.Update
-    shopModal_.Update = function(self, dt)
-        local speed = 3
-        if self.animProgress_ < self.targetAnimProgress_ then
-            self.animProgress_ = math.min(self.targetAnimProgress_, self.animProgress_ + dt * speed)
-        elseif self.animProgress_ > self.targetAnimProgress_ then
-            self.animProgress_ = math.max(self.targetAnimProgress_, self.animProgress_ - dt * speed)
-        end
-        -- 仍需更新子组件树
-        local function updateTree(widget)
-            if widget.Update then widget:Update(dt) end
-            for _, child in ipairs(widget.children or {}) do updateTree(child) end
-        end
-        if #self.contentContainer_.children > 0 then updateTree(self.contentContainer_) end
-        if self.footerWidget_ then updateTree(self.footerWidget_) end
-    end
-
-    -- 重写渲染：去掉缩放动画，只保留透明度 0→1 渐变
-    shopModal_.RenderModalContent = function(self, nvg)
-        local UI_mod = require("urhox-libs/UI/Core/UI")
-        local Theme = require("urhox-libs/UI/Core/Theme")
-        local Widget = require("urhox-libs/UI/Core/Widget")
-        local screenWidth = UI_mod.GetWidth() or 800
-        local screenHeight = UI_mod.GetHeight() or 600
-        local borderRadius = self.borderRadius_
-        local title = self.title_
-        local showCloseButton = self.showCloseButton_
-
-        local headerHeight = 56
-        local cp = self.props.contentPadding or 16
-        local cpTop, cpRight, cpBottom, cpLeft
-        if type(cp) == "table" then
-            cpTop, cpRight, cpBottom, cpLeft = cp[1], cp[2], cp[3], cp[4]
-        else
-            cpTop, cpRight, cpBottom, cpLeft = cp, cp, cp, cp
-        end
-
-        -- 90% 宽, 90% 高（会被 minHeight 撑到约 70%）
-        local modalWidth = screenWidth * 0.90
-        local modalMaxHeight = screenHeight * 0.90
-
-        local footerHeight = 64
-        if self.footerWidget_ then
-            local fp = self.props.footerPadding
-            local fpTop, fpRight, fpBottom, fpLeft = fp[1], fp[2], fp[3], fp[4]
-            local footerContentWidth = modalWidth - fpLeft - fpRight
-            YGNodeCalculateLayout(self.footerWidget_.node, footerContentWidth, YGUndefined, YGDirectionLTR)
-            local measuredFooter = YGNodeLayoutGetHeight(self.footerWidget_.node)
-            footerHeight = math.max(64, measuredFooter + fpTop + fpBottom)
-        end
-
-        -- 关键：alpha 控制遮罩/背景渐显，内容始终满透明度，无缩放
-        local alpha = self.animProgress_
-
-        -- 遮罩（平方缓入，前半段几乎透明，后半段才变暗）
-        local overlayAlpha = math.floor(alpha * alpha * 160)
-        nvgBeginPath(nvg)
-        nvgRect(nvg, 0, 0, screenWidth, screenHeight)
-        nvgFillColor(nvg, nvgRGBA(0, 0, 0, overlayAlpha))
-        nvgFill(nvg)
-
-        local contentAreaWidth = modalWidth - cpLeft - cpRight
-        local modalHeight = self:CalculateContentHeight(contentAreaWidth) + cpTop + cpBottom + (title and headerHeight or 0) + (self.footerWidget_ and footerHeight or 0)
-        modalHeight = math.min(modalHeight, modalMaxHeight)
-
-        local modalX = (screenWidth - modalWidth) / 2
-        local modalY = (screenHeight - modalHeight) / 2
-
-        -- 无缩放变换
-        nvgSave(nvg)
-
-        -- 阴影（带 alpha）
-        local boxShadow = self.props.boxShadow
-        if boxShadow == false then
-        elseif boxShadow then
-            nvgSave(nvg)
-            nvgGlobalAlpha(nvg, alpha)
-            local geom = self:GetShapeGeometry({ x = modalX, y = modalY, w = modalWidth, h = modalHeight }, nil, borderRadius)
-            self:RenderBoxShadows(nvg, geom, boxShadow)
-            nvgRestore(nvg)
-        else
-            nvgBeginPath(nvg)
-            self:CreateShapePath(nvg, self:GetShapeGeometry(
-                { x = modalX - 4, y = modalY - 2, w = modalWidth + 8, h = modalHeight + 12 },
-                nil,
-                Widget.OffsetRadius(borderRadius, 4)
-            ))
-            nvgFillColor(nvg, nvgRGBA(0, 0, 0, math.floor(60 * alpha)))
-            nvgFill(nvg)
-        end
-
-        -- 背景（带 alpha 渐显）
-        local bgColor = Theme.Color("surface")
-        self:CreateShapePath(nvg, self:GetShapeGeometry({ x = modalX, y = modalY, w = modalWidth, h = modalHeight }, nil, borderRadius))
-        nvgFillColor(nvg, nvgRGBA(bgColor[1], bgColor[2], bgColor[3], math.floor(255 * alpha)))
-        nvgFill(nvg)
-
-        -- 边框（带 alpha）
-        local borderColor = self.props.borderColor or Theme.Color("border")
-        local borderAlpha = self.props.borderColor and (borderColor[4] or 255) or 100
-        self:CreateShapePath(nvg, self:GetShapeGeometry({ x = modalX, y = modalY, w = modalWidth, h = modalHeight }, nil, borderRadius))
-        nvgStrokeColor(nvg, nvgRGBA(borderColor[1], borderColor[2], borderColor[3], math.floor(borderAlpha * alpha)))
-        nvgStrokeWidth(nvg, self.props.borderWidth or 1)
-        nvgStroke(nvg)
-
-        self.modalLayout_ = { x = modalX, y = modalY, w = modalWidth, h = modalHeight }
-
-        local contentY = modalY
-        if title then
-            contentY = self:RenderHeader(nvg, modalX, modalY, modalWidth, title, showCloseButton, alpha)
-        elseif showCloseButton then
-            self:RenderCloseButton(nvg, modalX + modalWidth - 44, modalY + 8, alpha)
-            contentY = modalY + 16
-        end
-
-        -- 内容区域裁剪和渲染（等背景渐显完成后再显示内容）
-        local footerHeightActual = self.footerWidget_ and footerHeight or 0
-        local clipY = contentY
-        local clipHeight = math.max(0, modalHeight - (contentY - modalY) - footerHeightActual)
-
-        if #self.contentContainer_.children > 0 and alpha >= 0.8 then
-            YGNodeCalculateLayout(self.contentContainer_.node, contentAreaWidth, clipHeight, YGDirectionLTR)
-
-            self.contentContainer_.renderOffsetX_ = modalX + cpLeft
-            self.contentContainer_.renderOffsetY_ = contentY
-            self.contentContainer_.renderWidth_ = contentAreaWidth
-            self.contentContainer_.renderHeight_ = clipHeight
-
-            nvgSave(nvg)
-            nvgIntersectScissor(nvg, modalX, clipY, modalWidth, clipHeight)
-            UI_mod.RenderWidgetSubtree(self.contentContainer_, nvg)
-            nvgRestore(nvg)
-        end
-
-        -- Footer
-        if self.footerWidget_ then
-            self:RenderFooter(nvg, modalX, modalY + modalHeight - footerHeight, modalWidth, footerHeight, alpha)
-        end
-
-        nvgRestore(nvg)
-    end
 
     print("[Shop] 商店已打开")
 end
@@ -1063,11 +971,15 @@ end
 --- 每帧更新（由主循环调用）
 ---@param dt number 帧间隔
 function Shop.Update(dt)
+    local seedRefreshed = false
+    local toolRefreshed = false
+
     -- 更新种子商店倒计时
     if state_.seed.timer > 0 then
         state_.seed.timer = state_.seed.timer - dt
         if state_.seed.timer <= 0 then
             RefreshSeedStock()
+            seedRefreshed = true
         end
     end
 
@@ -1076,6 +988,15 @@ function Shop.Update(dt)
         state_.tool.timer = state_.tool.timer - dt
         if state_.tool.timer <= 0 then
             RefreshToolStock()
+            toolRefreshed = true
+        end
+    end
+
+    if state_.isOpen and shopModal_ ~= nil then
+        if (state_.activeTab == "seed" and seedRefreshed) or (state_.activeTab == "tool" and toolRefreshed) then
+            staggerTimer_ = 0
+            staggerDone_ = false
+            Shop.RebuildShopContent()
         end
     end
 
@@ -1097,20 +1018,7 @@ function Shop.Update(dt)
             toolTimerLabel_:SetText("下次刷新: " .. FormatTimer(state_.tool.timer))
         end
 
-        -- 逐条渐显动画（等背景显示完毕后再开始）
-        if not staggerDone_ then
-            -- 等待弹窗背景基本就绪（animProgress >= 0.8）才开始计时
-            if shopModal_.animProgress_ >= 0.8 then
-                staggerTimer_ = staggerTimer_ + dt
-                -- 检查是否所有条目都已完全显示（无条目时立即完成）
-                if staggerTotalCount_ <= 0 then
-                    staggerDone_ = true
-                elseif staggerTimer_ >= (staggerTotalCount_ - 1) * STAGGER_DELAY + STAGGER_FADE then
-                    staggerDone_ = true
-                end
-            end
-            Shop.RebuildShopContent()
-        end
+
     end
 end
 
@@ -1159,6 +1067,7 @@ function Shop.GetSaveData()
     return {
         seed = {
             stock = state_.seed.stock,
+            items = state_.seed.items,
             timer = state_.seed.timer,
             lastRefreshRealTime = state_.seed.lastRefreshRealTime,
         },
@@ -1176,8 +1085,12 @@ function Shop.LoadSaveData(data)
     if data == nil then return end
     if data.seed then
         state_.seed.stock = data.seed.stock or {}
+        state_.seed.items = data.seed.items or {}
         state_.seed.timer = data.seed.timer or 0
         state_.seed.lastRefreshRealTime = data.seed.lastRefreshRealTime or 0
+        if #state_.seed.items == 0 then
+            RefreshSeedStock()
+        end
     end
     if data.tool then
         state_.tool.stock = data.tool.stock or {}

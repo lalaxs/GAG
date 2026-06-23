@@ -47,6 +47,14 @@ local function GetPlotModifier(plotIndex)
     return modifier
 end
 
+--- 获取天赋系统加成（如果 TalentSystem 已注入）
+local function GetTalentBonus(key)
+    if deps_.TalentSystem and deps_.TalentSystem.GetBonus then
+        return deps_.TalentSystem.GetBonus(key)
+    end
+    return 0
+end
+
 local function GetWeightBonusForPlot(plotIndex)
     return GetPlotModifier(plotIndex).weightBonus or 1.0
 end
@@ -54,7 +62,7 @@ end
 local function RollMutation(plant, seedBuff, plotIndex)
     seedBuff = seedBuff or 0
     local modifier = GetPlotModifier(plotIndex)
-    local mutationBonus = modifier.mutationBonus or 0
+    local mutationBonus = (modifier.mutationBonus or 0) + GetTalentBonus("mutationBonus")
     local totalBuff = seedBuff + mutationBonus
     local mutation = {
         sizeScale = 1.0,
@@ -66,10 +74,18 @@ local function RollMutation(plant, seedBuff, plotIndex)
         seedBuff = seedBuff,
     }
 
-    if math.random() < plant.volumeProb + totalBuff then
+    -- 加法累计的额外倍率（基础为 1.0，各变异贡献额外加成）
+    local bonusPrice = 0
+    local bonusTime = 0
+
+    -- 临时测试配置：强制每株作物只出现 1 个特殊变异，禁用体型/颜色变异。
+    -- 恢复正式概率时，将这里改回按 volume/color/special 权重抽取即可。
+    local mutationType = "special"
+
+    if mutationType == "volume" then
         mutation.sizeScale = 1.5 + math.random() * 1.5
-        mutation.priceMultiplier = mutation.priceMultiplier * mutation.sizeScale * 2.0
-        mutation.timeMultiplier = mutation.timeMultiplier * 1.15
+        bonusPrice = bonusPrice + mutation.sizeScale * 2.0
+        bonusTime = bonusTime + 0.15
         if mutation.sizeScale < 2.0 then
             mutation.sizePrefix = RandItem({ "丰硕的", "敦实的", "饱满的" })
         elseif mutation.sizeScale < 2.5 then
@@ -77,19 +93,20 @@ local function RollMutation(plant, seedBuff, plotIndex)
         else
             mutation.sizePrefix = RandItem({ "泰坦", "巨神", "穹顶" })
         end
-    end
-
-    if math.random() < plant.colorProb + totalBuff then
+    elseif mutationType == "color" then
         mutation.colorMutation = RandItem(cfg_.COLOR_MUTATIONS)
+        bonusPrice = bonusPrice + (mutation.colorMutation.multiplier or 1.5)
+        bonusTime = bonusTime + ((mutation.colorMutation.timeMultiplier or 1.05) - 1.0)
+    else
+        local special = RandItem(cfg_.SPECIAL_MUTATIONS)
+        table.insert(mutation.specials, special)
+        bonusPrice = bonusPrice + special.multiplier
+        bonusTime = bonusTime + (special.timeMultiplier - 1.0)
     end
 
-    for _, special in ipairs(cfg_.SPECIAL_MUTATIONS) do
-        if math.random() < plant.specialProb + totalBuff then
-            table.insert(mutation.specials, special)
-            mutation.priceMultiplier = mutation.priceMultiplier * special.multiplier
-            mutation.timeMultiplier = mutation.timeMultiplier * special.timeMultiplier
-        end
-    end
+    -- 最终倍率 = 1 + 各项加成之和
+    mutation.priceMultiplier = 1.0 + bonusPrice
+    mutation.timeMultiplier = 1.0 + bonusTime
 
     return mutation
 end
@@ -195,9 +212,189 @@ local function UpdatePlantEffects(plantData, dt)
     end
 
     for i, effect in ipairs(plantData.effectNodes) do
-        effect:Rotate(Quaternion((25 + i * 18) * dt, Vector3.UP))
-        local bob = math.sin(gameTime_ * (1.4 + i * 0.17)) * 0.035
-        effect.position = Vector3(0, bob, 0)
+        local node = effect.node or effect
+        local interval = effect.updateInterval or 0.045
+        effect.updateTimer = (effect.updateTimer or 0) + dt
+        if effect.updateTimer >= interval then
+            local step = effect.updateTimer
+            effect.updateTimer = effect.updateTimer - interval
+            local particles = effect.particles
+            if particles ~= nil then
+                node.position = Vector3(0, 0, 0)
+                for _, particle in ipairs(particles) do
+                    local t = gameTime_ + particle.phase
+                    if particle.kind == "billboardSmoke" or particle.kind == "billboardSpark" then
+                        local billboard = particle.billboardSet:GetBillboard(particle.index)
+                        local progress = (t * particle.riseSpeed) % 1.0
+                        local sway = math.sin(t * particle.swaySpeed) * particle.swayAmp
+                        local drift = particle.drift * progress
+                        local sizePulse = 1.0 + math.sin(t * particle.pulseSpeed) * particle.pulseAmp
+                        local alphaScale = 1.0
+                        local offset = Vector3(sway, progress * particle.riseHeight, -sway * 0.5)
+                        local mode = particle.mode or "rise"
+                        if particle.kind == "billboardSmoke" then
+                            sizePulse = (0.65 + progress * 0.75) * sizePulse
+                            alphaScale = math.max(0.0, 1.0 - progress * 0.72)
+                        elseif mode == "fall" then
+                            offset = Vector3(sway * 0.35, (1.0 - progress) * particle.riseHeight * 0.35, -sway * 0.2)
+                            alphaScale = 0.38 + math.sin(progress * math.pi) * 0.52
+                            sizePulse = sizePulse * (0.86 + progress * 0.2)
+                        elseif mode == "twinkle" then
+                            local flash = math.max(0.0, math.sin(t * particle.pulseSpeed * 3.2))
+                            offset = Vector3(sway * 0.18, flash * 0.045, -sway * 0.12)
+                            alphaScale = 0.18 + flash * 0.82
+                            sizePulse = 0.72 + flash * 0.72
+                        elseif mode == "cloudDrift" then
+                            local slowT = t * 0.5
+                            local driftX = math.sin(slowT * particle.swaySpeed + particle.phase) * particle.swayAmp * 2.8
+                            local driftZ = math.cos(slowT * (particle.swaySpeed * 0.82) + particle.phase * 0.7) * particle.swayAmp * 2.1
+                            local floatY = math.sin(slowT * particle.pulseSpeed * 0.9 + particle.phase) * 0.055
+                            local breathe = 0.5 + 0.5 * math.sin(slowT * particle.pulseSpeed * 1.25 + particle.phase * 0.6)
+                            offset = Vector3(driftX, floatY, driftZ)
+                            alphaScale = 0.34 + breathe * 0.42
+                            sizePulse = 0.72 + breathe * 0.56
+                        elseif mode == "steam" then
+                            local fade = math.max(0.0, 1.0 - progress)
+                            local curl = math.sin(t * particle.swaySpeed * 1.7 + progress * 4.0) * particle.swayAmp * 1.4
+                            offset = Vector3(sway * 0.42 + curl, progress * particle.riseHeight * 1.22, -sway * 0.24 + curl * 0.35)
+                            alphaScale = fade * fade
+                            sizePulse = 0.16 + fade * 0.92
+                        elseif mode == "suck" then
+                            local inward = 1.0 - progress * 0.72
+                            billboard.position = Vector3(particle.basePosition.x * inward, particle.basePosition.y + sway * 0.18, particle.basePosition.z * inward)
+                            alphaScale = math.max(0.18, 0.78 - progress * 0.45)
+                            sizePulse = sizePulse * (1.0 - progress * 0.35)
+                        elseif mode == "orbit" then
+                            local angle = particle.angle + gameTime_ * 0.75
+                            local radius = particle.orbitRadius * (0.9 + math.sin(t * 1.2) * 0.06)
+                            local jump = math.sin(t * particle.swaySpeed * 1.8) * particle.swayAmp * 2.4
+                            billboard.position = Vector3(math.cos(angle) * radius, particle.basePosition.y + jump, math.sin(angle) * radius)
+                            alphaScale = 0.42 + math.max(0.0, math.sin(t * particle.pulseSpeed)) * 0.46
+                            sizePulse = sizePulse * (0.9 + math.max(0.0, math.sin(t * particle.pulseSpeed * 1.35)) * 0.32)
+                        else
+                            alphaScale = 0.38 + math.sin(progress * math.pi) * 0.48
+                        end
+                        if mode ~= "suck" and mode ~= "orbit" then
+                            if mode == "cloudDrift" then
+                                billboard.position = particle.basePosition + particle.drift * (math.sin(t * 0.18 + particle.phase) * 0.5 + 0.5) + offset
+                            else
+                                billboard.position = particle.basePosition + drift + offset
+                            end
+                        end
+                        billboard.size = Vector2(particle.baseSize * sizePulse, particle.baseSize * sizePulse)
+                        local spinScale = mode == "cloudDrift" and 0.25 or 1.0
+                        billboard.rotation = billboard.rotation + particle.spinSpeed * spinScale * step
+                        billboard.color = Color(particle.baseColor.r, particle.baseColor.g, particle.baseColor.b, particle.baseColor.a * alphaScale)
+                    elseif particle.kind == "smoke" then
+                        local progress = (t * particle.riseSpeed) % 1.0
+                        local fadeScale = 0.72 + progress * 0.62
+                        local sway = math.sin(t * particle.swaySpeed) * particle.swayAmp
+                        local drift = particle.drift * progress
+                        particle.node.position = particle.basePosition + drift + Vector3(sway, progress * particle.riseHeight, -sway * 0.6)
+                        particle.node.scale = particle.baseScale * (fadeScale + math.sin(t * particle.pulseSpeed) * particle.pulseAmp)
+                        particle.node:Rotate(Quaternion(particle.spinSpeed * step, Vector3.UP))
+                    else
+                        local bob = math.sin(t * particle.bobSpeed) * particle.bobAmp
+                        local sway = math.sin(t * particle.swaySpeed) * particle.swayAmp
+                        local pulse = 1.0 + math.sin(t * particle.pulseSpeed) * particle.pulseAmp
+                        local mode = particle.mode or "float"
+
+                        if mode == "orbit" or mode == "pollenOrbit" then
+                            local angle = particle.angle + gameTime_ * 0.75
+                            local radius = particle.orbitRadius * (0.92 + math.sin(t * 1.4) * 0.06)
+                            local jump = math.sin(t * particle.bobSpeed * 1.45) * particle.bobAmp * 1.35
+                            if mode == "pollenOrbit" then
+                                jump = jump + math.max(0.0, math.sin(t * particle.bobSpeed * 1.9)) * particle.bobAmp * 1.85
+                                pulse = pulse * (0.86 + math.max(0.0, math.sin(t * particle.pulseSpeed * 1.45)) * 0.34)
+                            else
+                                pulse = pulse * (0.9 + math.max(0.0, math.sin(t * particle.pulseSpeed * 1.25)) * 0.22)
+                            end
+                            particle.node.position = Vector3(math.cos(angle) * radius, particle.baseY + jump, math.sin(angle) * radius)
+                        elseif mode == "rise" then
+                            local progress = (t * particle.riseSpeed) % 1.0
+                            local fadePulse = 0.72 + math.sin(progress * math.pi) * 0.42
+                            local side = math.sin(t * particle.swaySpeed) * particle.swayAmp * 1.6
+                            particle.node.position = particle.basePosition + Vector3(side, progress * particle.riseHeight, -side * 0.35)
+                            pulse = pulse * fadePulse
+                        elseif mode == "fall" then
+                            local progress = (t * particle.riseSpeed) % 1.0
+                            local side = math.sin(t * particle.swaySpeed) * particle.swayAmp * 0.8
+                            particle.node.position = particle.basePosition + Vector3(side, (1.0 - progress) * particle.riseHeight * 0.42, -side * 0.25)
+                            pulse = pulse * (0.78 + progress * 0.25)
+                        elseif mode == "suck" then
+                            local progress = (t * particle.riseSpeed) % 1.0
+                            local inward = 1.0 - progress * 0.72
+                            particle.node.position = Vector3(particle.basePosition.x * inward, particle.basePosition.y + bob * 0.6, particle.basePosition.z * inward)
+                            pulse = pulse * (1.18 - progress * 0.42)
+                        elseif mode == "twinkle" then
+                            local snap = math.sin(t * particle.pulseSpeed * 2.6)
+                            local jump = math.max(0.0, snap) * 0.055
+                            particle.node.position = particle.basePosition + Vector3(sway * 0.35, jump + bob * 0.35, -sway * 0.2)
+                            pulse = 0.62 + math.max(0.0, snap) * 0.92
+                        elseif mode == "stream" then
+                            local progress = (t * particle.riseSpeed * 0.72) % 1.0
+                            local side = math.sin(t * particle.swaySpeed) * particle.swayAmp
+                            particle.node.position = particle.basePosition + Vector3(side + progress * 0.08, progress * particle.riseHeight * 0.38, -side * 0.55)
+                            pulse = pulse * (0.86 + progress * 0.18)
+                        elseif mode == "drift" then
+                            local driftX = math.sin(t * 0.55) * particle.swayAmp * 3.0
+                            local driftZ = math.cos(t * 0.48) * particle.swayAmp * 2.4
+                            particle.node.position = particle.basePosition + Vector3(driftX, bob * 0.45, driftZ)
+                            pulse = pulse * 0.82
+                        elseif mode == "drip" then
+                            local progress = (t * particle.riseSpeed * 0.82) % 1.0
+                            local drop = -progress * particle.riseHeight * 0.38
+                            particle.node.position = particle.basePosition + Vector3(sway * 0.3, drop, -sway * 0.2)
+                            pulse = pulse * (0.9 + progress * 0.32)
+                        elseif mode == "pulse" then
+                            particle.node.position = particle.basePosition + Vector3(sway * 0.25, bob * 0.45, -sway * 0.2)
+                            pulse = 0.82 + math.max(0.0, math.sin(t * particle.pulseSpeed)) * 0.46
+                        elseif mode == "burst" then
+                            local progress = (t * particle.burstSpeed) % 1.0
+                            local burst = math.sin(progress * math.pi)
+                            local outward = 0.55 + burst * 0.72
+                            particle.node.position = Vector3(particle.basePosition.x * outward, particle.basePosition.y + burst * 0.12, particle.basePosition.z * outward)
+                            pulse = 0.55 + burst * 1.05
+                        elseif mode == "spiral" then
+                            local progress = (t * particle.riseSpeed) % 1.0
+                            local angle = particle.angle + gameTime_ * particle.spiralSpeed + progress * 2.4
+                            local radius = particle.orbitRadius * (0.45 + progress * 0.95)
+                            particle.node.position = Vector3(math.cos(angle) * radius, particle.baseY + progress * particle.riseHeight * 0.85, math.sin(angle) * radius)
+                            pulse = pulse * (0.75 + progress * 0.38)
+                        elseif mode == "snap" then
+                            local snap = math.max(0.0, math.sin(t * particle.pulseSpeed * 3.8 + particle.snapOffset))
+                            local side = snap * 0.08
+                            particle.node.position = particle.basePosition + Vector3(sway + side, bob * 0.25 + snap * 0.08, -sway * 0.25)
+                            pulse = 0.45 + snap * 1.25
+                        elseif mode == "beam" then
+                            local progress = (t * particle.riseSpeed * 0.56) % 1.0
+                            particle.node.position = particle.basePosition + Vector3(0, progress * particle.riseHeight * 1.15, 0)
+                            pulse = 0.65 + math.sin(progress * math.pi) * 0.7
+                        else
+                            particle.node.position = particle.basePosition + Vector3(sway, bob, -sway * 0.55)
+                        end
+
+                        particle.node.scale = particle.baseScale * pulse
+                        particle.node:Rotate(Quaternion(particle.spinSpeed * step, Vector3.UP))
+                    end
+                end
+                if particles[1] ~= nil and particles[1].billboardSet ~= nil then
+                    particles[1].billboardSet:Commit()
+                end
+            else
+                local spinSpeed = effect.spinSpeed or (25 + i * 18)
+                local bobSpeed = effect.bobSpeed or (1.4 + i * 0.17)
+                local bobAmp = effect.bobAmp or 0.035
+                node:Rotate(Quaternion(spinSpeed * step, Vector3.UP))
+                local bob = math.sin(gameTime_ * bobSpeed + i * 0.6) * bobAmp
+                local basePosition = effect.basePosition or Vector3(0, 0, 0)
+                node.position = basePosition + Vector3(0, bob, 0)
+                if effect.baseScale ~= nil and effect.pulseSpeed ~= nil and effect.pulseSpeed > 0 then
+                    local pulse = 1.0 + math.sin(gameTime_ * effect.pulseSpeed + i * 0.9) * (effect.pulseAmp or 0.0)
+                    node.scale = effect.baseScale * pulse
+                end
+            end
+        end
     end
 end
 
@@ -277,9 +474,11 @@ function CropSystem.PlantSeedAt(plots, plotIndex, plantIndex, centerLocalPos)
     local weightRatio = weight / baseWeight
     local weightMultiplier = weightRatio * weightRatio
     local yieldMultiplier = GetPlotModifier(plotIndex).yieldMultiplier or 1.0
-    local price = math.floor(plant.fruitPrice * yieldMultiplier * weightMultiplier * mutation.priceMultiplier + 0.5)
+    local sellBonus = 1.0 + GetTalentBonus("sellBonus")
+    local price = math.floor(plant.fruitPrice * yieldMultiplier * weightMultiplier * mutation.priceMultiplier * sellBonus + 0.5)
     local growTimeMultiplier = GetPlotModifier(plotIndex).growTimeMultiplier or 1.0
-    local growTime = plant.growTime * mutation.timeMultiplier * growTimeMultiplier
+    local growSpeedReduction = 1.0 - GetTalentBonus("growSpeed") -- 天赋减少成熟时间
+    local growTime = plant.growTime * mutation.timeMultiplier * growTimeMultiplier * growSpeedReduction
     local crop = {
         config = plant,
         plantIndex = plantIndex,
@@ -333,6 +532,33 @@ function CropSystem.HarvestNearestMature(plots, plotIndex, localPos)
     crop.root:Remove()
     table.remove(plot.plants, cropIndex)
     print("收获: " .. crop.name .. " 价值 " .. crop.price)
+
+    -- 天赋系统：收获获得经验值
+    if deps_.TalentSystem and deps_.TalentSystem.AddHarvestExp then
+        local rarity = crop.config.rarity or "普通"
+        local priceMult = crop.mutation and crop.mutation.priceMultiplier or 1.0
+        deps_.TalentSystem.AddHarvestExp(rarity, priceMult)
+    end
+
+    -- 天赋系统：收获掉落种子包
+    local dropRate = GetTalentBonus("dropRate")
+    if dropRate > 0 then
+        local packQuality = GetTalentBonus("packQuality")
+        local droppedPack = deps_.InventorySystem.RollHarvestDrop(dropRate, packQuality)
+        if droppedPack ~= nil and deps_.showToast then
+            local packCfg = cfg_.SEED_PACK_CONFIG[droppedPack]
+            local packName = packCfg and packCfg.packName or droppedPack
+            deps_.showToast("掉落: " .. packName)
+        end
+    end
+
+    -- 收藏成就检查（增强版，带天赋回调）
+    local talentCb = nil
+    if deps_.TalentSystem and deps_.TalentSystem.OnRarityCollected then
+        talentCb = deps_.TalentSystem.OnRarityCollected
+    end
+    deps_.InventorySystem.CheckSilverPackRewardsEnhanced(talentCb)
+
     return true
 end
 
@@ -375,6 +601,7 @@ function CropSystem.GetPlotText(plot)
 end
 
 function CropSystem.UpdatePlants(plots, dt)
+    local maturedThisFrame = false
     gameTime_ = gameTime_ + dt
     for _, plot in ipairs(plots) do
         if plot.plants ~= nil then
@@ -384,6 +611,7 @@ function CropSystem.UpdatePlants(plots, dt)
                     SetVisualScaleByProgress(plantData)
                     if plantData.elapsed >= plantData.growTime then
                         plantData.mature = true
+                        maturedThisFrame = true
                         plantData.elapsed = plantData.growTime
                         if plantData.visual == nil then
                             plantData.visual = deps_.PlantVisual.CreatePlantVisual(plantData.root, plantData.config, plantData.mutation, plantData.material)
@@ -405,6 +633,7 @@ function CropSystem.UpdatePlants(plots, dt)
             end
         end
     end
+    return maturedThisFrame
 end
 
 return CropSystem

@@ -6,6 +6,8 @@
 -- ============================================================================
 
 local UI = require("urhox-libs/UI")
+local ModalAnim = require("ui.modal_anim")
+local FloatingToast = require("ui.floating_toast")
 
 local SeedPackView = {}
 
@@ -611,6 +613,272 @@ end
 -- Modal 模式（带弹出动效，参考商店弹窗）
 -- ============================================================================
 
+-- ============================================================================
+-- 合成种子包弹窗
+-- ============================================================================
+
+local synthesisModal_ = nil
+local synthSelectedSource_ = nil  -- 选中的源包 ID
+local synthQuantity_ = 1          -- 合成数量
+local BuildSynthesisModalContent   -- 前向声明
+
+--- 合成规则说明：3个同品级种子包 → 1个更高品级种子包
+local SYNTHESIS_COST = 3
+
+--- 获取可合成的源包列表（拥有的、且有升级目标的）
+local function GetSynthesizablePacks()
+    local result = {}
+    local seedPackConfig = deps_.seedPackConfig
+    local seedPacks = deps_.seedPacks
+    local rarityOrder = deps_.rarityOrder
+
+    for packId, cfg in pairs(seedPackConfig) do
+        local targetId = deps_.getSynthesisTarget and deps_.getSynthesisTarget(packId) or nil
+        if targetId ~= nil then
+            table.insert(result, {
+                packId = packId,
+                cfg = cfg,
+                targetId = targetId,
+                targetCfg = seedPackConfig[targetId],
+                owned = seedPacks[packId] or 0,
+            })
+        end
+    end
+
+    table.sort(result, function(a, b)
+        local ra = rarityOrder[a.cfg.packRarity or "普通"] or 0
+        local rb = rarityOrder[b.cfg.packRarity or "普通"] or 0
+        return ra < rb
+    end)
+    return result
+end
+
+local function BuildSynthesisContent()
+    local packs = GetSynthesizablePacks()
+
+    -- 如果没有选中默认选第一个
+    if synthSelectedSource_ == nil and #packs > 0 then
+        synthSelectedSource_ = packs[1].packId
+    end
+
+    -- 源包选择标签（品质颜色区分）
+    local packTabs = {}
+    for _, item in ipairs(packs) do
+        local isSelected = (item.packId == synthSelectedSource_)
+        local rarityColor = deps_.getUiRarityColor(item.cfg.packRarity or "普通")
+        -- 未选中时用浅色版本
+        local unselectedBg = {
+            math.floor(rarityColor[1] * 0.3 + 235 * 0.7),
+            math.floor(rarityColor[2] * 0.3 + 232 * 0.7),
+            math.floor(rarityColor[3] * 0.3 + 228 * 0.7),
+            255
+        }
+        table.insert(packTabs, UI.Panel {
+            paddingLeft = 14, paddingRight = 14, paddingTop = 10, paddingBottom = 10,
+            marginRight = 10, marginBottom = 8,
+            backgroundColor = isSelected and rarityColor or unselectedBg,
+            borderRadius = 12,
+            onClick = function()
+                deps_.suppressWorldTap()
+                synthSelectedSource_ = item.packId
+                synthQuantity_ = 1
+                BuildSynthesisModalContent()
+            end,
+            children = {
+                UI.Label {
+                    text = item.cfg.packName,
+                    fontSize = 14, fontWeight = "bold",
+                    fontColor = isSelected and {255, 255, 255, 255} or {60, 50, 40, 255},
+                },
+            },
+        })
+    end
+
+    -- 选中包的合成详情
+    local detailSection = UI.Panel { height = 0 }
+    if synthSelectedSource_ ~= nil then
+        local sourceInfo = nil
+        for _, item in ipairs(packs) do
+            if item.packId == synthSelectedSource_ then
+                sourceInfo = item
+                break
+            end
+        end
+
+        if sourceInfo ~= nil then
+            local owned = sourceInfo.owned
+            local maxCraft = math.floor(owned / SYNTHESIS_COST)
+            local canCraft = maxCraft >= 1
+            synthQuantity_ = math.max(1, math.min(synthQuantity_, math.max(1, maxCraft)))
+
+            local needed = SYNTHESIS_COST * synthQuantity_
+            local isSatisfied = owned >= needed
+
+            local sourceIcon = sourceInfo.cfg.packIcon or "image/seedpack_icon/seedpack_0.png"
+            local targetIcon = sourceInfo.targetCfg and sourceInfo.targetCfg.packIcon or "image/seedpack_icon/seedpack_0.png"
+            local targetName = sourceInfo.targetCfg and sourceInfo.targetCfg.packName or "高级种子包"
+            local targetRarityColor = deps_.getUiRarityColor(sourceInfo.targetCfg and sourceInfo.targetCfg.packRarity or "罕见")
+
+            detailSection = UI.Panel {
+                marginTop = 16, paddingTop = 20, paddingBottom = 20, paddingLeft = 16, paddingRight = 16,
+                backgroundColor = {250, 248, 240, 255},
+                borderRadius = 16,
+                alignItems = "center",
+                children = {
+                    -- 合成公式展示：源包x3 → 目标包x1
+                    UI.Panel {
+                        flexDirection = "row", alignItems = "center", marginBottom = 20, gap = 16,
+                        children = {
+                            -- 源包
+                            UI.Panel {
+                                alignItems = "center",
+                                children = {
+                                    UI.Panel { width = 80, height = 96, backgroundImage = sourceIcon, backgroundFit = "contain" },
+                                    UI.Label { text = "x" .. SYNTHESIS_COST, fontSize = 16, fontWeight = "bold", fontColor = {80, 65, 45, 255}, marginTop = 4 },
+                                },
+                            },
+                            -- 箭头
+                            UI.Label { text = "→", fontSize = 28, fontWeight = "bold", fontColor = {160, 145, 120, 255} },
+                            -- 目标包
+                            UI.Panel {
+                                alignItems = "center",
+                                children = {
+                                    UI.Panel { width = 80, height = 96, backgroundImage = targetIcon, backgroundFit = "contain" },
+                                    UI.Label { text = "x1", fontSize = 16, fontWeight = "bold", fontColor = targetRarityColor, marginTop = 4 },
+                                },
+                            },
+                        },
+                    },
+                    -- 需求信息
+                    UI.Label {
+                        text = string.format("需要: %s x%d  (持有 %d)", sourceInfo.cfg.packName, needed, owned),
+                        fontSize = 14,
+                        fontColor = isSatisfied and {70, 130, 80, 255} or {180, 80, 60, 255},
+                        marginBottom = 14,
+                    },
+                    -- 数量选择器
+                    UI.Panel {
+                        flexDirection = "row", alignItems = "center", gap = 16, marginBottom = 18,
+                        children = {
+                            UI.Button {
+                                text = "−", width = 42, height = 42, fontSize = 20, fontWeight = "bold",
+                                borderRadius = 12,
+                                backgroundColor = synthQuantity_ > 1 and {210, 200, 185, 255} or {230, 228, 222, 255},
+                                fontColor = synthQuantity_ > 1 and {60, 50, 35, 255} or {170, 165, 155, 255},
+                                disabled = synthQuantity_ <= 1,
+                                onClick = function()
+                                    deps_.suppressWorldTap()
+                                    synthQuantity_ = math.max(1, synthQuantity_ - 1)
+                                    BuildSynthesisModalContent()
+                                end,
+                            },
+                            UI.Label {
+                                text = tostring(synthQuantity_),
+                                fontSize = 22, fontWeight = "bold", fontColor = {60, 48, 32, 255},
+                            },
+                            UI.Button {
+                                text = "+", width = 42, height = 42, fontSize = 20, fontWeight = "bold",
+                                borderRadius = 12,
+                                backgroundColor = synthQuantity_ < maxCraft and {210, 200, 185, 255} or {230, 228, 222, 255},
+                                fontColor = synthQuantity_ < maxCraft and {60, 50, 35, 255} or {170, 165, 155, 255},
+                                disabled = synthQuantity_ >= maxCraft or maxCraft <= 0,
+                                onClick = function()
+                                    deps_.suppressWorldTap()
+                                    synthQuantity_ = math.min(maxCraft, synthQuantity_ + 1)
+                                    BuildSynthesisModalContent()
+                                end,
+                            },
+                        },
+                    },
+                    -- 合成按钮
+                    UI.Button {
+                        text = isSatisfied and ("合成 " .. targetName .. " x" .. synthQuantity_) or "材料不足",
+                        width = "85%", height = 46, fontSize = 15, fontWeight = "bold",
+                        borderRadius = 14,
+                        backgroundColor = isSatisfied and {105, 185, 110, 255} or {200, 195, 185, 255},
+                        fontColor = isSatisfied and {255, 255, 255, 255} or {140, 130, 115, 255},
+                        disabled = not isSatisfied,
+                        onClick = function()
+                            deps_.suppressWorldTap()
+                            if deps_.synthesizePack then
+                                local totalSuccess = 0
+                                for _ = 1, synthQuantity_ do
+                                    local ok = deps_.synthesizePack(synthSelectedSource_)
+                                    if ok then
+                                        totalSuccess = totalSuccess + 1
+                                    else
+                                        break
+                                    end
+                                end
+                                if totalSuccess > 0 then
+                                    -- 浮动飘字（NanoVG渲染，在Modal之上）
+                                    FloatingToast.Show(string.format("合成成功! 获得 %s x%d", targetName, totalSuccess))
+                                    -- 刷新合成弹窗内容
+                                    BuildSynthesisModalContent()
+                                    -- 刷新种子包弹窗
+                                    if packModal_ then SeedPackView.RebuildModalContent() end
+                                end
+                            end
+                        end,
+                    },
+                },
+            }
+        end
+    end
+
+    return UI.Panel {
+        padding = 14,
+        children = {
+            UI.Label { text = "选择要合成的种子包", fontSize = 16, fontWeight = "bold", fontColor = {60, 48, 35, 255}, marginBottom = 14 },
+            UI.Panel {
+                flexDirection = "row", flexWrap = "wrap",
+                children = packTabs,
+            },
+            detailSection,
+        },
+    }
+end
+
+BuildSynthesisModalContent = function()
+    if synthesisModal_ == nil then return end
+    synthesisModal_:ClearContent()
+    synthesisModal_:AddContent(BuildSynthesisContent())
+end
+
+--- 打开合成弹窗（同时隐藏种子包弹窗）
+local function OpenSynthesisModal()
+    synthSelectedSource_ = nil
+    synthQuantity_ = 1
+
+    -- 隐藏种子包弹窗
+    if packModal_ then
+        packModal_:Hide()
+    end
+
+    synthesisModal_ = UI.Modal {
+        title = "合成种子包",
+        size = "fullscreen",
+        closeOnOverlay = true,
+        showCloseButton = true,
+        contentPadding = {8, 14, 8, 14},
+        onClose = function()
+            synthesisModal_ = nil
+            -- 恢复种子包弹窗
+            if packModal_ then
+                packModal_:Show()
+            end
+        end,
+    }
+
+    BuildSynthesisModalContent()
+    ModalAnim.Apply(synthesisModal_)
+    synthesisModal_:Open()
+end
+
+-- ============================================================================
+-- Modal 模式（带弹出动效，参考商店弹窗）
+-- ============================================================================
+
 --- 打开种子包弹窗（Modal 模式，带动效）
 function SeedPackView.OpenPackModal()
     selectedPackId_ = nil
@@ -631,6 +899,7 @@ function SeedPackView.OpenPackModal()
     }
 
     SeedPackView.RebuildModalContent()
+    ModalAnim.Apply(packModal_)
     packModal_:Open()
 end
 
@@ -638,6 +907,26 @@ end
 function SeedPackView.RebuildModalContent()
     if packModal_ == nil then return end
     packModal_:ClearContent()
+
+    -- 合成入口按钮（放在种子包列表上方）
+    packModal_:AddContent(UI.Panel {
+        flexDirection = "row", justifyContent = "flex-end", paddingRight = 6, paddingTop = 4, marginBottom = 2,
+        children = {
+            UI.Button {
+                text = "合成种子包",
+                height = 32, fontSize = 12, fontWeight = "bold",
+                paddingLeft = 14, paddingRight = 14,
+                backgroundColor = {165, 198, 160, 255},
+                fontColor = {40, 65, 40, 255},
+                borderRadius = 10,
+                onClick = function()
+                    deps_.suppressWorldTap()
+                    OpenSynthesisModal()
+                end,
+            },
+        },
+    })
+
     packModal_:AddContent(UI.ScrollView {
         flexGrow = 1,
         flexBasis = 0,

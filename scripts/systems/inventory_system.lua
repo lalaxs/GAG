@@ -11,6 +11,37 @@ local InventorySystem = {}
 local cfg_ = nil
 local callbacks_ = {}
 
+-- 种子包合成配置：3 个同级别包合成 1 个更高级别包
+local SYNTHESIS_MAP = {
+    pack_common   = "pack_uncommon",
+    pack_uncommon = "pack_rare",
+    pack_rare     = "pack_epic",
+    pack_epic     = "pack_legendary",
+}
+
+-- 保底配置：每个品级连续开多少次没出跨级种子则必出
+local PITY_THRESHOLDS = {
+    pack_common   = 10,  -- 10 次没出罕见 → 保底
+    pack_uncommon = 12,  -- 12 次没出稀有 → 保底
+    pack_rare     = 15,  -- 15 次没出史诗 → 保底
+    pack_epic     = 20,  -- 20 次没出传奇 → 保底
+}
+
+-- 每日任务奖励随机种子包品级的权重（最高稀有品质）
+local DAILY_REWARD_PACK_WEIGHTS = {
+    { packId = "pack_common",   weight = 60 },
+    { packId = "pack_uncommon", weight = 30 },
+    { packId = "pack_rare",     weight = 10 },
+}
+
+-- 收获掉落种子包的品级权重（基础）
+local HARVEST_DROP_PACK_WEIGHTS = {
+    { packId = "pack_common",   weight = 70 },
+    { packId = "pack_uncommon", weight = 20 },
+    { packId = "pack_rare",     weight = 8 },
+    { packId = "pack_epic",     weight = 2 },
+}
+
 local state_ = {
     seedBag = {},
     seedBagBuffs = {},
@@ -18,26 +49,84 @@ local state_ = {
     seedPacks = {},
     collectedPlants = {},
     silverRewardClaimed = {},
+    pityCounters = {},  -- { [packId] = number } 保底计数器
     dailyTaskState = {
         progress = { plant = 0, harvest = 0, sell = 0 },
         rewardClaimed = false,
     },
 }
 
-local function RollSeedFromPack(packCfg)
+local function RollWeighted(pool)
     local totalWeight = 0
-    for _, item in ipairs(packCfg.weightPool) do
+    for _, item in ipairs(pool) do
         totalWeight = totalWeight + item.weight
     end
     local roll = math.random() * totalWeight
     local cursor = 0
-    for _, item in ipairs(packCfg.weightPool) do
+    for _, item in ipairs(pool) do
         cursor = cursor + item.weight
         if roll <= cursor then
-            return item.seedId
+            return item
         end
     end
-    return packCfg.weightPool[#packCfg.weightPool].seedId
+    return pool[#pool]
+end
+
+local function RollSeedFromPack(packCfg)
+    local item = RollWeighted(packCfg.weightPool)
+    return item.seedId
+end
+
+--- 获取该包对应的"跨级"品级（高一级）的 packId
+local function GetUpgradePackId(packId)
+    return SYNTHESIS_MAP[packId]
+end
+
+--- 保底感知的种子抽取：如果触发保底，从高一级池子里抽
+local function RollSeedWithPity(packCfg)
+    local packId = packCfg.packId
+    local threshold = PITY_THRESHOLDS[packId]
+    local upgradePackId = GetUpgradePackId(packId)
+
+    -- 如果没有更高品级（传奇包），直接正常抽
+    if threshold == nil or upgradePackId == nil then
+        return RollSeedFromPack(packCfg), false
+    end
+
+    local pity = state_.pityCounters[packId] or 0
+
+    -- 保底触发：从高一级池子里抽
+    if pity >= threshold then
+        local upgradeCfg = cfg_.SEED_PACK_CONFIG[upgradePackId]
+        if upgradeCfg ~= nil then
+            state_.pityCounters[packId] = 0
+            print(string.format("[保底] %s 保底触发！从 %s 池抽取", packCfg.packName, upgradeCfg.packName))
+            return RollSeedFromPack(upgradeCfg), true
+        end
+    end
+
+    -- 正常抽取
+    local seedId = RollSeedFromPack(packCfg)
+
+    -- 检查是否抽到了跨级种子（如果配置了跨级池子中的种子则重置保底）
+    local upgradeCfg = cfg_.SEED_PACK_CONFIG[upgradePackId]
+    local isUpgrade = false
+    if upgradeCfg ~= nil then
+        for _, item in ipairs(upgradeCfg.weightPool) do
+            if item.seedId == seedId then
+                isUpgrade = true
+                break
+            end
+        end
+    end
+
+    if isUpgrade then
+        state_.pityCounters[packId] = 0
+    else
+        state_.pityCounters[packId] = pity + 1
+    end
+
+    return seedId, isUpgrade
 end
 
 local function IsRarityCollected(rarity)
@@ -242,12 +331,13 @@ function InventorySystem.BuildSeedPackResults(packCfg, packCount)
     local results = {}
     for _ = 1, packCount do
         for _ = 1, packCfg.onceOpenCount do
-            local seedId = RollSeedFromPack(packCfg)
+            local seedId, isPity = RollSeedWithPity(packCfg)
             table.insert(results, {
                 seedId = seedId,
                 packId = packCfg.packId,
                 seedBuff = packCfg.seedBuff or 0,
                 isNew = not state_.collectedPlants[seedId],
+                isPity = isPity,
             })
         end
     end
@@ -306,11 +396,122 @@ end
 
 function InventorySystem.ClaimDailyReward()
     if not InventorySystem.AreAllDailyTasksCompleted() or state_.dailyTaskState.rewardClaimed then
-        return false
+        return false, nil
     end
     state_.dailyTaskState.rewardClaimed = true
-    InventorySystem.AddSeedPack("pack_common", 1)
-    return true
+
+    -- 奖励 3 个随机种子包（最高稀有品质）
+    local rewards = {}
+    for _ = 1, 3 do
+        local picked = RollWeighted(DAILY_REWARD_PACK_WEIGHTS)
+        InventorySystem.AddSeedPack(picked.packId, 1)
+        table.insert(rewards, picked.packId)
+    end
+    print(string.format("[每日] 领取每日奖励：%s, %s, %s", rewards[1], rewards[2], rewards[3]))
+    return true, rewards
+end
+
+-- ============================================================================
+-- 三合一种子包合成
+-- ============================================================================
+
+--- 检查是否可以合成（需要 3 个同品级种子包）
+function InventorySystem.CanSynthesizePack(packId)
+    local targetId = SYNTHESIS_MAP[packId]
+    if targetId == nil then return false end -- 传奇包不可合成
+    local owned = state_.seedPacks[packId] or 0
+    return owned >= 3
+end
+
+--- 执行三合一合成：消耗 3 个同品级包，获得 1 个高品级包
+function InventorySystem.SynthesizePack(packId)
+    if not InventorySystem.CanSynthesizePack(packId) then return false, nil end
+    local targetId = SYNTHESIS_MAP[packId]
+    state_.seedPacks[packId] = (state_.seedPacks[packId] or 0) - 3
+    InventorySystem.AddSeedPack(targetId, 1)
+    local sourceName = cfg_.SEED_PACK_CONFIG[packId] and cfg_.SEED_PACK_CONFIG[packId].packName or packId
+    local targetName = cfg_.SEED_PACK_CONFIG[targetId] and cfg_.SEED_PACK_CONFIG[targetId].packName or targetId
+    print(string.format("[合成] %s x3 → %s x1", sourceName, targetName))
+    return true, targetId
+end
+
+--- 获取合成目标包 ID
+function InventorySystem.GetSynthesisTarget(packId)
+    return SYNTHESIS_MAP[packId]
+end
+
+-- ============================================================================
+-- 收获掉落种子包
+-- ============================================================================
+
+--- 收获时调用，根据概率决定是否掉落种子包
+--- @param dropRate number 基础掉落概率（来自天赋系统）
+--- @param packQualityBonus number 品质提升等级（来自天赋系统）
+--- @return string|nil 掉落的种子包 ID，nil 表示未掉落
+function InventorySystem.RollHarvestDrop(dropRate, packQualityBonus)
+    dropRate = dropRate or 0
+    packQualityBonus = packQualityBonus or 0
+
+    if dropRate <= 0 then return nil end
+    if math.random() > dropRate then return nil end
+
+    -- 品质提升：每级 packQualityBonus 降低低品质权重
+    local adjustedPool = {}
+    for i, item in ipairs(HARVEST_DROP_PACK_WEIGHTS) do
+        ---@type number
+        local weight = item.weight
+        -- 品质提升：高品质权重增加，低品质权重降低
+        if i <= 2 then
+            weight = math.max(5, weight - packQualityBonus * 15)
+        else
+            weight = weight + packQualityBonus * 10
+        end
+        table.insert(adjustedPool, { packId = item.packId, weight = weight })
+    end
+
+    local picked = RollWeighted(adjustedPool)
+    InventorySystem.AddSeedPack(picked.packId, 1)
+    print(string.format("[掉落] 收获掉落种子包: %s", picked.packId))
+    return picked.packId
+end
+
+-- ============================================================================
+-- 保底系统查询接口
+-- ============================================================================
+
+--- 获取某个包的保底进度
+function InventorySystem.GetPityProgress(packId)
+    local threshold = PITY_THRESHOLDS[packId]
+    if threshold == nil then return 0, 0 end
+    local current = state_.pityCounters[packId] or 0
+    return current, threshold
+end
+
+
+
+-- ============================================================================
+-- 收藏成就奖励（增强版：集齐品级奖励更多包）
+-- ============================================================================
+
+function InventorySystem.CheckSilverPackRewardsEnhanced(talentCallback)
+    for rarity, packId in pairs(cfg_.SEED_PACK_BY_RARITY) do
+        if not state_.silverRewardClaimed[rarity] and IsRarityCollected(rarity) then
+            state_.silverRewardClaimed[rarity] = true
+            -- 集齐奖励：该品级包 x2 + 上一级包 x1
+            InventorySystem.AddSeedPack(packId, 2)
+            local upgradeId = SYNTHESIS_MAP[packId]
+            if upgradeId ~= nil then
+                InventorySystem.AddSeedPack(upgradeId, 1)
+            end
+            if callbacks_.showToast then
+                callbacks_.showToast("完成" .. rarity .. "收集！获得种子包奖励")
+            end
+            -- 通知天赋系统
+            if talentCallback then
+                talentCallback(rarity)
+            end
+        end
+    end
 end
 
 return InventorySystem

@@ -19,6 +19,7 @@ local viewMode_ = CameraSystem.ViewMode.FARM
 local cameraYaw_ = 0.0
 local cameraPitch_ = 0.0
 local cameraDistance_ = 0.0
+local cameraTarget_ = Vector3(0, 0, 0)
 
 ---@param config table
 ---@param cameraNode Node|nil
@@ -29,6 +30,7 @@ function CameraSystem.Init(config, cameraNode)
     cameraYaw_ = config.FarmViewYaw
     cameraPitch_ = config.FarmViewPitch
     cameraDistance_ = config.FarmViewDistance
+    cameraTarget_ = Vector3(0, 0, 0)
 end
 
 function CameraSystem.GetViewMode()
@@ -48,7 +50,7 @@ function CameraSystem.UpdateCamera()
     local yaw = math.rad(cameraYaw_)
     local pitch = math.rad(cameraPitch_)
     local targetY = viewMode_ == CameraSystem.ViewMode.PLANT and -0.3 or 0.7
-    local target = Vector3(0, targetY, 0)
+    local target = Vector3(cameraTarget_.x, targetY, cameraTarget_.z)
     local x = math.sin(yaw) * math.cos(pitch) * cameraDistance_
     local y = math.sin(pitch) * cameraDistance_
     local z = -math.cos(yaw) * math.cos(pitch) * cameraDistance_
@@ -70,6 +72,15 @@ function CameraSystem.EnterFarmView()
     cameraPitch_ = config_.FarmViewPitch
     cameraDistance_ = config_.FarmViewDistance
     CameraSystem.UpdateCamera()
+end
+
+function CameraSystem.SetTarget(target)
+    cameraTarget_ = target or Vector3(0, 0, 0)
+    CameraSystem.UpdateCamera()
+end
+
+function CameraSystem.GetTarget()
+    return cameraTarget_
 end
 
 function CameraSystem.RotateYaw(delta)

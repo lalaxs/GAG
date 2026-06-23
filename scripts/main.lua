@@ -9,6 +9,7 @@ local ProgressionSystem = require("systems.progression_system")
 local PlantVisual = require("visuals.plant_visual")
 local CropSystem = require("systems.crop_system")
 local FarmSystem = require("systems.farm_system")
+local Format = require("utils.format")
 
 local SceneSystem = require("systems.scene_system")
 local CameraSystem = require("systems.camera_system")
@@ -16,11 +17,16 @@ local InteractionSystem = require("systems.interaction_system")
 local AudioSystem = require("systems.audio_system")
 local SeedPackSystem = require("systems.seed_pack_system")
 local WalletSystem = require("systems.wallet_system")
+local TalentSystem = require("systems.talent_system")
+local TalentView = require("ui.talent_view")
+local ExpansionView = require("ui.expansion_view")
 local SeedPackView = require("ui.seed_pack_view")
 local TaskView = require("ui.task_view")
 local PlantPanelView = require("ui.plant_panel_view")
 local BagDetailView = require("ui.bag_detail_view")
 local MainView = require("ui.main_view")
+local SettingsView = require("ui.settings_view")
+local FloatingToast = require("ui.floating_toast")
 
 ---@type Scene|nil
 local scene_ = nil
@@ -34,6 +40,8 @@ local moneyLabel_ = nil
 local seedLabel_ = nil
 ---@type Widget|nil
 local plotLabel_ = nil
+---@type Widget|nil
+local talentBadge_ = nil
 ---@type Widget|nil
 local actionLabel_ = nil
 ---@type Widget|nil
@@ -86,6 +94,8 @@ local seedPackRevealIndex_ = 0
 local selectedBagItem_ = nil
 local ViewMode = CameraSystem.ViewMode
 local unlockedPlotCount_ = CONFIG.InitialUnlockedPlots
+local plotDisplayMode_ = "all"
+local focusedPlotIndex_ = 1
 local uiRefreshTimer_ = 0
 local uiInitialized_ = false
 local plantTab_ = "seed"  -- "seed" | "harvest" | "bag"
@@ -99,6 +109,23 @@ local SelectPlotByDelta = nil
 local ClearBagPreview = nil
 local OpenSeedPackHub = nil
 local OpenTaskPanel = nil
+local ExpandNextPlot = nil
+local UpdateCameraTargetForPlotDisplay = nil
+local RefreshSelection = nil
+
+-- 地块弹出动画状态
+local plotBounceAnims_ = {}     -- { plotIndex, timer, duration, done }
+local plotBounceDelay_ = 0.12   -- 每个地块间隔时间
+local plotBounceDuration_ = 0.4 -- 单个地块弹出动画时长
+local plotBounceActive_ = false
+local plotBounceInitDelay_ = 0.8 -- 进入游戏后等待时间再开始弹出
+
+--- 弹性缓动函数 (overshoot回弹)
+local function EaseOutBack(t)
+    local c1 = 1.70158
+    local c3 = c1 + 1
+    return 1 + c3 * (t - 1) ^ 3 + c1 * (t - 1) ^ 2
+end
 
 local function RandItem(list)
     return list[math.random(1, #list)]
@@ -226,14 +253,18 @@ local function GetViewMode()
 end
 
 local function EnterPlantView()
+    selectedPlot_ = Clamp(selectedPlot_, 1, math.max(1, unlockedPlotCount_))
+    CameraSystem.SetTarget(FarmSystem.PlotWorldPosition(selectedPlot_))
     CameraSystem.EnterPlantView()
-    ShowToast("进入种植模式，点击田地播种或收获")
+    RefreshSelection()
+    ShowToast(string.format("进入第 %d 块地种植模式", selectedPlot_))
     if RebuildUI ~= nil then RebuildUI() end
     RefreshUI(true)
 end
 
 local function EnterFarmView()
     CameraSystem.EnterFarmView()
+    UpdateCameraTargetForPlotDisplay()
     selectedBagItem_ = nil
     if ClearBagPreview ~= nil then
         ClearBagPreview()
@@ -251,8 +282,190 @@ local function CreateFarm()
     plots_ = FarmSystem.CreateFarm(scene_, unlockedPlotCount_)
 end
 
-local function RefreshSelection()
+--- 启动地块依次弹出动画
+local function StartPlotBounceAnimation()
+    plotBounceAnims_ = {}
+    plotBounceActive_ = true
+    for i = 1, #plots_ do
+        local plot = plots_[i]
+        if plot ~= nil and plot.unlocked then
+            table.insert(plotBounceAnims_, {
+                plotIndex = i,
+                delay = (i - 1) * plotBounceDelay_,
+                timer = 0,
+                duration = plotBounceDuration_,
+                started = false,
+                done = false,
+            })
+        end
+    end
+end
+
+local function StartSinglePlotBounceAnimation(plotIndex)
+    local plot = plots_[plotIndex]
+    if plot == nil or plot.node == nil or not plot.unlocked then return end
+    plot.node.scale = Vector3(0, 0, 0)
+    plotBounceInitDelay_ = 0
+    plotBounceAnims_ = {{
+        plotIndex = plotIndex,
+        delay = 0,
+        timer = 0,
+        duration = plotBounceDuration_,
+        started = false,
+        done = false,
+    }}
+    plotBounceActive_ = true
+end
+
+--- 更新地块弹出动画
+local function UpdatePlotBounceAnimation(dt)
+    if not plotBounceActive_ then return end
+    -- 初始等待
+    if plotBounceInitDelay_ > 0 then
+        plotBounceInitDelay_ = plotBounceInitDelay_ - dt
+        return
+    end
+    local allDone = true
+    for _, anim in ipairs(plotBounceAnims_) do
+        if not anim.done then
+            anim.delay = anim.delay - dt
+            if anim.delay <= 0 then
+                if not anim.started then
+                    anim.started = true
+                    anim.timer = 0
+                end
+                anim.timer = anim.timer + dt
+                local t = math.min(anim.timer / anim.duration, 1.0)
+                local progress = EaseOutBack(t)
+                local plot = plots_[anim.plotIndex]
+                if plot ~= nil and plot.node ~= nil then
+                    local target = plot.targetScale
+                    plot.node.scale = Vector3(
+                        target.x * progress,
+                        target.y * progress,
+                        target.z * progress
+                    )
+                end
+                if t >= 1.0 then
+                    anim.done = true
+                end
+            end
+            allDone = false
+        end
+    end
+    if allDone then
+        plotBounceActive_ = false
+    end
+end
+
+local function SetPlotVisible(plot, index, visible)
+    if plot == nil or plot.node == nil then return end
+    plot.visible = visible
+    plot.node:SetWorldPosition(visible and FarmSystem.PlotWorldPosition(index) or Vector3(0, -1000, 0))
+    plot.node:SetEnabledRecursive(visible)
+    -- 如果弹出动画已结束，直接设置目标 scale
+    if visible and not plotBounceActive_ and plot.targetScale ~= nil then
+        plot.node.scale = plot.targetScale
+    end
+    if plot.selection ~= nil then
+        plot.selection:SetEnabledRecursive(false)
+    end
+    if plot.plants ~= nil then
+        for _, crop in ipairs(plot.plants) do
+            if crop.root ~= nil then
+                crop.root:SetEnabledRecursive(visible)
+            end
+        end
+    end
+end
+
+local function GetUnlockedPlotsCenter()
+    local count = math.max(1, unlockedPlotCount_)
+    local sumX = 0
+    local sumZ = 0
+    for i = 1, count do
+        local pos = FarmSystem.PlotWorldPosition(i)
+        sumX = sumX + pos.x
+        sumZ = sumZ + pos.z
+    end
+    return Vector3(sumX / count, 0, sumZ / count)
+end
+
+UpdateCameraTargetForPlotDisplay = function()
+    if CameraSystem.GetViewMode() == ViewMode.PLANT then
+        CameraSystem.SetTarget(FarmSystem.PlotWorldPosition(selectedPlot_))
+    elseif plotDisplayMode_ == "single" then
+        CameraSystem.SetTarget(FarmSystem.PlotWorldPosition(focusedPlotIndex_))
+    else
+        CameraSystem.SetTarget(GetUnlockedPlotsCenter())
+    end
+end
+
+local function ApplyPlotDisplayMode()
+    if #plots_ == 0 then return end
+    focusedPlotIndex_ = Clamp(focusedPlotIndex_, 1, math.max(1, unlockedPlotCount_))
+    if plotDisplayMode_ == "single" then
+        for i, plot in ipairs(plots_) do
+            SetPlotVisible(plot, i, i == focusedPlotIndex_)
+        end
+    else
+        for i, plot in ipairs(plots_) do
+            SetPlotVisible(plot, i, i <= unlockedPlotCount_)
+        end
+    end
+    UpdateCameraTargetForPlotDisplay()
+end
+
+RefreshSelection = function()
     FarmSystem.RefreshSelection(plots_, selectedPlot_)
+    ApplyPlotDisplayMode()
+end
+
+local function SetPlotDisplayMode(mode)
+    if mode ~= "single" then
+        plotDisplayMode_ = "all"
+    else
+        plotDisplayMode_ = "single"
+        focusedPlotIndex_ = 1
+        selectedPlot_ = focusedPlotIndex_
+    end
+    ApplyPlotDisplayMode()
+    RefreshSelection()
+    if plotDisplayMode_ == "single" then
+        StartSinglePlotBounceAnimation(focusedPlotIndex_)
+        ShowToast(string.format("仅显示第 %d 块地", focusedPlotIndex_))
+    else
+        ShowToast("已显示全部地块")
+    end
+    if RebuildUI ~= nil then RebuildUI() end
+    RefreshUI(true)
+end
+
+local function SwitchNextFocusedPlot()
+    if unlockedPlotCount_ <= 0 then return end
+    focusedPlotIndex_ = focusedPlotIndex_ + 1
+    if focusedPlotIndex_ > unlockedPlotCount_ then
+        focusedPlotIndex_ = 1
+    end
+    selectedPlot_ = focusedPlotIndex_
+    ApplyPlotDisplayMode()
+    RefreshSelection()
+    StartSinglePlotBounceAnimation(focusedPlotIndex_)
+    FloatingToast.Show(string.format("已切换到第 %d 块地", focusedPlotIndex_))
+    ShowToast(string.format("已切换到第 %d 块地", focusedPlotIndex_))
+    if RebuildUI ~= nil then RebuildUI() end
+    RefreshUI(true)
+end
+
+local function ApplyUnlockedPlotCount()
+    FarmSystem.ApplyUnlockedPlotCount(plots_, unlockedPlotCount_)
+    if selectedPlot_ > unlockedPlotCount_ then
+        selectedPlot_ = unlockedPlotCount_
+    end
+    if focusedPlotIndex_ > unlockedPlotCount_ then
+        focusedPlotIndex_ = math.max(1, unlockedPlotCount_)
+    end
+    RefreshSelection()
 end
 
 ClearBagPreview = function()
@@ -362,6 +575,49 @@ local function RefreshSeedButtons()
     end
 end
 
+local function FindNextOwnedSeedIndex(startIndex)
+    if #PLANTS <= 0 then return nil end
+    local start = Clamp(startIndex or selectedSeed_, 1, #PLANTS)
+    for offset = 1, #PLANTS do
+        local index = ((start - 1 + offset) % #PLANTS) + 1
+        if (seedBag_[index] or 0) > 0 then
+            return index
+        end
+    end
+    return nil
+end
+
+local function EnsureSelectedSeedAvailable()
+    if (seedBag_[selectedSeed_] or 0) > 0 then
+        return true
+    end
+    local nextSeed = FindNextOwnedSeedIndex(selectedSeed_)
+    if nextSeed ~= nil then
+        selectedSeed_ = nextSeed
+        print("自动切换到可用种子: " .. PLANTS[selectedSeed_].name)
+        return true
+    end
+    return false
+end
+
+local function SelectNextOwnedSeedIfEmpty(fromIndex)
+    if (seedBag_[selectedSeed_] or 0) > 0 then
+        return nil
+    end
+    local nextSeed = FindNextOwnedSeedIndex(fromIndex or selectedSeed_)
+    if nextSeed ~= nil then
+        selectedSeed_ = nextSeed
+        print("种子用完，自动切换到: " .. PLANTS[selectedSeed_].name)
+        return nextSeed
+    end
+    return nil
+end
+
+local function SetSelectedSeedIndex(index)
+    selectedSeed_ = Clamp(index, 1, #PLANTS)
+    EnsureSelectedSeedAvailable()
+end
+
 local function GetUiRarityColor(rarity)
     local c = RARITY_COLORS[rarity]
     if c == nil then return {200, 200, 200, 255} end
@@ -437,6 +693,61 @@ OpenTaskPanel = function()
     TaskView.Open()
 end
 
+ExpandNextPlot = function()
+    local canExpand, reason = ProgressionSystem.CanAffordNextPlot(TalentSystem.GetLevel(), WalletSystem.GetBalance(), ProgressionSystem.GetTourValue())
+    if not canExpand then
+        ShowToast(reason or "暂时无法扩展地块")
+        return false
+    end
+
+    local requirement = ProgressionSystem.GetExpansionRequirement()
+    if requirement == nil then
+        ShowToast("已经扩展到最大地块")
+        return false
+    end
+
+    if not WalletSystem.Spend(requirement.gold) then
+        ShowToast("金币不足")
+        return false
+    end
+
+    if not ProgressionSystem.UnlockNextPlot() then
+        WalletSystem.Add(requirement.gold)
+        ShowToast("扩展失败")
+        return false
+    end
+
+    unlockedPlotCount_ = ProgressionSystem.GetUnlockedPlotCount()
+    selectedPlot_ = unlockedPlotCount_
+    if plotDisplayMode_ == "single" then
+        focusedPlotIndex_ = selectedPlot_
+    end
+    ApplyUnlockedPlotCount()
+    -- 新扩展地块弹出动画
+    local newPlot = plots_[unlockedPlotCount_]
+    if newPlot ~= nil and newPlot.node ~= nil then
+        newPlot.node.scale = Vector3(0, 0, 0)
+        plotBounceAnims_ = {{
+            plotIndex = unlockedPlotCount_,
+            delay = 0,
+            timer = 0,
+            duration = plotBounceDuration_,
+            started = false,
+            done = false,
+        }}
+        plotBounceActive_ = true
+    end
+    RebuildUI()
+    RefreshUI(true)
+    local maxPlots = ProgressionSystem.GetMaxPlotCount()
+    if unlockedPlotCount_ >= maxPlots then
+        ShowToast("解锁成功！所有地块已全部解锁")
+    else
+        ShowToast(string.format("解锁成功！第 %d 块地已开放", unlockedPlotCount_))
+    end
+    return true
+end
+
 
 local function PerformPlotAction(plotIndex, localPos)
     selectedPlot_ = plotIndex
@@ -461,10 +772,16 @@ local function PerformPlotAction(plotIndex, localPos)
         -- 播种模式：点击土地播种
         if CountPlotPlants(plot) >= CONFIG.MaxCropsPerPlot then
             ShowToast("这块田地已满")
-        elseif PlantSeedAt(selectedPlot_, selectedSeed_, localPos or Vector3(0, 0, 0)) then
-            ShowToast("已播种 " .. PLANTS[selectedSeed_].name)
+        elseif not EnsureSelectedSeedAvailable() then
+            ShowToast("没有可用种子，前往商店购买")
         else
-            ShowToast("没有该种子，前往商店购买")
+            local plantedSeed = selectedSeed_
+            if PlantSeedAt(selectedPlot_, plantedSeed, localPos or Vector3(0, 0, 0)) then
+                ShowToast("已播种 " .. PLANTS[plantedSeed].name)
+                SelectNextOwnedSeedIfEmpty(plantedSeed)
+            else
+                ShowToast("没有该种子，前往商店购买")
+            end
         end
     elseif plantTab_ == "harvest" then
         -- 收获模式：点击成熟作物收获
@@ -493,7 +810,7 @@ local function PerformPlotAction(plotIndex, localPos)
 end
 
 local function SelectSeedIndex(index)
-    selectedSeed_ = Clamp(index, 1, #PLANTS)
+    SetSelectedSeedIndex(index)
     ShowToast("已选择 " .. PLANTS[selectedSeed_].name)
     RefreshUI(true)
 end
@@ -518,14 +835,19 @@ RefreshUI = function(force)
     end
 
     if moneyLabel_ ~= nil then
-        moneyLabel_:SetText("金币 " .. WalletSystem.GetBalance())
+        moneyLabel_:SetText("金币 " .. Format.Gold(WalletSystem.GetBalance()))
     end
     if seedLabel_ ~= nil then
-        seedLabel_:SetText("观光 0")  -- 观光值暂未实装
+        seedLabel_:SetText("观光 " .. Format.Gold(ProgressionSystem.GetTourValue()))
     end
     if plotLabel_ ~= nil then
-        plotLabel_:SetText("LV" .. unlockedPlotCount_)
+        plotLabel_:SetText("LV" .. TalentSystem.GetLevel())
     end
+    if talentBadge_ ~= nil then
+        local hasPoints = TalentSystem.GetTalentPoints() > 0
+        talentBadge_:SetDisplay(hasPoints and "flex" or "none")
+    end
+
     if helpLabel_ ~= nil then
         helpLabel_:SetText(string.format("已解锁区域 %d/%d", unlockedPlotCount_, #plots_))
     end
@@ -570,6 +892,7 @@ RebuildUI = function()
     seedLabel_ = labels.seedLabel
     seedPackBadgeLabel_ = labels.seedPackBadgeLabel
     plotLabel_ = labels.plotLabel
+    talentBadge_ = labels.talentBadge
     actionLabel_ = labels.actionLabel
     inventoryLabel_ = labels.inventoryLabel
     toastLabel_ = labels.toastLabel
@@ -591,6 +914,12 @@ RebuildUI = function()
 end
 
 SelectPlotByDelta = function(dx, dz)
+    if plotDisplayMode_ == "single" then
+        selectedPlot_ = focusedPlotIndex_
+        RefreshSelection()
+        RefreshUI(true)
+        return
+    end
     local col = ((selectedPlot_ - 1) % CONFIG.GridCols) + 1
     local row = math.floor((selectedPlot_ - 1) / CONFIG.GridCols) + 1
     col = Clamp(col + dx, 1, CONFIG.GridCols)
@@ -601,9 +930,16 @@ SelectPlotByDelta = function(dx, dz)
 end
 
 local function CycleSeed(delta)
-    selectedSeed_ = selectedSeed_ + delta
-    if selectedSeed_ < 1 then selectedSeed_ = #PLANTS end
-    if selectedSeed_ > #PLANTS then selectedSeed_ = 1 end
+    if #PLANTS <= 0 then return end
+    local direction = delta >= 0 and 1 or -1
+    for step = 1, #PLANTS do
+        selectedSeed_ = selectedSeed_ + direction
+        if selectedSeed_ < 1 then selectedSeed_ = #PLANTS end
+        if selectedSeed_ > #PLANTS then selectedSeed_ = 1 end
+        if (seedBag_[selectedSeed_] or 0) > 0 then
+            break
+        end
+    end
     RefreshUI(true)
 end
 
@@ -645,7 +981,10 @@ local function HandleInput(dt)
 end
 
 local function UpdatePlants(dt)
-    CropSystem.UpdatePlants(plots_, dt)
+    local maturedThisFrame = CropSystem.UpdatePlants(plots_, dt)
+    if maturedThisFrame and plantTab_ == "harvest" and GetViewMode() == ViewMode.PLANT and RebuildUI ~= nil then
+        RebuildUI()
+    end
 end
 
 local function UpdateSeedPackOpening(dt)
@@ -672,28 +1011,24 @@ function HandleUpdate(eventType, eventData)
 
     HandleInput(dt)
     UpdateTouchCameraGesture()
+    UpdatePlotBounceAnimation(dt)
     UpdatePlants(dt)
     UpdateSeedPackOpening(dt)
     Shop.Update(dt)
-
+    FloatingToast.Update(dt)
 
     if toastTimer_ > 0 then
         toastTimer_ = toastTimer_ - dt
         if toastTimer_ <= 0 and toastLabel_ ~= nil then
-            if GetViewMode() == ViewMode.FARM then
-                toastLabel_:SetText("当前为查看状态，点击下方开始种植")
-            else
-                toastLabel_:SetText("种植模式：点击田地播种或收获")
-            end
+            toastLabel_:SetText("")
         end
     end
     RefreshUI(false)
 end
 
---- 获取花园等级（基于解锁田地数）
+--- 获取花园等级（基于玩家当前等级）
 local function GetGardenLevel()
-    -- 等级规则：每解锁1块田地 = 1级，初始1级
-    return math.max(1, unlockedPlotCount_)
+    return TalentSystem.GetLevel()
 end
 
 function InitBGM()
@@ -715,6 +1050,8 @@ function Start()
     ProgressionSystem.Init(CONFIG)
     unlockedPlotCount_ = ProgressionSystem.GetUnlockedPlotCount()
     CreateFarm()
+    StartPlotBounceAnimation()
+    ApplyUnlockedPlotCount()
 
     WalletSystem.Init(CONFIG.StartMoney)
     InventorySystem.Init(GameConfig, {
@@ -736,6 +1073,9 @@ function Start()
         suppressWorldTap = function() suppressNextWorldTap_ = true end,
         closePackPanel = function() seedPackPanelOpen_ = false end,
         skipOpening = SkipSeedPackOpening,
+        getSynthesisTarget = function(packId) return InventorySystem.GetSynthesisTarget(packId) end,
+        synthesizePack = function(packId) return InventorySystem.SynthesizePack(packId) end,
+        showToast = ShowToast,
         rebuildUI = function()
             if RebuildUI ~= nil then RebuildUI() end
         end,
@@ -744,6 +1084,7 @@ function Start()
     TaskView.Init({
         dailyTaskConfig = DAILY_TASK_CONFIG,
         dailyTaskState = dailyTaskState_,
+        seedPackConfig = SEED_PACK_CONFIG,
         getTaskModal = function() return taskModal_ end,
         setTaskModal = function(modal) taskModal_ = modal end,
         areAllDailyTasksCompleted = AreAllDailyTasksCompleted,
@@ -762,7 +1103,7 @@ function Start()
         getSelectedPlot = function() return plots_[selectedPlot_] end,
         getSelectedPlotIndex = function() return selectedPlot_ end,
         getSelectedSeed = function() return selectedSeed_ end,
-        setSelectedSeed = function(seedIndex) selectedSeed_ = seedIndex end,
+        setSelectedSeed = SetSelectedSeedIndex,
         getPlantTab = function() return plantTab_ end,
         suppressWorldTap = function() suppressNextWorldTap_ = true end,
         rebuildUI = function()
@@ -802,12 +1143,89 @@ function Start()
         rebuildUI = function()
             if RebuildUI ~= nil then RebuildUI() end
         end,
+        onTalentOpen = function()
+            suppressNextWorldTap_ = true
+            TalentView.Show()
+        end,
+        onExpansionOpen = function()
+            suppressNextWorldTap_ = true
+            ExpansionView.Show()
+        end,
+        isExpansionMaxed = function()
+            return not ProgressionSystem.CanUnlockNextPlot()
+        end,
+    })
+
+    SettingsView.Init({
+        suppressWorldTap = function() suppressNextWorldTap_ = true end,
+        getPlotDisplayMode = function()
+            return plotDisplayMode_
+        end,
+        getFocusedPlotIndex = function()
+            return focusedPlotIndex_
+        end,
+        getUnlockedPlotCount = function()
+            return unlockedPlotCount_
+        end,
+        setPlotDisplayMode = function(mode)
+            SetPlotDisplayMode(mode)
+        end,
+        switchNextPlot = function()
+            SwitchNextFocusedPlot()
+        end,
+        rebuildUI = function()
+            if RebuildUI ~= nil then RebuildUI() end
+        end,
+    })
+
+    TalentSystem.Init({
+        onHarvestExp = function(exp)
+            ProgressionSystem.AddTourValue(exp)
+            if seedLabel_ ~= nil then
+                seedLabel_:SetText("观光 " .. Format.Gold(ProgressionSystem.GetTourValue()))
+            end
+        end,
+        onLevelUp = function(level)
+            ProgressionSystem.SetGardenLevel(level)
+            ShowToast("升级! 等级 " .. level .. " — 获得天赋点")
+            if plotLabel_ ~= nil then
+                plotLabel_:SetText("LV" .. level)
+            end
+        end,
+        getGold = function()
+            return WalletSystem.GetBalance()
+        end,
+        spendGold = function(amount)
+            WalletSystem.Spend(amount)
+        end,
+    })
+
+    TalentView.Init({
+        onTalentChanged = function()
+            -- 天赋变更后刷新UI
+        end,
+    })
+
+    ExpansionView.Init({
+        getLevel = function()
+            return TalentSystem.GetLevel()
+        end,
+        getGold = function()
+            return WalletSystem.GetBalance()
+        end,
+        getTourValue = function()
+            return ProgressionSystem.GetTourValue()
+        end,
+        expandNextPlot = function()
+            return ExpandNextPlot()
+        end,
     })
 
     CropSystem.Init(GameConfig, {
         InventorySystem = InventorySystem,
         PlantVisual = PlantVisual,
         SeedVisual = SeedVisual,
+        TalentSystem = TalentSystem,
         showToast = ShowToast,
     })
 
@@ -848,6 +1266,9 @@ function Start()
         countPlotPlants = CountPlotPlants,
         harvestNearestMature = HarvestNearestMature,
         plantSeed = PlantSeed,
+        isUIBlocking = function()
+            return SettingsView.IsOpen() or Shop.IsOpen() or ExpansionView.IsOpen()
+        end,
     })
 
     AddSeedToBag(1, 4, 0)
