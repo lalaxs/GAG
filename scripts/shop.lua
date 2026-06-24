@@ -50,9 +50,9 @@ local RARITY_NAME_COLORS = {
 
 -- 种子商店配置
 -- 刷新规则：
---   1. 胡萝卜、玉米固定上架，库存固定 50
---   2. 番茄、葡萄以及罕见到史诗作物每轮按概率独立刷新，不保证出现
---   3. 商店列表始终展示普通到史诗全部作物，未刷出或售罄显示为“售罄”
+--   1. 胡萝卜、玉米固定上架，保证新手始终能循环
+--   2. 普通到传奇按稀有度概率独立刷新，越高阶库存越少
+--   3. 商店列表始终展示全部作物，未刷出或售罄显示为“售罄”
 local SEED_SHOP_CONFIG = {
     { name = "胡萝卜", rarity = "普通" },
     { name = "番茄",   rarity = "普通" },
@@ -79,6 +79,14 @@ local SEED_SHOP_CONFIG = {
     { name = "百合",   rarity = "史诗" },
     { name = "杜鹃",   rarity = "史诗" },
     { name = "玉兰",   rarity = "史诗" },
+
+    { name = "三色堇", rarity = "传奇" },
+    { name = "玫瑰",   rarity = "传奇" },
+    { name = "蒲公英", rarity = "传奇" },
+    { name = "风信子", rarity = "传奇" },
+    { name = "绣球花", rarity = "传奇" },
+    { name = "杨桃",   rarity = "传奇" },
+    { name = "牡丹",   rarity = "传奇" },
 }
 
 local SEED_SHOP_REFRESH_RULES = {
@@ -87,10 +95,11 @@ local SEED_SHOP_REFRESH_RULES = {
         stock = 50,
     },
     random = {
-        ["普通"] = { names = { "番茄", "葡萄" }, chance = 0.65, minStock = 25, maxStock = 45 },
-        ["罕见"] = { chance = 0.50, minStock = 8, maxStock = 15 },
-        ["稀有"] = { chance = 0.35, minStock = 3, maxStock = 7 },
-        ["史诗"] = { chance = 0.22, minStock = 1, maxStock = 4 },
+        ["普通"] = { names = { "番茄", "葡萄" }, chance = 0.70, minStock = 20, maxStock = 60 },
+        ["罕见"] = { chance = 0.70, minStock = 8, maxStock = 25 },
+        ["稀有"] = { chance = 0.40, minStock = 3, maxStock = 10 },
+        ["史诗"] = { chance = 0.18, minStock = 1, maxStock = 4 },
+        ["传奇"] = { chance = 0.04, minStock = 1, maxStock = 1 },
     },
 }
 
@@ -225,7 +234,7 @@ local function RefreshSeedStock()
         AddSeedShopItem(items, seedName, SEED_SHOP_REFRESH_RULES.guaranteed.stock)
     end
 
-    for _, rarity in ipairs({ "普通", "罕见", "稀有", "史诗" }) do
+    for _, rarity in ipairs({ "普通", "罕见", "稀有", "史诗", "传奇" }) do
         local rule = SEED_SHOP_REFRESH_RULES.random[rarity]
         if rule ~= nil then
             local pool = rule.names or GetSeedNamesByRarity(rarity)
@@ -494,7 +503,7 @@ local function ShowSeedDetail(seedData)
             UI.Label { text = "成熟时长: " .. plant.growTime .. " 秒", fontSize = 13, fontColor = {80, 60, 40, 255} },
             UI.Label { text = "基础售价: " .. plant.fruitPrice .. " 金币", fontSize = 13, fontColor = {80, 60, 40, 255} },
             UI.Label { text = "种子价格: " .. plant.seedPrice .. " 金币", fontSize = 13, fontColor = {80, 60, 40, 255} },
-            UI.Label { text = "变异规则: 每株必定出现 1 种变异", fontSize = 12, fontColor = {120, 100, 80, 200} },
+            UI.Label { text = "变异规则: 颜色约9%，特殊约2.5%，天赋可相对提升", fontSize = 12, fontColor = {120, 100, 80, 200} },
         },
     })
     ModalAnim.Apply(detailModal)

@@ -17,6 +17,8 @@ local SYNTHESIS_MAP = InventoryRules.SYNTHESIS_MAP
 local PITY_THRESHOLDS = InventoryRules.PITY_THRESHOLDS
 local DAILY_REWARD_PACK_WEIGHTS = InventoryRules.DAILY_REWARD_PACK_WEIGHTS
 local HARVEST_DROP_PACK_WEIGHTS = InventoryRules.HARVEST_DROP_PACK_WEIGHTS
+local HARVEST_DROP_PACK_WEIGHTS_BY_RARITY = InventoryRules.HARVEST_DROP_PACK_WEIGHTS_BY_RARITY
+local HARVEST_DROP_RATES_BY_RARITY = InventoryRules.HARVEST_DROP_RATES_BY_RARITY
 
 local state_ = {
     seedBag = {},
@@ -73,16 +75,10 @@ local function RollSeedWithPity(packCfg)
     local seedId = RollSeedFromPack(packCfg)
 
     -- 检查是否抽到了跨级种子（如果配置了跨级池子中的种子则重置保底）
-    local upgradeCfg = cfg_.SEED_PACK_CONFIG[upgradePackId]
-    local isUpgrade = false
-    if upgradeCfg ~= nil then
-        for _, item in ipairs(upgradeCfg.weightPool) do
-            if item.seedId == seedId then
-                isUpgrade = true
-                break
-            end
-        end
-    end
+    local plant = cfg_.PLANTS[seedId]
+    local seedRarity = plant and plant.rarity or packCfg.packRarity
+    local rarityOrder = cfg_.RARITY_ORDER or {}
+    local isUpgrade = (rarityOrder[seedRarity] or 0) > (rarityOrder[packCfg.packRarity] or 0)
 
     if isUpgrade then
         state_.pityCounters[packId] = 0
@@ -408,23 +404,24 @@ end
 -- 收获掉落种子包
 -- ============================================================================
 
---- 收获时调用，根据概率决定是否掉落种子包
---- @param dropRate number 基础掉落概率（来自天赋系统）
---- @param packQualityBonus number 品质提升等级（来自天赋系统）
+--- 收获时调用，根据来源作物品级和天赋加成决定是否掉落种子包
+--- @param rarity string 作物稀有度
+--- @param dropRateBonus number 掉包率相对加成（来自天赋系统）
+--- @param packQualityBonus number 品质提升等级（预留）
 --- @return string|nil 掉落的种子包 ID，nil 表示未掉落
-function InventorySystem.RollHarvestDrop(dropRate, packQualityBonus)
-    dropRate = dropRate or 0
+function InventorySystem.RollHarvestDrop(rarity, dropRateBonus, packQualityBonus)
+    rarity = rarity or "普通"
+    dropRateBonus = dropRateBonus or 0
     packQualityBonus = packQualityBonus or 0
 
-    if dropRate <= 0 then return nil end
-    if math.random() > dropRate then return nil end
+    local baseRate = HARVEST_DROP_RATES_BY_RARITY[rarity] or 0.01
+    local finalRate = math.min(baseRate * (1.0 + dropRateBonus), 0.25)
+    if math.random() > finalRate then return nil end
 
-    -- 品质提升：每级 packQualityBonus 降低低品质权重
+    local sourcePool = HARVEST_DROP_PACK_WEIGHTS_BY_RARITY[rarity] or HARVEST_DROP_PACK_WEIGHTS
     local adjustedPool = {}
-    for i, item in ipairs(HARVEST_DROP_PACK_WEIGHTS) do
-        ---@type number
+    for i, item in ipairs(sourcePool) do
         local weight = item.weight
-        -- 品质提升：高品质权重增加，低品质权重降低
         if i <= 2 then
             weight = math.max(5, weight - packQualityBonus * 15)
         else
@@ -435,7 +432,7 @@ function InventorySystem.RollHarvestDrop(dropRate, packQualityBonus)
 
     local picked = RollWeighted(adjustedPool)
     InventorySystem.AddSeedPack(picked.packId, 1)
-    print(string.format("[掉落] 收获掉落种子包: %s", picked.packId))
+    print(string.format("[掉落] %s作物收获掉落种子包: %s", rarity, picked.packId))
     return picked.packId
 end
 

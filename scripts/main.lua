@@ -375,6 +375,10 @@ local function OpenSeedPack(packId)
     SeedPackOpeningController.OpenPack(packId)
 end
 
+local function OpenAllSeedPacks(packId)
+    SeedPackOpeningController.OpenAllPacks(packId)
+end
+
 OpenSeedPackHub = function()
     SeedPackOpeningController.OpenHub()
 end
@@ -607,6 +611,7 @@ function Start()
         countSeedPacks = CountSeedPacks,
         getFirstAvailablePackId = GetFirstAvailablePackId,
         openSeedPack = OpenSeedPack,
+        openAllSeedPacks = OpenAllSeedPacks,
         suppressWorldTap = function() suppressNextWorldTap_ = true end,
         closePackPanel = function() SeedPackOpeningController.ClosePanel() end,
         skipOpening = function() SeedPackOpeningController.SkipOpening() end,
@@ -828,13 +833,10 @@ function Start()
         end,
     })
 
-    AddSeedToBag(1, 4, 0)
+    AddSeedToBag(1, 6, 0)
+    AddSeedToBag(21, 4, 0)
     AddSeedToBag(2, 2, 0)
-    AddSeedToBag(3, 1, 0)
-    AddSeedPack("pack_common", 3)
-    AddSeedPack("pack_uncommon", 2)
-    AddSeedPack("pack_rare", 1)
-    AddSeedPack("pack_legendary", 1)
+    AddSeedPack("pack_common", 1)
 
     RebuildUI()
     RefreshUI(true)
@@ -854,7 +856,7 @@ function Start()
     InitBGM()
 
     print("=== Grow A Garden 核心玩法原型启动 ===")
-    print("已赠送胡萝卜x4、番茄x2、草莓x1，以及测试种子包：日常x3、银质普通x2、银质罕见x1、银质稀有x1。")
+    print("已赠送胡萝卜x6、玉米x4、番茄x2，以及普通种子包x1。")
 end
 
 function Stop()

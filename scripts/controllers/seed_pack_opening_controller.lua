@@ -85,6 +85,16 @@ function SeedPackOpeningController.OpenPack(packId)
     RefreshUI(true)
 end
 
+function SeedPackOpeningController.OpenAllPacks(packId)
+    local results, err, title, openedCount = SeedPackSystem.OpenAllPacks(packId)
+    if results == nil then
+        if err ~= nil then ShowToast(err) end
+        return
+    end
+    SeedPackView.ShowBatchResultModal(title, results, openedCount)
+    RefreshUI(true)
+end
+
 function SeedPackOpeningController.OpenHub()
     if deps_.countSeedPacks == nil or deps_.countSeedPacks() <= 0 then
         ShowToast("暂无可开启的种子包")

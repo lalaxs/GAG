@@ -16,14 +16,14 @@ local state_ = {
 }
 
 local EXPANSION_REQUIREMENTS = {
-    [2] = { level = 2, gold = 500, tour = 30 },
-    [3] = { level = 3, gold = 1500, tour = 80 },
-    [4] = { level = 5, gold = 5000, tour = 180 },
-    [5] = { level = 7, gold = 12000, tour = 360 },
-    [6] = { level = 9, gold = 30000, tour = 650 },
-    [7] = { level = 12, gold = 80000, tour = 1100 },
-    [8] = { level = 15, gold = 180000, tour = 1700 },
-    [9] = { level = 18, gold = 360000, tour = 2500 },
+    [2] = { level = 1, gold = 80, tour = 0 },
+    [3] = { level = 2, gold = 250, tour = 10 },
+    [4] = { level = 3, gold = 800, tour = 30 },
+    [5] = { level = 5, gold = 3500, tour = 100 },
+    [6] = { level = 8, gold = 15000, tour = 250 },
+    [7] = { level = 11, gold = 60000, tour = 600 },
+    [8] = { level = 15, gold = 220000, tour = 1200 },
+    [9] = { level = 19, gold = 800000, tour = 2200 },
 }
 
 local function ClampUnlockedPlotCount(value)

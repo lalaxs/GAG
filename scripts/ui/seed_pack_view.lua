@@ -14,6 +14,7 @@ local SeedPackView = {}
 local deps_ = {}
 local selectedPackId_ = nil
 local packModal_ = nil
+local batchResultModal_ = nil
 
 function SeedPackView.Init(deps)
     deps_ = deps or {}
@@ -73,6 +74,49 @@ local function BuildResultCards(results)
                 UI.Label { text = rarity, fontSize = 10, fontWeight = "bold", fontColor = rarityColor, textAlign = "center" },
                 newFlag and UI.Label { text = "新品", fontSize = 10, fontWeight = "bold", fontColor = {220, 55, 45, 255}, textAlign = "center" } or UI.Panel { height = 0 },
                 silverFlag and UI.Label { text = "银种 +1%", fontSize = 9, fontColor = {90, 100, 130, 255}, textAlign = "center" } or UI.Panel { height = 0 },
+            },
+        })
+    end
+    return cards
+end
+
+local function BuildCompactResultCards(results)
+    local cards = {}
+    local counts = deps_.countPackResults(results)
+    local sorted = {}
+    for seedId, _ in pairs(counts) do
+        table.insert(sorted, seedId)
+    end
+    table.sort(sorted, function(a, b)
+        local plants = deps_.plants
+        local rarityOrder = deps_.rarityOrder
+        local ra = rarityOrder[plants[a].rarity] or 1
+        local rb = rarityOrder[plants[b].rarity] or 1
+        if ra == rb then return a < b end
+        return ra > rb
+    end)
+
+    for _, seedId in ipairs(sorted) do
+        local plant = deps_.plants[seedId]
+        local count = counts[seedId] or 0
+        local rarityColor = deps_.getUiRarityColor(plant.rarity)
+        table.insert(cards, UI.Panel {
+            width = "31%",
+            minHeight = 122,
+            padding = 4,
+            marginBottom = 4,
+            alignItems = "center",
+            backgroundColor = {0, 0, 0, 0},
+            children = {
+                UI.Panel {
+                    width = 86,
+                    height = 82,
+                    marginBottom = 3,
+                    backgroundImage = string.format("image/icons_3d/seed (%d).png", seedId),
+                    backgroundFit = "contain",
+                },
+                UI.Label { text = string.format("%s种子包 x%d", plant.name, count), width = 92, fontSize = 13, fontWeight = "bold", fontColor = {65, 48, 34, 255}, textAlign = "left" },
+                UI.Label { text = plant.rarity, width = 92, fontSize = 12, fontWeight = "bold", fontColor = rarityColor, textAlign = "left", marginTop = 2 },
             },
         })
     end
@@ -273,19 +317,41 @@ local function BuildPackDetailSection()
                             UI.Label { text = probStr, fontSize = 11, fontColor = {100, 95, 85, 230}, marginTop = 2 },
                         },
                     },
-                    UI.Button {
-                        text = "打开",
-                        width = 80,
-                        height = 38,
-                        fontSize = 14,
-                        fontWeight = "bold",
-                        backgroundColor = {240, 155, 60, 255},
-                        fontColor = {255, 255, 255, 255},
-                        borderRadius = 10,
-                        onClick = function()
-                            deps_.suppressWorldTap()
-                            deps_.openSeedPack(selectedPackId_, 1)
-                        end,
+                    UI.Panel {
+                        flexDirection = "row",
+                        gap = 8,
+                        children = {
+                            UI.Button {
+                                text = "全开",
+                                width = 76,
+                                height = 38,
+                                fontSize = 14,
+                                fontWeight = "bold",
+                                backgroundColor = {95, 165, 105, 255},
+                                fontColor = {255, 255, 255, 255},
+                                borderRadius = 10,
+                                onClick = function()
+                                    deps_.suppressWorldTap()
+                                    if deps_.openAllSeedPacks then
+                                        deps_.openAllSeedPacks(selectedPackId_)
+                                    end
+                                end,
+                            },
+                            UI.Button {
+                                text = "打开",
+                                width = 76,
+                                height = 38,
+                                fontSize = 14,
+                                fontWeight = "bold",
+                                backgroundColor = {240, 155, 60, 255},
+                                fontColor = {255, 255, 255, 255},
+                                borderRadius = 10,
+                                onClick = function()
+                                    deps_.suppressWorldTap()
+                                    deps_.openSeedPack(selectedPackId_, 1)
+                                end,
+                            },
+                        },
                     },
                 },
             },
@@ -873,6 +939,91 @@ local function OpenSynthesisModal()
     BuildSynthesisModalContent()
     ModalAnim.Apply(synthesisModal_)
     synthesisModal_:Open()
+end
+
+function SeedPackView.ShowBatchResultModal(title, results, openedCount)
+    if results == nil then return end
+
+    if packModal_ then
+        packModal_:Close()
+        packModal_ = nil
+    end
+    if batchResultModal_ ~= nil then
+        batchResultModal_:Close()
+        batchResultModal_ = nil
+    end
+
+    batchResultModal_ = UI.Modal {
+        size = "fullscreen",
+        closeOnOverlay = false,
+        showCloseButton = false,
+        contentPadding = {8, 14, 8, 14},
+        onClose = function()
+            batchResultModal_ = nil
+            selectedPackId_ = nil
+            if deps_.closePackPanel then deps_.closePackPanel() end
+            if deps_.rebuildUI then deps_.rebuildUI() end
+        end,
+    }
+
+    batchResultModal_:AddContent(UI.Panel {
+        height = 560,
+        paddingTop = 4,
+        paddingBottom = 4,
+        children = {
+            UI.Label {
+                text = "拆包结算",
+                fontSize = 19,
+                fontWeight = "bold",
+                fontColor = {75, 55, 40, 255},
+                textAlign = "center",
+                marginBottom = 8,
+            },
+            UI.ScrollView {
+                height = 440,
+                scrollY = true,
+                showScrollbar = true,
+                children = {
+                    UI.Panel {
+                        flexDirection = "row",
+                        flexWrap = "wrap",
+                        justifyContent = "flex-start",
+                        gap = 2,
+                        paddingTop = 2,
+                        paddingBottom = 4,
+                        children = BuildCompactResultCards(results),
+                    },
+                },
+            },
+            UI.Panel {
+                height = 58,
+                justifyContent = "center",
+                alignItems = "center",
+                marginTop = 4,
+                children = {
+                    UI.Button {
+                        text = "确认",
+                        width = 120,
+                        height = 42,
+                        fontSize = 16,
+                        fontWeight = "bold",
+                        backgroundColor = {95, 165, 105, 255},
+                        fontColor = {255, 255, 255, 255},
+                        borderRadius = 12,
+                        onClick = function()
+                            deps_.suppressWorldTap()
+                            if batchResultModal_ ~= nil then
+                                batchResultModal_:Close()
+                            end
+                        end,
+                    },
+                },
+            },
+        },
+    })
+
+    ModalAnim.Apply(batchResultModal_, { fixedHeight = 610 })
+    batchResultModal_:Open()
 end
 
 -- ============================================================================

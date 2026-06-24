@@ -24,13 +24,13 @@ end
 local function RollCropWeightScale()
     local r = math.random()
     if r < 0.25 then
-        return RandomRange(0.45, 0.8), "Light"
+        return RandomRange(0.65, 0.9), "Light"
     elseif r < 0.80 then
-        return RandomRange(0.8, 1.25), "Normal"
+        return RandomRange(0.9, 1.2), "Normal"
     elseif r < 0.97 then
-        return RandomRange(1.25, 2.5), "Large"
+        return RandomRange(1.2, 2.0), "Large"
     end
-    return RandomRange(3.0, 6.0), "Giant"
+    return RandomRange(2.0, 3.5), "Giant"
 end
 
 local function GetPlotModifier(plotIndex)
@@ -64,6 +64,10 @@ local function RollMutation(plant, seedBuff, plotIndex)
     local modifier = GetPlotModifier(plotIndex)
     local mutationBonus = (modifier.mutationBonus or 0) + GetTalentBonus("mutationBonus")
     local totalBuff = seedBuff + mutationBonus
+    local chanceMultiplier = 1.0 + totalBuff
+    local colorChance = math.min((plant.colorProb or 0.09) * chanceMultiplier, 0.35)
+    local specialChance = math.min((plant.specialProb or 0.025) * chanceMultiplier, 0.16)
+    local doubleChance = math.min(0.005 * chanceMultiplier, 0.04)
     local mutation = {
         sizeScale = 1.0,
         sizePrefix = nil,
@@ -74,39 +78,28 @@ local function RollMutation(plant, seedBuff, plotIndex)
         seedBuff = seedBuff,
     }
 
-    -- 加法累计的额外倍率（基础为 1.0，各变异贡献额外加成）
-    local bonusPrice = 0
-    local bonusTime = 0
-
-    -- 临时测试配置：强制每株作物只出现 1 个特殊变异，禁用体型/颜色变异。
-    -- 恢复正式概率时，将这里改回按 volume/color/special 权重抽取即可。
-    local mutationType = "special"
-
-    if mutationType == "volume" then
-        mutation.sizeScale = 1.5 + math.random() * 1.5
-        bonusPrice = bonusPrice + mutation.sizeScale * 2.0
-        bonusTime = bonusTime + 0.15
-        if mutation.sizeScale < 2.0 then
-            mutation.sizePrefix = RandItem({ "丰硕的", "敦实的", "饱满的" })
-        elseif mutation.sizeScale < 2.5 then
-            mutation.sizePrefix = RandItem({ "巨型的", "膨胀的", "山峦般的" })
-        else
-            mutation.sizePrefix = RandItem({ "泰坦", "巨神", "穹顶" })
-        end
-    elseif mutationType == "color" then
+    if math.random() <= colorChance then
         mutation.colorMutation = RandItem(cfg_.COLOR_MUTATIONS)
-        bonusPrice = bonusPrice + (mutation.colorMutation.multiplier or 1.5)
-        bonusTime = bonusTime + ((mutation.colorMutation.timeMultiplier or 1.05) - 1.0)
-    else
-        local special = RandItem(cfg_.SPECIAL_MUTATIONS)
-        table.insert(mutation.specials, special)
-        bonusPrice = bonusPrice + special.multiplier
-        bonusTime = bonusTime + (special.timeMultiplier - 1.0)
+        mutation.priceMultiplier = mutation.priceMultiplier * (mutation.colorMutation.multiplier or 1.3)
+        mutation.timeMultiplier = mutation.timeMultiplier * (mutation.colorMutation.timeMultiplier or 1.03)
     end
 
-    -- 最终倍率 = 1 + 各项加成之和
-    mutation.priceMultiplier = 1.0 + bonusPrice
-    mutation.timeMultiplier = 1.0 + bonusTime
+    if math.random() <= specialChance then
+        local special = RandItem(cfg_.SPECIAL_MUTATIONS)
+        table.insert(mutation.specials, special)
+        mutation.priceMultiplier = mutation.priceMultiplier * (special.multiplier or 2.0)
+        mutation.timeMultiplier = mutation.timeMultiplier * (special.timeMultiplier or 1.05)
+    end
+
+    if #mutation.specials == 1 and math.random() <= doubleChance then
+        local special = RandItem(cfg_.SPECIAL_MUTATIONS)
+        table.insert(mutation.specials, special)
+        mutation.priceMultiplier = mutation.priceMultiplier * (special.multiplier or 2.0)
+        mutation.timeMultiplier = mutation.timeMultiplier * (special.timeMultiplier or 1.05)
+    end
+
+    mutation.priceMultiplier = math.min(mutation.priceMultiplier, 60.0)
+    mutation.timeMultiplier = math.min(mutation.timeMultiplier, 2.5)
 
     return mutation
 end
@@ -467,12 +460,14 @@ function CropSystem.PlantSeedAt(plots, plotIndex, plantIndex, centerLocalPos)
     local material = deps_.PlantVisual.ResolvePlantMaterial(plant, mutation)
 
     local weightRatio = weight / baseWeight
-    local weightMultiplier = weightRatio * weightRatio
+    local weightMultiplier = math.min(math.max(weightRatio * weightRatio, 0.4), 12.0)
     local yieldMultiplier = GetPlotModifier(plotIndex).yieldMultiplier or 1.0
     local sellBonus = 1.0 + GetTalentBonus("sellBonus")
-    local price = math.floor(plant.fruitPrice * yieldMultiplier * weightMultiplier * mutation.priceMultiplier * sellBonus + 0.5)
+    local rawPrice = plant.fruitPrice * yieldMultiplier * weightMultiplier * mutation.priceMultiplier * sellBonus
+    local priceCap = plant.fruitPrice * 200
+    local price = math.floor(math.min(rawPrice, priceCap) + 0.5)
     local growTimeMultiplier = GetPlotModifier(plotIndex).growTimeMultiplier or 1.0
-    local growSpeedReduction = 1.0 - GetTalentBonus("growSpeed") -- 天赋减少成熟时间
+    local growSpeedReduction = 1.0 - math.min(GetTalentBonus("growSpeed"), 0.75)
     local growTime = plant.growTime * mutation.timeMultiplier * growTimeMultiplier * growSpeedReduction
     local crop = {
         config = plant,
@@ -536,15 +531,13 @@ function CropSystem.HarvestNearestMature(plots, plotIndex, localPos)
     end
 
     -- 天赋系统：收获掉落种子包
-    local dropRate = GetTalentBonus("dropRate")
-    if dropRate > 0 then
-        local packQuality = GetTalentBonus("packQuality")
-        local droppedPack = deps_.InventorySystem.RollHarvestDrop(dropRate, packQuality)
-        if droppedPack ~= nil and deps_.showToast then
-            local packCfg = cfg_.SEED_PACK_CONFIG[droppedPack]
-            local packName = packCfg and packCfg.packName or droppedPack
-            deps_.showToast("掉落: " .. packName)
-        end
+    local dropRateBonus = GetTalentBonus("dropRate")
+    local packQuality = GetTalentBonus("packQuality")
+    local droppedPack = deps_.InventorySystem.RollHarvestDrop(crop.config.rarity or "普通", dropRateBonus, packQuality)
+    if droppedPack ~= nil and deps_.showToast then
+        local packCfg = cfg_.SEED_PACK_CONFIG[droppedPack]
+        local packName = packCfg and packCfg.packName or droppedPack
+        deps_.showToast("掉落: " .. packName)
     end
 
     -- 收藏成就检查（增强版，带天赋回调）

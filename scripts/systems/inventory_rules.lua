@@ -30,7 +30,48 @@ InventoryRules.DAILY_REWARD_PACK_WEIGHTS = {
     { packId = "pack_rare",     weight = 10 },
 }
 
--- 收获掉落种子包的品级权重（基础）
+-- 收获掉落种子包的基础概率（按来源作物品级）
+InventoryRules.HARVEST_DROP_RATES_BY_RARITY = {
+    ["普通"] = 0.010,
+    ["罕见"] = 0.020,
+    ["稀有"] = 0.035,
+    ["史诗"] = 0.050,
+    ["传奇"] = 0.080,
+}
+
+-- 收获掉落种子包的品级权重（按来源作物品级）
+InventoryRules.HARVEST_DROP_PACK_WEIGHTS_BY_RARITY = {
+    ["普通"] = {
+        { packId = "pack_common", weight = 90 },
+        { packId = "pack_uncommon", weight = 10 },
+    },
+    ["罕见"] = {
+        { packId = "pack_common", weight = 65 },
+        { packId = "pack_uncommon", weight = 30 },
+        { packId = "pack_rare", weight = 5 },
+    },
+    ["稀有"] = {
+        { packId = "pack_common", weight = 30 },
+        { packId = "pack_uncommon", weight = 50 },
+        { packId = "pack_rare", weight = 18 },
+        { packId = "pack_epic", weight = 2 },
+    },
+    ["史诗"] = {
+        { packId = "pack_common", weight = 10 },
+        { packId = "pack_uncommon", weight = 35 },
+        { packId = "pack_rare", weight = 40 },
+        { packId = "pack_epic", weight = 14 },
+        { packId = "pack_legendary", weight = 1 },
+    },
+    ["传奇"] = {
+        { packId = "pack_uncommon", weight = 15 },
+        { packId = "pack_rare", weight = 35 },
+        { packId = "pack_epic", weight = 40 },
+        { packId = "pack_legendary", weight = 10 },
+    },
+}
+
+-- 收获掉落种子包的品级权重（兜底）
 InventoryRules.HARVEST_DROP_PACK_WEIGHTS = {
     { packId = "pack_common",   weight = 70 },
     { packId = "pack_uncommon", weight = 20 },

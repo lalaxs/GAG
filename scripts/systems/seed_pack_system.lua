@@ -49,7 +49,23 @@ function SeedPackSystem.OpenPack(packId, packCount)
     end
 
     local title = packCount > 1 and (cfg.packName .. " x" .. packCount) or cfg.packName
-    return results, nil, title
+    return results, nil, title, packCount
+end
+
+function SeedPackSystem.OpenAllPacks(packId)
+    local cfg = config_.SEED_PACK_CONFIG[packId]
+    if cfg == nil then return nil, nil, nil, 0 end
+
+    local state = inventory_.GetState()
+    local owned = state.seedPacks[packId] or 0
+    if owned <= 0 then return nil, "暂无可开启的种子包", nil, 0 end
+
+    local results, err = inventory_.OpenSeedPack(packId, owned)
+    if results == nil then
+        return nil, err, nil, 0
+    end
+
+    return results, nil, cfg.packName .. " x" .. owned, owned
 end
 
 function SeedPackSystem.PreviewPack(packId, packCount)
