@@ -13,6 +13,66 @@ local deps_ = {}
 local gameTime_ = 0
 local plotModifiers_ = {}
 
+local function GetWeightSightMultiplier(crop)
+    local baseWeight = crop.baseWeight or (crop.config and crop.config.baseWeight) or 1.0
+    if baseWeight <= 0 then return 1.0 end
+    local ratio = (crop.weight or baseWeight) / baseWeight
+    local multiplier = 1.0 + math.max(ratio - 1.0, -0.7) * 0.15
+    return Clamp(multiplier, 0.9, 1.5)
+end
+
+local function GetMutationSightMultiplier(mutation)
+    if mutation == nil then return 1.0 end
+    local multipliers = {}
+    if mutation.colorMutation ~= nil then
+        table.insert(multipliers, mutation.colorMutation.sightMultiplier or mutation.colorMutation.multiplier or 1.0)
+    end
+    if mutation.specials ~= nil then
+        for _, special in ipairs(mutation.specials) do
+            table.insert(multipliers, special.sightMultiplier or special.multiplier or 1.0)
+        end
+    end
+    if #multipliers == 0 then return 1.0 end
+    table.sort(multipliers, function(a, b) return a > b end)
+    local total = multipliers[1]
+    if multipliers[2] ~= nil then
+        total = total + multipliers[2] * 0.35
+    end
+    if multipliers[3] ~= nil then
+        total = total + multipliers[3] * 0.20
+    end
+    for i = 4, #multipliers do
+        total = total + multipliers[i] * 0.10
+    end
+    return math.max(1.0, total)
+end
+
+local function GetGrowthSightMultiplier(crop)
+    local growthConfig = cfg_.SIGHT_GROWTH_MULTIPLIERS or {}
+    if crop.mature then
+        return growthConfig.mature or 1.0
+    end
+    local progress = 0
+    if crop.growTime ~= nil and crop.growTime > 0 then
+        progress = Clamp((crop.elapsed or 0) / crop.growTime, 0.0, 1.0)
+    end
+    if progress < 0.18 then
+        return growthConfig.seed or 0.1
+    elseif progress < 0.55 then
+        return growthConfig.sprout or 0.3
+    end
+    return growthConfig.growing or 0.6
+end
+
+local function CalculateCropBaseSightValue(crop)
+    local plant = crop.config or {}
+    local baseSight = plant.sightBase or 1
+    local sizeMultipliers = cfg_.SIGHT_SIZE_MULTIPLIERS or {}
+    local sizeMultiplier = sizeMultipliers[crop.weightTier or "Normal"] or 1.0
+    local value = baseSight * GetWeightSightMultiplier(crop) * sizeMultiplier * GetMutationSightMultiplier(crop.mutation)
+    return math.max(1, math.floor(value + 0.5))
+end
+
 local function RandItem(list)
     return list[math.random(1, #list)]
 end
@@ -480,6 +540,7 @@ function CropSystem.PlantSeedAt(plots, plotIndex, plantIndex, centerLocalPos)
         effectNodes = {},
         name = cropName,
         price = price,
+        sightValue = 0,
         weight = weight,
         baseWeight = baseWeight,
         weightScale = weightScale,
@@ -495,9 +556,10 @@ function CropSystem.PlantSeedAt(plots, plotIndex, plantIndex, centerLocalPos)
         seedHeight = seedHeight,
         pickRadius = math.max(0.55, 0.42 * mutation.sizeScale),
     }
+    crop.sightValue = CalculateCropBaseSightValue(crop)
     table.insert(plot.plants, crop)
     deps_.InventorySystem.AddDailyProgress("plant", 1)
-    print(string.format("精确播种: 田地%d %s 位置(%.2f, %.2f)，重量 %.2fkg[%s]，成熟时间 %.1fs，预估售价 %d", plotIndex, cropName, localPos.x, localPos.z, weight, weightTier, growTime, price))
+    print(string.format("精确播种: 田地%d %s 位置(%.2f, %.2f)，重量 %.2fkg[%s]，成熟时间 %.1fs，预估售价 %d，成熟观光值 %d", plotIndex, cropName, localPos.x, localPos.z, weight, weightTier, growTime, price, crop.sightValue))
     return true
 end
 
@@ -564,6 +626,28 @@ function CropSystem.CountMaturePlants(plot)
         end
     end
     return count
+end
+
+function CropSystem.GetCropSightValue(crop, includeGrowth)
+    if crop == nil then return 0 end
+    local matureSightValue = crop.sightValue or CalculateCropBaseSightValue(crop)
+    if includeGrowth == false then
+        return matureSightValue
+    end
+    return math.max(1, math.floor(matureSightValue * GetGrowthSightMultiplier(crop) + 0.5))
+end
+
+function CropSystem.CalculateTotalSightValue(plots)
+    local total = 0
+    if plots == nil then return 0 end
+    for _, plot in ipairs(plots) do
+        if plot.unlocked and plot.plants ~= nil then
+            for _, crop in ipairs(plot.plants) do
+                total = total + CropSystem.GetCropSightValue(crop, true)
+            end
+        end
+    end
+    return total
 end
 
 function CropSystem.GetPlotText(plot)

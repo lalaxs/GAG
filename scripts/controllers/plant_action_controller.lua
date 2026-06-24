@@ -34,6 +34,12 @@ local function RebuildUI()
     end
 end
 
+local function RefreshTourValue()
+    if deps_.refreshTourValue ~= nil then
+        deps_.refreshTourValue()
+    end
+end
+
 local function GetPlants()
     return deps_.plants
 end
@@ -63,11 +69,19 @@ local function GetPlots()
 end
 
 function PlantActionController.PlantSeedAt(plotIndex, plantIndex, centerLocalPos)
-    return deps_.CropSystem.PlantSeedAt(GetPlots(), plotIndex, plantIndex, centerLocalPos)
+    local success, reason = deps_.CropSystem.PlantSeedAt(GetPlots(), plotIndex, plantIndex, centerLocalPos)
+    if success then
+        RefreshTourValue()
+    end
+    return success, reason
 end
 
 function PlantActionController.HarvestNearestMature(plotIndex, localPos)
-    return deps_.CropSystem.HarvestNearestMature(GetPlots(), plotIndex, localPos)
+    local success = deps_.CropSystem.HarvestNearestMature(GetPlots(), plotIndex, localPos)
+    if success then
+        RefreshTourValue()
+    end
+    return success
 end
 
 function PlantActionController.PlantSeed(plotIndex, plantIndex)

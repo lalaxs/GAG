@@ -12,19 +12,23 @@ local config_ = nil
 local state_ = {
     unlockedPlotCount = 1,
     gardenLevel = 1,
-    tourValue = 0,
+    currentTourValue = 0,
+    bestTourValue = 0,
 }
 
-local EXPANSION_REQUIREMENTS = {
-    [2] = { level = 1, gold = 80, tour = 0 },
-    [3] = { level = 2, gold = 250, tour = 10 },
-    [4] = { level = 3, gold = 800, tour = 30 },
-    [5] = { level = 5, gold = 3500, tour = 100 },
-    [6] = { level = 8, gold = 15000, tour = 250 },
-    [7] = { level = 11, gold = 60000, tour = 600 },
-    [8] = { level = 15, gold = 220000, tour = 1200 },
-    [9] = { level = 19, gold = 800000, tour = 2200 },
-}
+local function BuildExpansionRequirements()
+    local sightReq = config_ and config_.LAND_UNLOCK_SIGHT_REQUIREMENTS or nil
+    return {
+        [2] = { level = 1, gold = 80, tour = sightReq and sightReq[2] or 80 },
+        [3] = { level = 2, gold = 250, tour = sightReq and sightReq[3] or 220 },
+        [4] = { level = 3, gold = 800, tour = sightReq and sightReq[4] or 520 },
+        [5] = { level = 5, gold = 3500, tour = sightReq and sightReq[5] or 1100 },
+        [6] = { level = 8, gold = 15000, tour = sightReq and sightReq[6] or 2200 },
+        [7] = { level = 11, gold = 60000, tour = sightReq and sightReq[7] or 4200 },
+        [8] = { level = 15, gold = 220000, tour = sightReq and sightReq[8] or 7600 },
+        [9] = { level = 19, gold = 800000, tour = sightReq and sightReq[9] or 12500 },
+    }
+end
 
 local function ClampUnlockedPlotCount(value)
     local maxCount = ProgressionSystem.GetMaxPlotCount()
@@ -35,7 +39,8 @@ function ProgressionSystem.Init(config)
     config_ = config
     state_.unlockedPlotCount = ClampUnlockedPlotCount(config.InitialUnlockedPlots or 1)
     state_.gardenLevel = math.max(1, state_.unlockedPlotCount)
-    state_.tourValue = 0
+    state_.currentTourValue = 0
+    state_.bestTourValue = 0
 end
 
 function ProgressionSystem.GetUnlockedPlotCount()
@@ -52,14 +57,30 @@ function ProgressionSystem.GetMaxPlotCount()
 end
 
 function ProgressionSystem.GetTourValue()
-    return state_.tourValue
+    return state_.currentTourValue
+end
+
+function ProgressionSystem.GetBestTourValue()
+    return state_.bestTourValue
+end
+
+function ProgressionSystem.GetLeaderboardTourValue()
+    return state_.bestTourValue
+end
+
+function ProgressionSystem.SetCurrentTourValue(value)
+    value = math.max(0, math.floor((value or 0) + 0.5))
+    state_.currentTourValue = value
+    if value > state_.bestTourValue then
+        state_.bestTourValue = value
+    end
+    return state_.currentTourValue
 end
 
 function ProgressionSystem.AddTourValue(amount)
     amount = amount or 0
     if amount <= 0 then return 0 end
-    state_.tourValue = state_.tourValue + amount
-    return amount
+    return ProgressionSystem.SetCurrentTourValue(state_.currentTourValue + amount)
 end
 
 function ProgressionSystem.SetGardenLevel(level)
@@ -76,7 +97,8 @@ function ProgressionSystem.GetExpansionRequirement(plotIndex)
         plotIndex = ProgressionSystem.GetNextPlotIndex()
     end
     if plotIndex == nil then return nil end
-    return EXPANSION_REQUIREMENTS[plotIndex] or {
+    local requirements = BuildExpansionRequirements()
+    return requirements[plotIndex] or {
         level = math.max(1, plotIndex),
         gold = 500 * plotIndex * plotIndex,
         tour = 30 * plotIndex * plotIndex,
@@ -97,7 +119,7 @@ function ProgressionSystem.CanAffordNextPlot(level, gold, tourValue)
     end
     level = level or state_.gardenLevel
     gold = gold or 0
-    tourValue = tourValue or state_.tourValue
+    tourValue = tourValue or state_.currentTourValue
     if level < requirement.level then
         return false, "等级不足"
     end
@@ -129,7 +151,8 @@ function ProgressionSystem.GetSaveData()
     return {
         unlockedPlotCount = state_.unlockedPlotCount,
         gardenLevel = state_.gardenLevel,
-        tourValue = state_.tourValue,
+        currentTourValue = state_.currentTourValue,
+        bestTourValue = state_.bestTourValue,
     }
 end
 
@@ -137,7 +160,8 @@ function ProgressionSystem.LoadSaveData(data)
     if data == nil then return end
     state_.unlockedPlotCount = ClampUnlockedPlotCount(data.unlockedPlotCount or state_.unlockedPlotCount)
     state_.gardenLevel = data.gardenLevel or math.max(1, state_.unlockedPlotCount)
-    state_.tourValue = data.tourValue or state_.tourValue
+    state_.currentTourValue = data.currentTourValue or data.tourValue or state_.currentTourValue
+    state_.bestTourValue = math.max(data.bestTourValue or 0, state_.currentTourValue)
 end
 
 return ProgressionSystem

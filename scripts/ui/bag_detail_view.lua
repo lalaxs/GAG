@@ -230,6 +230,21 @@ function BagDetailView.Build(item, isPlantView)
                                     UI.Label { text = string.format("%d 金币", item.price or 0), fontSize = 19, fontWeight = "bold", fontColor = {190, 130, 40, 255} },
                                 },
                             },
+                            UI.Panel {
+                                flexDirection = "row",
+                                justifyContent = "space-between",
+                                alignItems = "center",
+                                paddingTop = 10,
+                                paddingBottom = 10,
+                                paddingLeft = 14,
+                                paddingRight = 14,
+                                backgroundColor = {250, 246, 255, 230},
+                                borderRadius = 12,
+                                children = {
+                                    UI.Label { text = "成熟观光值", fontSize = 15, fontColor = {115, 85, 65, 255} },
+                                    UI.Label { text = tostring(item.sightValue or 0), fontSize = 19, fontWeight = "bold", fontColor = {145, 115, 200, 255} },
+                                },
+                            },
                         },
                     },
                     -- 出售按钮

@@ -77,9 +77,44 @@ GameConfig.PLANT_BASE_WEIGHTS = {
     0.45, 0.25, 0.60, 0.70, 3.00, 1.20, 0.35, 0.45, 0.60,
 }
 
+-- 观光值：普通、标准重量、无变异作物的基础观赏价值。
+-- 胡萝卜以 17 作为新手锚点；后续作物按稀有度、体积和视觉表现递增。
+GameConfig.PLANT_SIGHT_BASE_VALUES = {
+    17, 28, 48, 55, 75, 90, 140, 160, 170, 180,
+    300, 360, 330, 390, 650, 760, 850, 950, 1100, 1250,
+    22, 32, 100, 110, 210, 230, 430, 470, 1600,
+}
+
+GameConfig.SIGHT_SIZE_MULTIPLIERS = {
+    Light = 0.85,
+    Normal = 1.0,
+    Large = 1.08,
+    Giant = 1.18,
+}
+
+GameConfig.SIGHT_GROWTH_MULTIPLIERS = {
+    seed = 0.1,
+    sprout = 0.3,
+    growing = 0.6,
+    mature = 1.0,
+}
+
+GameConfig.LAND_UNLOCK_SIGHT_REQUIREMENTS = {
+    [2] = 80,
+    [3] = 220,
+    [4] = 520,
+    [5] = 1100,
+    [6] = 2200,
+    [7] = 4200,
+    [8] = 7600,
+    [9] = 12500,
+}
+GameConfig.CONFIG.LAND_UNLOCK_SIGHT_REQUIREMENTS = GameConfig.LAND_UNLOCK_SIGHT_REQUIREMENTS
+
 for i, weight in ipairs(GameConfig.PLANT_BASE_WEIGHTS) do
     if GameConfig.PLANTS[i] ~= nil then
         GameConfig.PLANTS[i].baseWeight = weight
+        GameConfig.PLANTS[i].sightBase = GameConfig.PLANT_SIGHT_BASE_VALUES[i] or math.max(1, math.floor((GameConfig.PLANTS[i].fruitPrice or 10) * 0.5))
     end
 end
 
@@ -195,26 +230,26 @@ GameConfig.DAILY_TASK_CONFIG = {
 GameConfig.SEED_STACK_MAX = 999
 
 GameConfig.COLOR_MUTATIONS = {
-    { key = "yellow", name = "黄色", color = Color(1.0, 0.88, 0.08, 1.0), multiplier = 1.3, timeMultiplier = 1.03, prefixes = { "琥珀", "日耀", "鎏金", "圣辉", "光铸" } },
-    { key = "blue", name = "蓝色", color = Color(0.12, 0.45, 1.0, 1.0), multiplier = 1.5, timeMultiplier = 1.05, prefixes = { "冰海", "钴蓝", "苍穹", "霜魂", "星穹" } },
-    { key = "red", name = "红色", color = Color(1.0, 0.05, 0.02, 1.0), multiplier = 1.7, timeMultiplier = 1.06, prefixes = { "熔岩", "猩红", "朱砂", "血怒", "赤狱" } },
-    { key = "white", name = "白色", color = Color(0.96, 0.96, 1.0, 1.0), multiplier = 1.8, timeMultiplier = 1.08, prefixes = { "骨白", "月霜", "珍珠", "圣洁", "灵魄" } },
-    { key = "purple", name = "紫色", color = Color(0.58, 0.18, 1.0, 1.0), multiplier = 2.0, timeMultiplier = 1.10, prefixes = { "暮光", "水晶", "幽影", "虚空", "暗裔" } },
-    { key = "black", name = "黑色", color = Color(0.02, 0.02, 0.035, 1.0), multiplier = 2.5, timeMultiplier = 1.15, prefixes = { "暗烬", "墨玉", "永夜", "湮灭", "影噬" } },
+    { key = "yellow", name = "黄色", color = Color(1.0, 0.88, 0.08, 1.0), multiplier = 1.3, sightMultiplier = 1.5, timeMultiplier = 1.03, prefixes = { "琥珀", "日耀", "鎏金", "圣辉", "光铸" } },
+    { key = "blue", name = "蓝色", color = Color(0.12, 0.45, 1.0, 1.0), multiplier = 1.5, sightMultiplier = 1.6, timeMultiplier = 1.05, prefixes = { "冰海", "钴蓝", "苍穹", "霜魂", "星穹" } },
+    { key = "red", name = "红色", color = Color(1.0, 0.05, 0.02, 1.0), multiplier = 1.7, sightMultiplier = 1.7, timeMultiplier = 1.06, prefixes = { "熔岩", "猩红", "朱砂", "血怒", "赤狱" } },
+    { key = "white", name = "白色", color = Color(0.96, 0.96, 1.0, 1.0), multiplier = 1.8, sightMultiplier = 1.8, timeMultiplier = 1.08, prefixes = { "骨白", "月霜", "珍珠", "圣洁", "灵魄" } },
+    { key = "purple", name = "紫色", color = Color(0.58, 0.18, 1.0, 1.0), multiplier = 2.0, sightMultiplier = 2.0, timeMultiplier = 1.10, prefixes = { "暮光", "水晶", "幽影", "虚空", "暗裔" } },
+    { key = "black", name = "黑色", color = Color(0.02, 0.02, 0.035, 1.0), multiplier = 2.5, sightMultiplier = 2.5, timeMultiplier = 1.15, prefixes = { "暗烬", "墨玉", "永夜", "湮灭", "影噬" } },
 }
 
 GameConfig.SPECIAL_MUTATIONS = {
-    { key = "wet", name = "潮湿变异", multiplier = 2.0, timeMultiplier = 1.05, prefixes = { "露浸", "泽地", "潮涌", "海裔", "深渊" } },
-    { key = "frozen", name = "冷冻变异", multiplier = 2.5, timeMultiplier = 1.08, prefixes = { "寒霜", "冰棱", "凛冬", "霜脉", "永冻" } },
-    { key = "cloud", name = "云朵变异", multiplier = 3.0, timeMultiplier = 1.10, prefixes = { "积云", "羽絮", "棉糖", "天穹" } },
-    { key = "chocolate", name = "巧克力变异", multiplier = 3.5, timeMultiplier = 1.12, prefixes = { "可可", "熔浆", "糖壳", "丝滑" } },
-    { key = "pollen", name = "花粉变异", multiplier = 4.0, timeMultiplier = 1.15, prefixes = { "粉雾", "授粉", "蜜腺", "蝶吻" } },
-    { key = "glow", name = "荧光变异", multiplier = 5.0, timeMultiplier = 1.20, prefixes = { "磷光", "夜辉", "萤火", "鬼火", "邪光" } },
-    { key = "stardust", name = "星尘变异", multiplier = 6.0, timeMultiplier = 1.25, prefixes = { "星屑", "彗尾", "银河", "星轨", "天坠" } },
-    { key = "ceramic", name = "陶瓷变异", multiplier = 7.0, timeMultiplier = 1.30, prefixes = { "青瓷", "素烧", "裂纹", "珐琅" } },
-    { key = "rainbow", name = "彩虹变异", multiplier = 10.0, timeMultiplier = 1.40, prefixes = { "虹霓", "幻光", "棱镜", "虹彩", "神谕" } },
-    { key = "void", name = "虚空变异", multiplier = 12.0, timeMultiplier = 1.45, prefixes = { "裂隙", "以太", "吞噬", "低语" } },
-    { key = "gold", name = "黄金变异", multiplier = 15.0, timeMultiplier = 1.50, prefixes = { "镀金", "钱袋", "耀金", "神铸", "王权" } },
+    { key = "wet", name = "潮湿变异", multiplier = 2.0, sightMultiplier = 2.4, timeMultiplier = 1.05, prefixes = { "露浸", "泽地", "潮涌", "海裔", "深渊" } },
+    { key = "frozen", name = "冷冻变异", multiplier = 2.5, sightMultiplier = 2.8, timeMultiplier = 1.08, prefixes = { "寒霜", "冰棱", "凛冬", "霜脉", "永冻" } },
+    { key = "cloud", name = "云朵变异", multiplier = 3.0, sightMultiplier = 3.0, timeMultiplier = 1.10, prefixes = { "积云", "羽絮", "棉糖", "天穹" } },
+    { key = "chocolate", name = "巧克力变异", multiplier = 3.5, sightMultiplier = 3.2, timeMultiplier = 1.12, prefixes = { "可可", "熔浆", "糖壳", "丝滑" } },
+    { key = "pollen", name = "花粉变异", multiplier = 4.0, sightMultiplier = 3.8, timeMultiplier = 1.15, prefixes = { "粉雾", "授粉", "蜜腺", "蝶吻" } },
+    { key = "glow", name = "荧光变异", multiplier = 5.0, sightMultiplier = 4.2, timeMultiplier = 1.20, prefixes = { "磷光", "夜辉", "萤火", "鬼火", "邪光" } },
+    { key = "stardust", name = "星尘变异", multiplier = 6.0, sightMultiplier = 10.0, timeMultiplier = 1.25, prefixes = { "星屑", "彗尾", "银河", "星轨", "天坠" } },
+    { key = "ceramic", name = "陶瓷变异", multiplier = 7.0, sightMultiplier = 5.0, timeMultiplier = 1.30, prefixes = { "青瓷", "素烧", "裂纹", "珐琅" } },
+    { key = "rainbow", name = "彩虹变异", multiplier = 10.0, sightMultiplier = 6.0, timeMultiplier = 1.40, prefixes = { "虹霓", "幻光", "棱镜", "虹彩", "神谕" } },
+    { key = "void", name = "虚空变异", multiplier = 12.0, sightMultiplier = 12.0, timeMultiplier = 1.45, prefixes = { "裂隙", "以太", "吞噬", "低语" } },
+    { key = "gold", name = "黄金变异", multiplier = 15.0, sightMultiplier = 8.0, timeMultiplier = 1.50, prefixes = { "镀金", "钱袋", "耀金", "神铸", "王权" } },
 }
 
 return GameConfig

@@ -219,6 +219,7 @@ function InventorySystem.AddHarvestedCrop(crop)
     table.insert(state_.harvested, {
         name = crop.name,
         price = crop.price,
+        sightValue = crop.sightValue,
         rarity = crop.config.rarity,
         plantIndex = crop.plantIndex,
         weight = crop.weight,

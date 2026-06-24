@@ -461,8 +461,15 @@ local function HandleInput(dt)
     InteractionSystem.HandleInput(dt)
 end
 
+local function UpdateCurrentTourValue()
+    local value = CropSystem.CalculateTotalSightValue(plots_)
+    ProgressionSystem.SetCurrentTourValue(value)
+    return value
+end
+
 local function UpdatePlants(dt)
     local maturedThisFrame = CropSystem.UpdatePlants(plots_, dt)
+    UpdateCurrentTourValue()
     if maturedThisFrame and plantTab_ == "harvest" and GetViewMode() == ViewMode.PLANT and RebuildUI ~= nil then
         RebuildUI()
     end
@@ -539,6 +546,7 @@ function Start()
         countPlotPlants = CountPlotPlants,
         countMaturePlants = CountMaturePlants,
         findPlantAtLocalPosition = FindPlantAtLocalPosition,
+        refreshTourValue = UpdateCurrentTourValue,
     })
 
     UIController.Init({
@@ -721,12 +729,8 @@ function Start()
     })
 
     TalentSystem.Init({
-        onHarvestExp = function(exp)
-            ProgressionSystem.AddTourValue(exp)
-            local seedLabel = UIController.GetLabel("seedLabel")
-            if seedLabel ~= nil then
-                seedLabel:SetText("观光 " .. Format.Gold(ProgressionSystem.GetTourValue()))
-            end
+        onHarvestExp = function(_exp)
+            RefreshUI(true)
         end,
         onLevelUp = function(level)
             ProgressionSystem.SetGardenLevel(level)
