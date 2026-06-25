@@ -244,6 +244,7 @@ function ExpansionView.Show()
             fontColor = COLORS.btnText,
             disabled = not canExpand,
             onClick = function()
+                if deps_.suppressWorldTap then deps_.suppressWorldTap() end
                 if deps_.expandNextPlot and deps_.expandNextPlot() then
                     if modal_ ~= nil then
                         modal_:Close()

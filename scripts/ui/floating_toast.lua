@@ -11,7 +11,7 @@ local FloatingToast = {}
 -- 活跃的飘字列表
 local activeToasts_ = {}
 local registered_ = false
-local fontCreated_ = false
+local nextSequence_ = 0
 
 -- 配置
 local FLOAT_DURATION = 1.2    -- 总持续时间（秒）
@@ -64,8 +64,8 @@ function component_:Render(nvg)
 
         if alpha <= 0.01 then goto continue end
 
-        local centerX = screenW / 2
-        local centerY = screenH * 0.35 + offsetY
+        local centerX = screenW / 2 + (toast.xOffset or 0)
+        local centerY = screenH * (toast.yRatio or 0.35) + offsetY
 
         -- 测量文字宽度（使用 UI 系统的 sans 字体）
         nvgFontFace(nvg, "sans")
@@ -111,19 +111,52 @@ local function EnsureRegistered()
     end
 end
 
+local function CountRecentSimilarToasts(yRatio, priority)
+    local count = 0
+    for _, toast in ipairs(activeToasts_) do
+        if math.abs((toast.baseYRatio or toast.yRatio or 0.35) - yRatio) < 0.001
+            and (toast.priority or 0) == priority
+            and toast.timer < 0.45 then
+            count = count + 1
+        end
+    end
+    return math.min(count, 3)
+end
+
+local function InsertToastSorted(toast)
+    local insertIndex = #activeToasts_ + 1
+    for i, item in ipairs(activeToasts_) do
+        if toast.priority < (item.priority or 0)
+            or (toast.priority == (item.priority or 0) and toast.sequence < (item.sequence or 0)) then
+            insertIndex = i
+            break
+        end
+    end
+    table.insert(activeToasts_, insertIndex, toast)
+end
+
 --- 显示一条浮动飘字
 ---@param text string 显示文本
----@param opts table|nil 可选配置 { fontSize, duration }
+---@param opts table|nil 可选配置 { fontSize, duration, yRatio, priority, stackable, xOffset }
 function FloatingToast.Show(text, opts)
     EnsureRegistered()
     opts = opts or {}
+    local baseYRatio = opts.yRatio or 0.35
+    local priority = opts.priority or 0
+    local stackIndex = opts.stackable == false and 0 or CountRecentSimilarToasts(baseYRatio, priority)
+    nextSequence_ = nextSequence_ + 1
     local toast = {
         text = text,
         fontSize = opts.fontSize or 18,
         timer = 0,
         duration = opts.duration or FLOAT_DURATION,
+        baseYRatio = baseYRatio,
+        yRatio = baseYRatio + stackIndex * 0.055,
+        xOffset = opts.xOffset or 0,
+        priority = priority,
+        sequence = nextSequence_,
     }
-    table.insert(activeToasts_, toast)
+    InsertToastSorted(toast)
 end
 
 --- 每帧更新（兼容旧接口，实际由全局组件自动更新）

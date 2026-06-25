@@ -2,10 +2,13 @@
   "$schema": "../schemas/resources.schema.json",
 
   "preload_groups": [
-
+    "fonts"
   ],
 
   "groups": {
+    "fonts": [
+      "Fonts/ResourceHanRoundedCN-Bold.ttf"
+    ],
     "default": [
       "**"
     ]

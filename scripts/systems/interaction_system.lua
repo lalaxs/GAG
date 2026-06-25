@@ -42,7 +42,22 @@ local function IsWorldTapArea(x, y)
     local h = graphics:GetHeight()
     local bottomReserved = 86
     if cameraSystem_.GetViewMode() == cameraSystem_.ViewMode.PLANT then
-        bottomReserved = 260
+        local tab = deps_.getPlantTab and deps_.getPlantTab() or "seed"
+        if tab == "bag" then
+            bottomReserved = 505
+        elseif tab == "harvest" then
+            bottomReserved = 405
+        else
+            bottomReserved = 390
+        end
+        local collapseBottom = tab == "bag" and 520 or 410
+        local collapseLeft = graphics:GetWidth() - 118
+        local collapseRight = graphics:GetWidth() - 8
+        local collapseTop = h - collapseBottom - 50
+        local collapseBottomY = h - collapseBottom + 16
+        if x >= collapseLeft and x <= collapseRight and y >= collapseTop and y <= collapseBottomY then
+            return false
+        end
     end
     return y > 170 and y < h - bottomReserved
 end
@@ -154,6 +169,8 @@ end
 
 function InteractionSystem.HandleTouchBegin(eventData)
     if IsUIBlocking() then return end
+    local touch = input:GetTouch(0)
+    if touch ~= nil and touch.touchedElement then return end
     HandleWorldTap(eventData["X"]:GetInt(), eventData["Y"]:GetInt())
 end
 

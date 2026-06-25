@@ -77,11 +77,11 @@ function PlantActionController.PlantSeedAt(plotIndex, plantIndex, centerLocalPos
 end
 
 function PlantActionController.HarvestNearestMature(plotIndex, localPos)
-    local success = deps_.CropSystem.HarvestNearestMature(GetPlots(), plotIndex, localPos)
+    local success, harvestInfo = deps_.CropSystem.HarvestNearestMature(GetPlots(), plotIndex, localPos)
     if success then
         RefreshTourValue()
     end
-    return success
+    return success, harvestInfo
 end
 
 function PlantActionController.PlantSeed(plotIndex, plantIndex)
@@ -122,6 +122,18 @@ function PlantActionController.SellBagItem(item)
         deps_.WalletSystem.Add(earned)
     end
     return earned
+end
+
+function PlantActionController.SellHarvestedByFilter(filter)
+    local count, total = deps_.InventorySystem.SellHarvestedByFilter(filter)
+    if count > 0 then
+        deps_.setSelectedBagItem(nil)
+        if deps_.clearBagPreview ~= nil then
+            deps_.clearBagPreview()
+        end
+        deps_.WalletSystem.Add(total)
+    end
+    return count, total
 end
 
 function PlantActionController.FindNextOwnedSeedIndex(startIndex)
@@ -224,13 +236,22 @@ function PlantActionController.PerformPlotAction(plotIndex, localPos)
                 crop = deps_.findPlantAtLocalPosition(plot, localPos, true)
             end
             if crop ~= nil then
-                local cropName = crop.name
-                if PlantActionController.HarvestNearestMature(GetSelectedPlot(), localPos) then
-                    ShowToast("收获 " .. cropName)
+                local success, harvestInfo = PlantActionController.HarvestNearestMature(GetSelectedPlot(), localPos)
+                if success then
+                    local cropName = harvestInfo and harvestInfo.name or crop.name
+                    local exp = harvestInfo and harvestInfo.exp or 0
+                    local text = "收获了" .. cropName .. "，获得了" .. exp .. "经验"
+                    ShowToast(text)
+                    FloatingToast.Show(text, { fontSize = 19, duration = 1.6, yRatio = 0.42, priority = 0 })
                 end
             else
-                if PlantActionController.HarvestNearestMature(GetSelectedPlot(), nil) then
-                    ShowToast("收获成功")
+                local success, harvestInfo = PlantActionController.HarvestNearestMature(GetSelectedPlot(), nil)
+                if success then
+                    local cropName = harvestInfo and harvestInfo.name or "作物"
+                    local exp = harvestInfo and harvestInfo.exp or 0
+                    local text = "收获了" .. cropName .. "，获得了" .. exp .. "经验"
+                    ShowToast(text)
+                    FloatingToast.Show(text, { fontSize = 19, duration = 1.6, yRatio = 0.42, priority = 0 })
                 end
             end
         end

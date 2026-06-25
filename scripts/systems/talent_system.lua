@@ -36,11 +36,18 @@ TalentSystem.TALENTS = {
     { id = "mutation_3", name = "基因突变", desc = "变异概率提高 35%", category = "mutation", bonusKey = "mutationBonus", bonusValue = 0.15, cost = 2, goldCost = 20000, requires = "mutation_2" },
     { id = "mutation_4", name = "进化压力", desc = "变异概率提高 50%", category = "mutation", bonusKey = "mutationBonus", bonusValue = 0.15, cost = 2, goldCost = 90000, requires = "mutation_3" },
     { id = "mutation_5", name = "造物主", desc = "变异概率提高 75%", category = "mutation", bonusKey = "mutationBonus", bonusValue = 0.25, cost = 3, goldCost = 300000, requires = "mutation_4" },
+
+    { id = "bag_capacity_1", name = "布袋扩容", desc = "收获背包容量提高到 35 格", category = "bag", bonusKey = "bagCapacity", bonusValue = 15, cost = 1, goldCost = 600, requires = nil },
+    { id = "bag_capacity_2", name = "藤篮收纳", desc = "收获背包容量提高到 50 格", category = "bag", bonusKey = "bagCapacity", bonusValue = 15, cost = 1, goldCost = 2500, requires = "bag_capacity_1" },
+    { id = "bag_capacity_3", name = "仓储达人", desc = "收获背包容量提高到 65 格", category = "bag", bonusKey = "bagCapacity", bonusValue = 15, cost = 2, goldCost = 10000, requires = "bag_capacity_2" },
+    { id = "bag_capacity_4", name = "丰收仓库", desc = "收获背包容量提高到 80 格", category = "bag", bonusKey = "bagCapacity", bonusValue = 15, cost = 2, goldCost = 40000, requires = "bag_capacity_3" },
+    { id = "bag_capacity_5", name = "无限整理术", desc = "收获背包容量提高到 100 格", category = "bag", bonusKey = "bagCapacity", bonusValue = 20, cost = 3, goldCost = 120000, requires = "bag_capacity_4" },
 }
 
 -- ============================================================================
 -- 等级经验配置
--- 每次升级获得 1 天赋点，经验需求递增
+-- 2-15 级每次升级获得 1 天赋点，16-30 级每次升级获得 2 天赋点。
+-- 初始 1 点 + 升级总计 44 点 = 45 点，可点满当前 5 条天赋链。
 -- ============================================================================
 
 TalentSystem.LEVEL_EXP_TABLE = {
@@ -64,9 +71,18 @@ TalentSystem.LEVEL_EXP_TABLE = {
     [18] = 1950,
     [19] = 2230,
     [20] = 2550,
+    [21] = 2900,
+    [22] = 3280,
+    [23] = 3700,
+    [24] = 4160,
+    [25] = 4660,
+    [26] = 5200,
+    [27] = 5780,
+    [28] = 6400,
+    [29] = 7060,
 }
 
-TalentSystem.MAX_LEVEL = 20
+TalentSystem.MAX_LEVEL = 30
 
 TalentSystem.RARITY_BASE_EXP = {
     ["普通"] = 5,
@@ -93,6 +109,13 @@ function TalentSystem.Init(callbacks)
         level = 1,
         exp = 0,
     }
+end
+
+function TalentSystem.GetLevelUpTalentPoints(level)
+    if level >= 16 then
+        return 2
+    end
+    return 1
 end
 
 function TalentSystem.GetLevel()
@@ -134,14 +157,17 @@ function TalentSystem.AddHarvestExp(rarity, priceMultiplier)
     end
 
     local leveled = false
+    local totalPointGain = 0
     while not TalentSystem.IsMaxLevel() do
         local needed = TalentSystem.LEVEL_EXP_TABLE[state_.level]
         if needed == nil or state_.exp < needed then break end
         state_.exp = state_.exp - needed
         state_.level = state_.level + 1
-        state_.talentPoints = state_.talentPoints + 1
+        local pointGain = TalentSystem.GetLevelUpTalentPoints(state_.level)
+        state_.talentPoints = state_.talentPoints + pointGain
+        totalPointGain = totalPointGain + pointGain
         leveled = true
-        print(string.format("[天赋] 升级! 等级 %d，获得 1 天赋点（可用: %d）", state_.level, state_.talentPoints))
+        print(string.format("[天赋] 升级! 等级 %d，获得 %d 天赋点（可用: %d）", state_.level, pointGain, state_.talentPoints))
     end
 
     if TalentSystem.IsMaxLevel() then
@@ -149,7 +175,7 @@ function TalentSystem.AddHarvestExp(rarity, priceMultiplier)
     end
 
     if leveled and callbacks_.onLevelUp then
-        callbacks_.onLevelUp(state_.level)
+        callbacks_.onLevelUp(state_.level, totalPointGain)
     end
 
     return exp
@@ -210,11 +236,6 @@ function TalentSystem.UnlockTalent(talentId)
     state_.unlockedTalents[talentId] = true
     print(string.format("[天赋] 点亮: %s (%s +%.2f) 消耗金币 %d", talent.name, talent.bonusKey, talent.bonusValue, talent.goldCost or 0))
     return true
-end
-
-function TalentSystem.OnRarityCollected(rarity)
-    state_.talentPoints = state_.talentPoints + 1
-    print(string.format("[天赋] 集齐 %s 品级全种子，奖励 1 天赋点!", rarity))
 end
 
 function TalentSystem.GetSaveData()

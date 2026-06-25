@@ -198,7 +198,7 @@ end
 function SettingsView.BuildButton()
     return UI.Panel {
         position = "absolute",
-        top = 50,
+        top = 132,
         right = 14,
         gap = 8,
         alignItems = "flex-end",

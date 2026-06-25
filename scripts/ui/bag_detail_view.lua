@@ -126,6 +126,10 @@ function BagDetailView.Build(item, isPlantView)
         paddingRight = 20,
         paddingTop = 90,
         paddingBottom = isPlantView and 330 or 90,
+        onClick = function()
+            deps_.suppressWorldTap()
+            deps_.closeBagItemDetail()
+        end,
         children = {
             UI.Panel {
                 width = "100%",
@@ -139,6 +143,9 @@ function BagDetailView.Build(item, isPlantView)
                 borderWidth = 3,
                 borderColor = {94, 194, 131, 235},
                 boxShadow = { { x = 0, y = 8, blur = 20, spread = 0, color = {0, 0, 0, 70} } },
+                onClick = function()
+                    deps_.suppressWorldTap()
+                end,
                 children = {
                     -- 标题行
                     UI.Panel {

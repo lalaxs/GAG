@@ -9,6 +9,7 @@
 local UI = require("urhox-libs/UI")
 local SettingsView = require("ui.settings_view")
 local FloatingToast = require("ui.floating_toast")
+local ProfileView = require("ui.profile_view")
 
 local MainView = {}
 
@@ -105,16 +106,7 @@ local function BuildTopHud(labels)
         gap = 8,
         pointerEvents = "box-none",
         children = {
-            -- 等级徽章
-            UI.Panel {
-                paddingTop = 7, paddingBottom = 7,
-                paddingLeft = 14, paddingRight = 14,
-                backgroundColor = {78, 172, 110, 255},
-                borderRadius = 14,
-                children = {
-                    labels.plotLabel,
-                },
-            },
+            deps_.isFarmView() and ProfileView.BuildHudAvatar() or UI.Panel { width = 0, height = 0 },
             UI.Panel {
                 flexDirection = "row",
                 alignItems = "center",
@@ -198,19 +190,44 @@ local function BuildFarmControls(labels, actionButton)
         gap = 16,
         pointerEvents = "box-none",
         children = {
-            UI.Button {
-                text = "商店",
+            UI.Panel {
                 width = 90,
-                height = 90,
-                fontSize = 22,
-                fontWeight = "bold",
-                backgroundColor = {255, 250, 240, 245},
-                fontColor = {78, 155, 100, 255},
-                borderRadius = 28,
-                onClick = function()
-                    deps_.suppressWorldTap()
-                    deps_.openShop()
-                end,
+                height = 190,
+                alignItems = "center",
+                justifyContent = "flex-end",
+                children = {
+                    UI.Button {
+                        text = "委托",
+                        width = 90,
+                        height = 90,
+                        marginBottom = 14,
+                        fontSize = 22,
+                        fontWeight = "bold",
+                        backgroundColor = {255, 250, 240, 245},
+                        fontColor = {195, 125, 45, 255},
+                        borderRadius = 28,
+                        onClick = function()
+                            deps_.suppressWorldTap()
+                            if deps_.openCommission then
+                                deps_.openCommission()
+                            end
+                        end,
+                    },
+                    UI.Button {
+                        text = "商店",
+                        width = 90,
+                        height = 90,
+                        fontSize = 22,
+                        fontWeight = "bold",
+                        backgroundColor = {255, 250, 240, 245},
+                        fontColor = {78, 155, 100, 255},
+                        borderRadius = 28,
+                        onClick = function()
+                            deps_.suppressWorldTap()
+                            deps_.openShop()
+                        end,
+                    },
+                },
             },
             actionButton,
             UI.Panel {
@@ -380,7 +397,7 @@ local function BuildTalentButton(labels)
 
     return UI.Panel {
         position = "absolute",
-        top = 110,
+        top = 152,
         left = 12,
         overflow = "visible",
         gap = 8,
@@ -423,6 +440,25 @@ local function BuildTalentButton(labels)
                     end
                 end,
             } or nil,
+            UI.Button {
+                text = "图鉴",
+                width = 69,
+                height = 66,
+                paddingTop = 0,
+                paddingRight = 16,
+                paddingBottom = 5,
+                paddingLeft = 16,
+                fontSize = 15,
+                fontWeight = "bold",
+                backgroundColor = {255, 250, 240, 245},
+                fontColor = {160, 112, 62, 255},
+                borderRadius = 14,
+                onClick = function()
+                    if deps_.onCodexOpen then
+                        deps_.onCodexOpen()
+                    end
+                end,
+            },
             labels.talentBadge,
         },
     }
@@ -438,7 +474,7 @@ function MainView.BuildRoot(labels, children)
         pointerEvents = "box-none",
         children = {
             BuildTopHud(labels),
-            BuildTalentButton(labels),
+            deps_.isFarmView() and BuildTalentButton(labels) or UI.Panel { width = 0, height = 0 },
             deps_.isFarmView() and BuildFarmControls(labels, actionButton) or BuildPlantShell(children.plantContent),
             BuildCollapseButton(),
             SettingsView.BuildButton(),

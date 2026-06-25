@@ -16,6 +16,7 @@ local CameraSystem = require("systems.camera_system")
 local InteractionSystem = require("systems.interaction_system")
 local AudioSystem = require("systems.audio_system")
 local SeedPackSystem = require("systems.seed_pack_system")
+local CommissionSystem = require("systems.commission_system")
 local SeedPackOpeningController = require("controllers.seed_pack_opening_controller")
 local ExpansionController = require("controllers.expansion_controller")
 local PlotDisplayController = require("controllers.plot_display_controller")
@@ -23,14 +24,19 @@ local UIController = require("controllers.ui_controller")
 local PlantActionController = require("controllers.plant_action_controller")
 local WalletSystem = require("systems.wallet_system")
 local TalentSystem = require("systems.talent_system")
+local PlayerSystem = require("systems.player_system")
 local TalentView = require("ui.talent_view")
 local ExpansionView = require("ui.expansion_view")
 local SeedPackView = require("ui.seed_pack_view")
 local TaskView = require("ui.task_view")
+local CommissionView = require("ui.commission_view")
+local CodexView = require("ui.codex_view")
 local PlantPanelView = require("ui.plant_panel_view")
 local BagDetailView = require("ui.bag_detail_view")
 local MainView = require("ui.main_view")
+local ProfileView = require("ui.profile_view")
 local SettingsView = require("ui.settings_view")
+local BulkSellView = require("ui.bulk_sell_view")
 local FloatingToast = require("ui.floating_toast")
 local PlotBounceAnimator = require("visuals.plot_bounce_animator")
 
@@ -62,6 +68,7 @@ local seedBagBuffs_ = inventoryState_.seedBagBuffs
 local harvested_ = inventoryState_.harvested
 local seedPacks_ = inventoryState_.seedPacks
 local collectedPlants_ = inventoryState_.collectedPlants
+local codexStats_ = inventoryState_.codexStats
 local silverRewardClaimed_ = inventoryState_.silverRewardClaimed
 local dailyTaskState_ = inventoryState_.dailyTaskState
 local taskModal_ = nil
@@ -78,6 +85,7 @@ local SelectPlotByDelta = nil
 local ClearBagPreview = nil
 local OpenSeedPackHub = nil
 local OpenTaskPanel = nil
+local OpenCommissionPanel = nil
 local ExpandNextPlot = nil
 local UpdateCameraTargetForPlotDisplay = nil
 local RefreshSelection = nil
@@ -304,7 +312,15 @@ local function PlantSeedAt(plotIndex, plantIndex, centerLocalPos)
 end
 
 local function HarvestNearestMature(plotIndex, localPos)
-    return PlantActionController.HarvestNearestMature(plotIndex, localPos)
+    local success, harvestInfo = PlantActionController.HarvestNearestMature(plotIndex, localPos)
+    if success then
+        local cropName = harvestInfo and harvestInfo.name or "作物"
+        local exp = harvestInfo and harvestInfo.exp or 0
+        local text = "收获了" .. cropName .. "，获得了" .. exp .. "经验"
+        ShowToast(text)
+        FloatingToast.Show(text, { fontSize = 19, duration = 1.6, yRatio = 0.42, priority = 0 })
+    end
+    return success, harvestInfo
 end
 
 local function PlantSeed(plotIndex, plantIndex)
@@ -321,6 +337,10 @@ end
 
 local function SellBagItem(item)
     return PlantActionController.SellBagItem(item)
+end
+
+local function SellHarvestedByFilter(filter)
+    return PlantActionController.SellHarvestedByFilter(filter)
 end
 
 local function CountPlotPlants(plot)
@@ -393,6 +413,10 @@ end
 
 OpenTaskPanel = function()
     TaskView.Open()
+end
+
+OpenCommissionPanel = function()
+    CommissionView.Show()
 end
 
 ExpandNextPlot = function()
@@ -490,6 +514,7 @@ function HandleUpdate(eventType, eventData)
     UpdatePlants(dt)
     UpdateSeedPackOpening(dt)
     Shop.Update(dt)
+    CommissionSystem.Update(dt)
     FloatingToast.Update(dt)
 
     UIController.Update(dt)
@@ -518,6 +543,12 @@ function Start()
     FarmSystem.Init(CONFIG, materials_)
     CreateScene()
     ProgressionSystem.Init(CONFIG)
+    PlayerSystem.Init({
+        onChanged = function()
+            if ProfileView.IsOpen() then return end
+            if RebuildUI ~= nil then RebuildUI() end
+        end,
+    })
     unlockedPlotCount_ = ProgressionSystem.GetUnlockedPlotCount()
     CreateFarm()
     PlantActionController.Init({
@@ -597,9 +628,21 @@ function Start()
     WalletSystem.Init(CONFIG.StartMoney)
     InventorySystem.Init(GameConfig, {
         showToast = ShowToast,
+        showFloatingToast = function(text)
+            FloatingToast.Show(text, { fontSize = 20, duration = 1.5, yRatio = 0.38, priority = 5 })
+        end,
+        getHarvestBagBonus = function()
+            return TalentSystem.GetBonus("bagCapacity")
+        end,
     })
 
     SeedPackSystem.Init(GameConfig, InventorySystem)
+    CommissionSystem.Init(GameConfig, InventorySystem, {
+        showToast = ShowToast,
+        onRefresh = function()
+            print("[委托] 新委托已刷新")
+        end,
+    })
     SeedPackOpeningController.Init({
         countSeedPacks = CountSeedPacks,
         showToast = ShowToast,
@@ -646,10 +689,30 @@ function Start()
         end,
     })
 
+    CommissionView.Init({
+        seedPackConfig = SEED_PACK_CONFIG,
+        getCommissions = function() return CommissionSystem.GetCommissions() end,
+        getTimeLeftText = function() return CommissionSystem.GetTimeLeftText() end,
+        getRequirementText = function(commission) return CommissionSystem.GetRequirementText(commission) end,
+        getMatchingItems = function(commission) return CommissionSystem.GetMatchingHarvestedItems(commission) end,
+        completeCommission = function(commission, item)
+            local ok = CommissionSystem.CompleteCommission(commission, item)
+            RefreshUI(true)
+            return ok
+        end,
+        suppressWorldTap = function() suppressNextWorldTap_ = true end,
+        showToast = ShowToast,
+        rebuildUI = function()
+            if RebuildUI ~= nil then RebuildUI() end
+        end,
+    })
+
     PlantPanelView.Init({
         plants = PLANTS,
         seedBag = seedBag_,
         harvested = harvested_,
+        getHarvestBagCapacity = function() return InventorySystem.GetHarvestBagCapacity() end,
+        getHarvestBagMaxCapacity = function() return InventorySystem.GetHarvestBagMaxCapacity() end,
         getSelectedPlot = function() return plots_[selectedPlot_] end,
         getSelectedPlotIndex = function() return selectedPlot_ end,
         getSelectedSeed = function() return selectedSeed_ end,
@@ -661,6 +724,10 @@ function Start()
         end,
         harvestNearestMature = HarvestNearestMature,
         openBagItemDetail = OpenBagItemDetail,
+        openBulkSell = function()
+            suppressNextWorldTap_ = true
+            BulkSellView.Show()
+        end,
     })
 
     BagDetailView.Init({
@@ -673,6 +740,25 @@ function Start()
         end,
     })
 
+    BulkSellView.Init({
+        suppressWorldTap = function() suppressNextWorldTap_ = true end,
+        previewSellHarvestedByFilter = function(filter)
+            return InventorySystem.PreviewSellHarvestedByFilter(filter)
+        end,
+        sellHarvestedByFilter = SellHarvestedByFilter,
+        showToast = ShowToast,
+        rebuildUI = function()
+            if RebuildUI ~= nil then RebuildUI() end
+        end,
+    })
+
+    CodexView.Init({
+        plants = PLANTS,
+        collectedPlants = collectedPlants_,
+        codexStats = codexStats_,
+        suppressWorldTap = function() suppressNextWorldTap_ = true end,
+    })
+
     MainView.Init({
         isFarmView = function() return GetViewMode() == ViewMode.FARM end,
         isPlantView = function() return GetViewMode() == ViewMode.PLANT end,
@@ -682,6 +768,7 @@ function Start()
         enterPlantView = EnterPlantView,
         enterFarmView = EnterFarmView,
         openShop = function() Shop.Open() end,
+        openCommission = OpenCommissionPanel,
         openSeedPackHub = OpenSeedPackHub,
         openTaskPanel = OpenTaskPanel,
         countSeedPacks = CountSeedPacks,
@@ -701,8 +788,32 @@ function Start()
             suppressNextWorldTap_ = true
             ExpansionView.Show()
         end,
+        onCodexOpen = function()
+            suppressNextWorldTap_ = true
+            CodexView.Show()
+        end,
         isExpansionMaxed = function()
             return not ProgressionSystem.CanUnlockNextPlot()
+        end,
+    })
+
+    ProfileView.Init({
+        suppressWorldTap = function() suppressNextWorldTap_ = true end,
+        getDisplayName = function() return PlayerSystem.GetDisplayName() end,
+        getTapNickname = function() return PlayerSystem.GetTapNickname() end,
+        getUserId = function() return PlayerSystem.GetUserId() end,
+        getAvatars = function() return PlayerSystem.GetAvatars() end,
+        getSelectedAvatar = function() return PlayerSystem.GetSelectedAvatar() end,
+        getSelectedAvatarIndex = function() return PlayerSystem.GetSelectedAvatarIndex() end,
+        selectAvatar = function(index) PlayerSystem.SelectAvatar(index) end,
+        setNickname = function(name) return PlayerSystem.SetNickname(name) end,
+        getLevel = function() return TalentSystem.GetLevel() end,
+        getExp = function() return TalentSystem.GetExp() end,
+        getExpToNextLevel = function() return TalentSystem.GetExpToNextLevel() end,
+        getTourValue = function() return ProgressionSystem.GetTourValue() end,
+        showToast = ShowToast,
+        rebuildUI = function()
+            if RebuildUI ~= nil then RebuildUI() end
         end,
     })
 
@@ -732,9 +843,11 @@ function Start()
         onHarvestExp = function(_exp)
             RefreshUI(true)
         end,
-        onLevelUp = function(level)
+        onLevelUp = function(level, pointGain)
             ProgressionSystem.SetGardenLevel(level)
-            ShowToast("升级! 等级 " .. level .. " — 获得天赋点")
+            local levelUpText = "升级! 等级 " .. level .. " — 获得 " .. (pointGain or 1) .. " 天赋点"
+            ShowToast(levelUpText)
+            FloatingToast.Show(levelUpText, { fontSize = 22, duration = 2.0, yRatio = 0.29, priority = 10 })
             local plotLabel = UIController.GetLabel("plotLabel")
             if plotLabel ~= nil then
                 plotLabel:SetText("LV" .. level)
@@ -749,6 +862,7 @@ function Start()
     })
 
     TalentView.Init({
+        suppressWorldTap = function() suppressNextWorldTap_ = true end,
         onTalentChanged = function()
             -- 天赋变更后刷新UI
         end,
@@ -772,6 +886,7 @@ function Start()
     })
 
     ExpansionView.Init({
+        suppressWorldTap = function() suppressNextWorldTap_ = true end,
         getLevel = function()
             return TalentSystem.GetLevel()
         end,
@@ -833,7 +948,7 @@ function Start()
         harvestNearestMature = HarvestNearestMature,
         plantSeed = PlantSeed,
         isUIBlocking = function()
-            return SettingsView.IsOpen() or Shop.IsOpen() or ExpansionView.IsOpen()
+            return ProfileView.IsOpen() or SettingsView.IsOpen() or Shop.IsOpen() or CommissionView.IsOpen() or ExpansionView.IsOpen() or TalentView.IsOpen() or BulkSellView.IsOpen() or CodexView.IsOpen()
         end,
     })
 

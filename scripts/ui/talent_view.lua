@@ -30,6 +30,7 @@ local TALENT_CHAINS = {
     { label = "生长", color = {60, 160, 200, 255}, talents = { "grow_speed_1", "grow_speed_2", "grow_speed_3", "grow_speed_4", "grow_speed_5" } },
     { label = "经济", color = {220, 175, 40, 255}, talents = { "sell_bonus_1", "sell_bonus_2", "sell_bonus_3", "sell_bonus_4", "sell_bonus_5" } },
     { label = "变异", color = {170, 90, 210, 255}, talents = { "mutation_1", "mutation_2", "mutation_3", "mutation_4", "mutation_5" } },
+    { label = "背包", color = {190, 130, 70, 255}, talents = { "bag_capacity_1", "bag_capacity_2", "bag_capacity_3", "bag_capacity_4", "bag_capacity_5" } },
 }
 
 local NODE_SIZE = 52
@@ -151,10 +152,10 @@ RefreshDetailPanel = function(successText)
         statusColor = {180, 140, 20, 255}
     elseif not hasReq then
         statusText = "需要先解锁前置天赋"
-        statusColor = {160, 80, 80, 255}
+        statusColor = {210, 70, 55, 255}
     else
         statusText = "条件不足"
-        statusColor = {150, 150, 150, 255}
+        statusColor = {210, 70, 55, 255}
     end
 
     detailPanel_:AddChild(UI.Label {
@@ -251,6 +252,7 @@ RefreshDetailPanel = function(successText)
             borderRadius = 10,
             marginTop = 8,
             onClick = function()
+                if deps_.suppressWorldTap then deps_.suppressWorldTap() end
                 local unlockedTalentId = selectedTalentId_
                 local talentName = talent.name
                 if TalentSystem.UnlockTalent(unlockedTalentId) then
@@ -419,71 +421,74 @@ function TalentView.Show()
         end,
     }
 
-    modal_:AddContent(UI.Panel {
-        width = "100%",
-        gap = 2,
-        children = {
-            -- 顶部信息
-            UI.Panel {
-                width = "100%",
-                flexDirection = "row",
-                justifyContent = "space-between",
-                alignItems = "center",
-                paddingBottom = 8,
-                borderBottomWidth = 1,
-                borderColor = {235, 235, 235, 255},
-                children = {
-                    UI.Panel {
-                        flexDirection = "row", alignItems = "center", gap = 8,
-                        children = {
-                            UI.Panel {
-                                paddingTop = 4, paddingBottom = 4,
-                                paddingLeft = 10, paddingRight = 10,
-                                backgroundColor = {78, 172, 110, 255},
-                                borderRadius = 10,
-                                children = {
-                                    UI.Label { text = "LV" .. level, fontSize = 18, fontWeight = "bold", fontColor = {255, 255, 255, 255} },
-                                },
-                            },
-                            UI.Panel {
-                                gap = 2,
-                                children = {
-                                    UI.Panel {
-                                        width = 120, height = 10, borderRadius = 5,
-                                        backgroundColor = {225, 228, 235, 255},
-                                        overflow = "hidden",
-                                        children = {
-                                            UI.Panel {
-                                                width = tostring(math.floor(expProgress * 100)) .. "%",
-                                                height = "100%", borderRadius = 5,
-                                                backgroundColor = {100, 180, 240, 255},
-                                            },
-                                        },
-                                    },
-                                    UI.Label { text = isMax and "MAX" or (exp .. "/" .. expNeeded), fontSize = 14, fontColor = {120, 120, 120, 255} },
-                                },
+    local chainRows = {}
+    for _, chain in ipairs(TALENT_CHAINS) do
+        table.insert(chainRows, BuildChainRow(chain))
+    end
+
+    local contentChildren = {
+        -- 顶部信息
+        UI.Panel {
+            width = "100%",
+            flexDirection = "row",
+            justifyContent = "space-between",
+            alignItems = "center",
+            paddingBottom = 8,
+            borderBottomWidth = 1,
+            borderColor = {235, 235, 235, 255},
+            children = {
+                UI.Panel {
+                    flexDirection = "row", alignItems = "center", gap = 8,
+                    children = {
+                        UI.Panel {
+                            paddingTop = 4, paddingBottom = 4,
+                            paddingLeft = 10, paddingRight = 10,
+                            backgroundColor = {78, 172, 110, 255},
+                            borderRadius = 10,
+                            children = {
+                                UI.Label { text = "LV" .. level, fontSize = 18, fontWeight = "bold", fontColor = {255, 255, 255, 255} },
                             },
                         },
-                    },
-                    UI.Panel {
-                        flexDirection = "row", alignItems = "center", gap = 4,
-                        children = {
-                            UI.Label { text = "天赋点", fontSize = 15, fontColor = {100, 100, 100, 255} },
-                            pointsBadge_,
+                        UI.Panel {
+                            gap = 2,
+                            children = {
+                                UI.Panel {
+                                    width = 120, height = 10, borderRadius = 5,
+                                    backgroundColor = {225, 228, 235, 255},
+                                    overflow = "hidden",
+                                    children = {
+                                        UI.Panel {
+                                            width = tostring(math.floor(expProgress * 100)) .. "%",
+                                            height = "100%", borderRadius = 5,
+                                            backgroundColor = {100, 180, 240, 255},
+                                        },
+                                    },
+                                },
+                                UI.Label { text = isMax and "MAX" or (exp .. "/" .. expNeeded), fontSize = 14, fontColor = {120, 120, 120, 255} },
+                            },
                         },
                     },
                 },
+                UI.Panel {
+                    flexDirection = "row", alignItems = "center", gap = 4,
+                    children = {
+                        UI.Label { text = "天赋点", fontSize = 15, fontColor = {100, 100, 100, 255} },
+                        pointsBadge_,
+                    },
+                },
             },
-            -- 天赋树
-            BuildChainRow(TALENT_CHAINS[1]),
-            BuildChainRow(TALENT_CHAINS[2]),
-            BuildChainRow(TALENT_CHAINS[3]),
-            BuildChainRow(TALENT_CHAINS[4]),
-            -- 分割线
-            UI.Panel { width = "100%", height = 1, backgroundColor = {235, 235, 235, 255}, marginTop = 4 },
-            -- 详情
-            detailPanel_,
         },
+    }
+    for _, row in ipairs(chainRows) do
+        table.insert(contentChildren, row)
+    end
+    table.insert(contentChildren, UI.Panel { width = "100%", height = 1, backgroundColor = {235, 235, 235, 255}, marginTop = 4 })
+    table.insert(contentChildren, detailPanel_)
+
+    modal_:AddContent(UI.Panel {
+        width = "100%",
+        gap = 2,
+        children = contentChildren,
     })
 
     RefreshDetailPanel()
@@ -495,6 +500,10 @@ function TalentView.Hide()
     if modal_ ~= nil then
         modal_:Close()
     end
+end
+
+function TalentView.IsOpen()
+    return modal_ ~= nil
 end
 
 return TalentView

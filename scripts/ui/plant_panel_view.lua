@@ -239,15 +239,22 @@ function PlantPanelView.BuildContent()
         end
 
     else
+        local capacity = deps_.getHarvestBagCapacity and deps_.getHarvestBagCapacity() or 20
+        local slotW = "19.0%"
+        local slotH = 90
+        local iconW = 54
+        local iconH = 45
+        local gridGap = 4
+
         local slots = {}
-        for i = 1, 10 do
+        for i = 1, capacity do
             local item = deps_.harvested[i]
             local itemIconPath = item and item.plantIndex and string.format("image/plants/plants (%d).png", item.plantIndex) or nil
             local weightText = item and item.weight and string.format("%.2fkg", item.weight) or ""
             local isGiant = item ~= nil and item.weightTier == "Giant"
             table.insert(slots, UI.Panel {
-                width = "18%",
-                height = 98,
+                width = slotW,
+                height = slotH,
                 justifyContent = "center",
                 alignItems = "center",
                 backgroundColor = {255, 253, 245, 255},
@@ -262,14 +269,14 @@ function PlantPanelView.BuildContent()
                 end,
                 children = item and {
                     UI.Panel {
-                        width = 56,
-                        height = 46,
-                        marginBottom = 3,
+                        width = iconW,
+                        height = iconH,
+                        marginBottom = 2,
                         backgroundImage = itemIconPath,
                         backgroundFit = "contain",
                     },
-                    UI.Label { text = item.name, fontSize = 10, fontWeight = "bold", fontColor = COL_TXT, textAlign = "center" },
-                    UI.Label { text = weightText, fontSize = 10, fontWeight = "bold", fontColor = isGiant and {220, 80, 70, 255} or {94, 160, 100, 255}, textAlign = "center" },
+                    UI.Label { text = item.name, fontSize = 9, fontWeight = "bold", fontColor = COL_TXT, textAlign = "center" },
+                    UI.Label { text = weightText, fontSize = 8, fontWeight = "bold", fontColor = isGiant and {220, 80, 70, 255} or {94, 160, 100, 255}, textAlign = "center" },
                     isGiant and UI.Panel {
                         position = "absolute",
                         top = 2,
@@ -290,14 +297,56 @@ function PlantPanelView.BuildContent()
 
         return UI.Panel {
             height = CONTENT_H + 110,
+            gap = 6,
             children = {
+                UI.Panel {
+                    flexDirection = "row",
+                    justifyContent = "space-between",
+                    alignItems = "center",
+                    children = {
+                        UI.Label { text = "收获背包", fontSize = 12, fontWeight = "bold", fontColor = COL_TXT },
+                        UI.Panel {
+                            flexDirection = "row",
+                            alignItems = "center",
+                            gap = 8,
+                            children = {
+                                UI.Label { text = string.format("%d/%d", #deps_.harvested, capacity), fontSize = 12, fontWeight = "bold", fontColor = #deps_.harvested >= capacity and {220, 80, 70, 255} or COL_SUB },
+                                UI.Button {
+                                    text = "一键出售",
+                                    width = 88,
+                                    height = 32,
+                                    fontSize = 13,
+                                    fontWeight = "bold",
+                                    borderRadius = 12,
+                                    backgroundColor = {255, 238, 190, 255},
+                                    fontColor = {115, 82, 45, 255},
+                                    borderWidth = 1,
+                                    borderColor = {220, 175, 90, 230},
+                                    onClick = function()
+                                        deps_.suppressWorldTap()
+                                        if deps_.openBulkSell then
+                                            deps_.openBulkSell()
+                                        end
+                                    end,
+                                },
+                            },
+                        },
+                    },
+                },
                 UI.ScrollView {
                     scrollY = true,
                     showScrollbar = false,
                     flexGrow = 1,
                     flexBasis = 0,
                     children = {
-                        UI.Panel { flexDirection = "row", flexWrap = "wrap", gap = 8, justifyContent = "flex-start", children = slots },
+                        UI.Panel {
+                            width = "100%",
+                            flexDirection = "row",
+                            flexWrap = "wrap",
+                            gap = gridGap,
+                            justifyContent = "flex-start",
+                            children = slots,
+                        },
                     },
                 },
             },

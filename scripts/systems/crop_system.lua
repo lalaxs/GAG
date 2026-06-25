@@ -580,16 +580,19 @@ function CropSystem.HarvestNearestMature(plots, plotIndex, localPos)
         end
     end
     if crop == nil or cropIndex == nil then return false end
-    deps_.InventorySystem.AddHarvestedCrop(crop)
+    if not deps_.InventorySystem.AddHarvestedCrop(crop) then
+        return false
+    end
     crop.root:Remove()
     table.remove(plot.plants, cropIndex)
     print("收获: " .. crop.name .. " 价值 " .. crop.price)
 
+    local gainedExp = 0
     -- 天赋系统：收获获得经验值
     if deps_.TalentSystem and deps_.TalentSystem.AddHarvestExp then
         local rarity = crop.config.rarity or "普通"
         local priceMult = crop.mutation and crop.mutation.priceMultiplier or 1.0
-        deps_.TalentSystem.AddHarvestExp(rarity, priceMult)
+        gainedExp = deps_.TalentSystem.AddHarvestExp(rarity, priceMult) or 0
     end
 
     -- 天赋系统：收获掉落种子包
@@ -602,14 +605,13 @@ function CropSystem.HarvestNearestMature(plots, plotIndex, localPos)
         deps_.showToast("掉落: " .. packName)
     end
 
-    -- 收藏成就检查（增强版，带天赋回调）
-    local talentCb = nil
-    if deps_.TalentSystem and deps_.TalentSystem.OnRarityCollected then
-        talentCb = deps_.TalentSystem.OnRarityCollected
-    end
-    deps_.InventorySystem.CheckSilverPackRewardsEnhanced(talentCb)
+    -- 收藏成就检查（只发放种子包奖励）
+    deps_.InventorySystem.CheckSilverPackRewardsEnhanced()
 
-    return true
+    return true, {
+        name = crop.name,
+        exp = gainedExp,
+    }
 end
 
 function CropSystem.CountPlotPlants(plot)

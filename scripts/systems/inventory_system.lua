@@ -20,12 +20,16 @@ local HARVEST_DROP_PACK_WEIGHTS = InventoryRules.HARVEST_DROP_PACK_WEIGHTS
 local HARVEST_DROP_PACK_WEIGHTS_BY_RARITY = InventoryRules.HARVEST_DROP_PACK_WEIGHTS_BY_RARITY
 local HARVEST_DROP_RATES_BY_RARITY = InventoryRules.HARVEST_DROP_RATES_BY_RARITY
 
+local DEFAULT_HARVEST_BAG_CAPACITY = 20
+local MAX_HARVEST_BAG_CAPACITY = 100
+
 local state_ = {
     seedBag = {},
     seedBagBuffs = {},
     harvested = {},
     seedPacks = {},
     collectedPlants = {},
+    codexStats = {},
     silverRewardClaimed = {},
     pityCounters = {},  -- { [packId] = number } 保底计数器
     dailyTaskState = {
@@ -129,6 +133,10 @@ function InventorySystem.GetCollectedPlants()
     return state_.collectedPlants
 end
 
+function InventorySystem.GetCodexStats()
+    return state_.codexStats
+end
+
 function InventorySystem.GetDailyTaskState()
     return state_.dailyTaskState
 end
@@ -214,8 +222,34 @@ function InventorySystem.CheckSilverPackRewards()
     end
 end
 
+function InventorySystem.GetHarvestBagCapacity()
+    local bonus = 0
+    if callbacks_.getHarvestBagBonus then
+        bonus = callbacks_.getHarvestBagBonus() or 0
+    end
+    return math.min(MAX_HARVEST_BAG_CAPACITY, DEFAULT_HARVEST_BAG_CAPACITY + math.floor(bonus))
+end
+
+function InventorySystem.IsHarvestBagFull()
+    return #state_.harvested >= InventorySystem.GetHarvestBagCapacity()
+end
+
+function InventorySystem.GetHarvestBagMaxCapacity()
+    return MAX_HARVEST_BAG_CAPACITY
+end
+
 function InventorySystem.AddHarvestedCrop(crop)
     if crop == nil then return false end
+    if InventorySystem.IsHarvestBagFull() then
+        print(string.format("背包已满: %d/%d", #state_.harvested, InventorySystem.GetHarvestBagCapacity()))
+        if callbacks_.showToast then
+            callbacks_.showToast("背包已满，出售作物或点天赋扩容")
+        end
+        if callbacks_.showFloatingToast then
+            callbacks_.showFloatingToast("背包已满")
+        end
+        return false
+    end
     table.insert(state_.harvested, {
         name = crop.name,
         price = crop.price,
@@ -229,6 +263,18 @@ function InventorySystem.AddHarvestedCrop(crop)
         mutation = crop.mutation,
     })
     state_.collectedPlants[crop.plantIndex] = true
+    local stats = state_.codexStats[crop.plantIndex]
+    if stats == nil then
+        stats = {
+            harvestCount = 0,
+            maxWeight = 0,
+            maxPrice = 0,
+        }
+        state_.codexStats[crop.plantIndex] = stats
+    end
+    stats.harvestCount = (stats.harvestCount or 0) + 1
+    stats.maxWeight = math.max(stats.maxWeight or 0, crop.weight or 0)
+    stats.maxPrice = math.max(stats.maxPrice or 0, crop.price or 0)
     InventorySystem.AddDailyProgress("harvest", 1)
     InventorySystem.CheckSilverPackRewards()
     return true
@@ -268,6 +314,76 @@ function InventorySystem.SellBagItem(item)
         end
     end
     return 0
+end
+
+function InventorySystem.ConsumeHarvestedItem(item)
+    if item == nil then return false end
+    for i = 1, #state_.harvested do
+        if state_.harvested[i] == item then
+            table.remove(state_.harvested, i)
+            print("消耗背包作物用于委托: " .. (item.name or "作物"))
+            return true
+        end
+    end
+    return false
+end
+
+local function IsBasicMutatedHarvestItem(item)
+    local mutation = item and item.mutation
+    if mutation == nil then return false end
+    return mutation.sizePrefix ~= nil or mutation.colorMutation ~= nil
+end
+
+local function IsSpecialMutatedHarvestItem(item)
+    local specials = item and item.mutation and item.mutation.specials
+    return specials ~= nil and #specials > 0
+end
+
+local function HasAnyHarvestSellFilter(filter)
+    filter = filter or {}
+    return filter.basicMutation or filter.specialMutation or filter.giant
+end
+
+local function DoesHarvestItemMatchSellFilter(item, filter)
+    filter = filter or {}
+    local isBasicMutated = IsBasicMutatedHarvestItem(item)
+    local isSpecialMutated = IsSpecialMutatedHarvestItem(item)
+    local isGiant = item ~= nil and item.weightTier == "Giant"
+
+    if not HasAnyHarvestSellFilter(filter) then
+        return not isBasicMutated and not isSpecialMutated and not isGiant
+    end
+    if filter.basicMutation and isBasicMutated then return true end
+    if filter.specialMutation and isSpecialMutated then return true end
+    if filter.giant and isGiant then return true end
+    return false
+end
+
+function InventorySystem.PreviewSellHarvestedByFilter(filter)
+    local count = 0
+    local total = 0
+    for _, item in ipairs(state_.harvested) do
+        if DoesHarvestItemMatchSellFilter(item, filter) then
+            count = count + 1
+            total = total + (item.price or 0)
+        end
+    end
+    return count, total
+end
+
+function InventorySystem.SellHarvestedByFilter(filter)
+    local count, total = InventorySystem.PreviewSellHarvestedByFilter(filter)
+    if count <= 0 then
+        return 0, 0
+    end
+    for i = #state_.harvested, 1, -1 do
+        if DoesHarvestItemMatchSellFilter(state_.harvested[i], filter) then
+            table.remove(state_.harvested, i)
+        end
+    end
+    InventorySystem.AddDailyProgress("sell", 1)
+    print(string.format("批量出售作物 %d 个，获得金币 %d", count, total))
+    return count, total
 end
 
 function InventorySystem.CountPackResults(results)
@@ -455,7 +571,7 @@ end
 -- 收藏成就奖励（增强版：集齐品级奖励更多包）
 -- ============================================================================
 
-function InventorySystem.CheckSilverPackRewardsEnhanced(talentCallback)
+function InventorySystem.CheckSilverPackRewardsEnhanced()
     for rarity, packId in pairs(cfg_.SEED_PACK_BY_RARITY) do
         if not state_.silverRewardClaimed[rarity] and IsRarityCollected(rarity) then
             state_.silverRewardClaimed[rarity] = true
@@ -467,10 +583,6 @@ function InventorySystem.CheckSilverPackRewardsEnhanced(talentCallback)
             end
             if callbacks_.showToast then
                 callbacks_.showToast("完成" .. rarity .. "收集！获得种子包奖励")
-            end
-            -- 通知天赋系统
-            if talentCallback then
-                talentCallback(rarity)
             end
         end
     end
