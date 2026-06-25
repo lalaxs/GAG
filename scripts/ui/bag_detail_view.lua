@@ -6,6 +6,7 @@
 -- ============================================================================
 
 local UI = require("urhox-libs/UI")
+local FloatingToast = require("ui.floating_toast")
 
 local BagDetailView = {}
 
@@ -270,7 +271,9 @@ function BagDetailView.Build(item, isPlantView)
                             deps_.suppressWorldTap()
                             local earned = deps_.sellBagItem(item)
                             if earned > 0 then
-                                deps_.showToast("出售获得 " .. earned .. " 金币")
+                                local text = "出售获得 " .. earned .. " 金币"
+                                deps_.showToast(text)
+                                FloatingToast.Show(text, { fontSize = 20, duration = 1.5, yRatio = 0.36, priority = 6 })
                             end
                             deps_.rebuildUI()
                         end,

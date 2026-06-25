@@ -9,22 +9,57 @@ local UI = require("urhox-libs/UI")
 local ModalAnim = require("ui.modal_anim")
 local FloatingToast = require("ui.floating_toast")
 
-local function GetFallbackPlantIndex(index)
+local deps_ = {}
+
+local function GetFallbackSeedIndex(index)
     if index == nil then return nil end
     return ((index - 1) % 29) + 1
 end
 
+local function GetPlantImageIndex(index)
+    if index == nil then return nil end
+    if index >= 1 and index <= 47 then return index end
+    return ((index - 1) % 29) + 1
+end
+
 local function GetSeedIconPath(index)
-    return string.format("image/icons_3d/seed (%d).png", GetFallbackPlantIndex(index) or 1)
+    return string.format("image/icons_3d/seed (%d).png", GetFallbackSeedIndex(index) or 1)
+end
+
+local function IsLimitedSeed(seedId)
+    local plant = deps_.plants and deps_.plants[seedId]
+    return plant ~= nil and (plant.limited == true or plant.activityTag ~= nil)
+end
+
+local function GetPackRollDisplayPool(packId)
+    local packCfg = deps_.seedPackConfig and deps_.seedPackConfig[packId]
+    local pool = {}
+    if packCfg ~= nil then
+        for _, item in ipairs(packCfg.weightPool or {}) do
+            if packCfg.allowLimitedSeeds == true or not IsLimitedSeed(item.seedId) then
+                table.insert(pool, item.seedId)
+            end
+        end
+    end
+    if #pool == 0 then
+        for seedId, plant in ipairs(deps_.plants or {}) do
+            if plant ~= nil and not IsLimitedSeed(seedId) then
+                table.insert(pool, seedId)
+            end
+        end
+    end
+    if #pool == 0 then
+        pool[1] = 1
+    end
+    return pool
 end
 
 local function GetPlantImagePath(index)
-    return string.format("image/plants/plants (%d).png", GetFallbackPlantIndex(index) or 1)
+    return string.format("image/plants/plants (%d).png", GetPlantImageIndex(index) or 1)
 end
 
 local SeedPackView = {}
 
-local deps_ = {}
 local selectedPackId_ = nil
 local packModal_ = nil
 local batchResultModal_ = nil
@@ -483,6 +518,8 @@ end
 local function MakeRollResult(seedId, baseResult)
     return {
         seedId = seedId,
+        packId = baseResult ~= nil and baseResult.packId or nil,
+        rollPackId = baseResult ~= nil and baseResult.rollPackId or nil,
         seedBuff = baseResult ~= nil and baseResult.seedBuff or 0,
         isNew = false,
     }
@@ -490,15 +527,15 @@ end
 
 local function BuildRollingCards(results, targetResult, isSelected)
     local cardW = 105
-    local plantCount = #deps_.plants
+    local rollPool = GetPackRollDisplayPool(targetResult and (targetResult.rollPackId or targetResult.packId))
     local halfCard = 47  -- 94/2
 
-    -- 预生成种子序列：12个随机 + 目标在最后
+    -- 预生成种子序列：12个对应礼包池的展示种子 + 目标在最后
     local stripCount = 13
     local strip = {}
     for i = 1, stripCount - 1 do
-        local seedId = ((i * 7 + 3) % plantCount) + 1
-        strip[i] = seedId
+        local poolIndex = ((i * 7 + 3) % #rollPool) + 1
+        strip[i] = rollPool[poolIndex]
     end
     strip[stripCount] = targetResult.seedId  -- 目标放在最后
 
@@ -514,8 +551,9 @@ local function BuildRollingCards(results, targetResult, isSelected)
     end
 
     local function applySlot(slot, seedId, x, selected)
-        local plant = deps_.plants[seedId]
-        local rarityColor = deps_.getUiRarityColor(plant.rarity)
+        local plant = deps_.plants[seedId] or { name = "种子", rarity = "普通" }
+        local rarityColor = deps_.getUiRarityColor(plant.rarity or "普通")
+        local plantName = plant.name or "种子"
         local scaleH = selected and 130 or 112
         slot.panel:SetStyle({
             marginLeft = -halfCard + x,
@@ -524,18 +562,19 @@ local function BuildRollingCards(results, targetResult, isSelected)
         })
         slot.icon:SetBackgroundImage(GetSeedIconPath(seedId))
         slot.icon:SetStyle({ width = selected and 76 or 66, height = selected and 76 or 66 })
-        slot.name:SetText(plant.name)
+        slot.name:SetText(plantName)
         slot.name:SetStyle({ fontColor = rarityColor, fontSize = selected and 14 or 12 })
     end
 
     for slotIndex = 1, visibleCount do
         local seedId = isSelected and (slotIndex == 3 and targetResult.seedId or getStripSeed(stripCount - 3 + slotIndex)) or getStripSeed(slotIndex)
-        local plant = deps_.plants[seedId]
-        local rarityColor = deps_.getUiRarityColor(plant.rarity)
+        local plant = deps_.plants[seedId] or { name = "种子", rarity = "普通" }
+        local rarityColor = deps_.getUiRarityColor(plant.rarity or "普通")
+        local plantName = plant.name or "种子"
         local selected = isSelected and slotIndex == 3
         local scaleH = selected and 130 or 112
         local icon = UI.Panel { width = selected and 76 or 66, height = selected and 76 or 66, backgroundImage = GetSeedIconPath(seedId), backgroundFit = "contain" }
-        local nameLabel = UI.Label { text = plant.name, fontSize = selected and 14 or 12, fontWeight = "bold", fontColor = rarityColor, textAlign = "center" }
+        local nameLabel = UI.Label { text = plantName, fontSize = selected and 14 or 12, fontWeight = "bold", fontColor = rarityColor, textAlign = "center" }
         local panel = UI.Panel {
             position = "absolute",
             left = "50%",
@@ -590,8 +629,9 @@ function SeedPackView.BuildOpeningOverlay(opening, stage, revealIndex, timer, sc
 
     local currentIndex = math.max(1, math.min(revealIndex or 1, #results))
     local current = results[currentIndex]
-    local currentPlant = deps_.plants[current.seedId]
-    local rarityColor = deps_.getUiRarityColor(currentPlant.rarity)
+    local currentPlant = deps_.plants[current.seedId] or { name = "种子", rarity = "普通" }
+    local rarityColor = deps_.getUiRarityColor(currentPlant.rarity or "普通")
+    local currentPlantName = currentPlant.name or "种子"
     local isSelected = stage == "selected"
     local isUnseal = stage == "unseal"
 
@@ -604,7 +644,7 @@ function SeedPackView.BuildOpeningOverlay(opening, stage, revealIndex, timer, sc
         justifyContent = "center",
         marginTop = 10,
         children = {
-            isSelected and UI.Label { text = currentPlant.name, fontSize = 16, fontWeight = "bold", fontColor = rarityColor, marginBottom = 10 } or UI.Label { text = " ", fontSize = 16 },
+            isSelected and UI.Label { text = currentPlantName, fontSize = 16, fontWeight = "bold", fontColor = rarityColor, marginBottom = 10 } or UI.Label { text = " ", fontSize = 16 },
             UI.Button {
                 text = isSelected and "确认" or "跳过",
                 width = isSelected and 120 or 68,

@@ -114,7 +114,13 @@ local function ShowCurrentItem()
 
     local item = items_[index_]
     previewItemRoot_ = previewRoot_:CreateChild("PreviewItem")
-    previewItemRoot_.position = Vector3(0, 2.05, 0)
+    if item.kind == "pack" then
+        previewItemRoot_.position = Vector3(0, 1.66, 0)
+        previewItemRoot_.scale = Vector3(0.82, 0.82, 0.82)
+    else
+        previewItemRoot_.position = Vector3(0, 2.05, 0)
+        previewItemRoot_.scale = Vector3(1.3, 1.3, 1.3)
+    end
     previewItemRoot_.rotation = Quaternion(0, Vector3.UP)
 
     if item.kind == "plant" then
@@ -130,8 +136,8 @@ end
 
 local function ApplyPreviewCamera()
     if cameraNode_ == nil then return end
-    cameraNode_.position = Vector3(0, 2.42, -8.05)
-    cameraNode_:LookAt(Vector3(0, 2.18, -6.0))
+    cameraNode_.position = Vector3(0, 2.82, -8.05)
+    cameraNode_:LookAt(Vector3(0, 2.06, -6.0))
 end
 
 function ModelPreviewSystem.Init(config, deps)
@@ -147,7 +153,6 @@ function ModelPreviewSystem.Open()
     open_ = true
     index_ = math.max(1, math.min(index_, #items_))
     EnsurePreviewRoot()
-    if previewRoot_ ~= nil then previewRoot_.enabled = true end
     SetScenePreviewLight(false)
     ShowCurrentItem()
     ApplyPreviewCamera()
@@ -155,8 +160,13 @@ end
 
 function ModelPreviewSystem.Close()
     open_ = false
-    ClearPreviewItem()
-    if previewRoot_ ~= nil then previewRoot_.enabled = false end
+    if previewRoot_ ~= nil then
+        previewRoot_:Remove()
+        previewRoot_ = nil
+        previewItemRoot_ = nil
+    else
+        ClearPreviewItem()
+    end
     SetScenePreviewLight(true)
 end
 

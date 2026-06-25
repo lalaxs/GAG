@@ -8,6 +8,8 @@
 local UI = require("urhox-libs/UI")
 local Format = require("utils.format")
 local ModalAnim = require("ui.modal_anim")
+local SettingsView = require("ui.settings_view")
+local FloatingToast = require("ui.floating_toast")
 
 local ProfileView = {}
 
@@ -203,9 +205,10 @@ end
 
 local function BuildAvatarCard(index, avatar)
     local selected = index == GetSelectedAvatarIndex()
+    local unlocked = avatar.unlocked == true
     return UI.Panel {
         width = "31%",
-        minHeight = 114,
+        minHeight = 124,
         paddingTop = 8,
         paddingBottom = 8,
         paddingLeft = 6,
@@ -213,12 +216,22 @@ local function BuildAvatarCard(index, avatar)
         alignItems = "center",
         gap = 5,
         borderRadius = 18,
-        backgroundColor = selected and {232, 248, 224, 255} or {255, 250, 236, 245},
+        backgroundColor = selected and {232, 248, 224, 255} or (unlocked and {255, 250, 236, 245} or {226, 220, 205, 230}),
         borderWidth = selected and 3 or 2,
-        borderColor = selected and {78, 172, 110, 255} or {224, 196, 150, 190},
+        borderColor = selected and {78, 172, 110, 255} or (unlocked and {224, 196, 150, 190} or {160, 150, 132, 190}),
         onClick = function()
-            if deps_.selectAvatar then deps_.selectAvatar(index) end
+            if not unlocked then
+                if deps_.showToast then deps_.showToast(avatar.unlockHint or "该头像尚未解锁") end
+                return
+            end
+            local ok, err = true, nil
+            if deps_.selectAvatar then ok, err = deps_.selectAvatar(index) end
+            if not ok then
+                if deps_.showToast then deps_.showToast(err or "该头像尚未解锁") end
+                return
+            end
             if deps_.showToast then deps_.showToast("已切换头像: " .. (avatar.name or "头像")) end
+            FloatingToast.Show("已切换头像: " .. (avatar.name or "头像"), { fontSize = 19, duration = 1.4, yRatio = 0.36, priority = 6 })
             if avatarModal_ ~= nil then
                 avatarModal_:Close()
                 avatarModal_ = nil
@@ -226,12 +239,39 @@ local function BuildAvatarCard(index, avatar)
             ProfileView.RebuildProfileContent()
         end,
         children = {
-            BuildAvatarFace(selected and 58 or 52, avatar),
+            UI.Panel {
+                width = selected and 58 or 52,
+                height = selected and 58 or 52,
+                opacity = unlocked and 1.0 or 0.48,
+                children = {
+                    BuildAvatarFace(selected and 58 or 52, avatar),
+                    (not unlocked) and UI.Panel {
+                        position = "absolute",
+                        left = 0,
+                        top = 0,
+                        right = 0,
+                        bottom = 0,
+                        borderRadius = math.floor((selected and 58 or 52) / 2),
+                        backgroundColor = {35, 31, 25, 115},
+                        justifyContent = "center",
+                        alignItems = "center",
+                        children = {
+                            UI.Label {
+                                text = "锁",
+                                fontSize = 18,
+                                fontWeight = "bold",
+                                fontColor = {255, 250, 230, 255},
+                                textAlign = "center",
+                            },
+                        },
+                    } or nil,
+                },
+            },
             UI.Label {
                 text = avatar.name or "头像",
                 fontSize = 12,
                 fontWeight = "bold",
-                fontColor = {80, 62, 44, 255},
+                fontColor = unlocked and {80, 62, 44, 255} or {116, 106, 92, 230},
                 textAlign = "center",
             },
             UI.Panel {
@@ -240,12 +280,12 @@ local function BuildAvatarCard(index, avatar)
                 paddingLeft = 6,
                 paddingRight = 6,
                 borderRadius = 10,
-                backgroundColor = selected and {78, 172, 110, 255} or GetRarityColor(avatar.rarity),
+                backgroundColor = (not unlocked) and {118, 110, 96, 235} or (selected and {78, 172, 110, 255} or GetRarityColor(avatar.rarity)),
                 justifyContent = "center",
                 alignItems = "center",
                 children = {
                     UI.Label {
-                        text = selected and "使用中" or (avatar.rarity or "普通"),
+                        text = (not unlocked) and "未解锁" or (selected and "使用中" or (avatar.rarity or "普通")),
                         fontSize = 10,
                         fontWeight = "bold",
                         fontColor = {255, 255, 255, 255},
@@ -357,16 +397,22 @@ function ProfileView.RebuildProfileContent()
                     BuildInfoLine("历史最高观光值", Format.Gold(GetBestTourValue())),
                 },
             },
+            SettingsView.BuildButton(),
         },
     })
 end
 
 function ProfileView.SaveNickname()
     if deps_.setNickname then
-        local savedName = deps_.setNickname(nicknameDraft_)
-        nicknameDraft_ = savedName or nicknameDraft_
+        local savedName, errorMessage = deps_.setNickname(nicknameDraft_)
+        if savedName == nil then
+            if deps_.showToast then deps_.showToast(errorMessage or "昵称不可用") end
+            return
+        end
+        nicknameDraft_ = savedName
     end
     if deps_.showToast then deps_.showToast("昵称已更新") end
+    FloatingToast.Show("昵称已更新", { fontSize = 19, duration = 1.4, yRatio = 0.36, priority = 6 })
     if nicknameModal_ ~= nil then
         nicknameModal_:Close()
         nicknameModal_ = nil
@@ -468,7 +514,9 @@ function ProfileView.OpenAvatarPage()
 
     local cards = {}
     for i, avatar in ipairs(GetAvatars()) do
-        table.insert(cards, BuildAvatarCard(i, avatar))
+        if avatar.unlocked == true then
+            table.insert(cards, BuildAvatarCard(i, avatar))
+        end
     end
 
     avatarModal_ = UI.Modal {
@@ -486,7 +534,7 @@ function ProfileView.OpenAvatarPage()
         gap = 12,
         children = {
             UI.Label {
-                text = "选择一个作物作为头像",
+                text = "选择一个已获得的作物头像。更多头像可通过后续玩法奖励解锁。",
                 fontSize = 14,
                 fontColor = {118, 92, 65, 225},
                 textAlign = "center",

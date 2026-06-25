@@ -13,6 +13,7 @@ local CommissionSystem = {}
 local cfg_ = nil
 local inventory_ = nil
 local callbacks_ = {}
+local getPlayerLevel_ = nil
 
 local REFRESH_INTERVAL = 30 * 60
 local COMMISSION_COUNT = 3
@@ -27,12 +28,6 @@ local CUSTOMER_NAMES = {
     "露露", "阿麦", "青木", "莓莓", "小枫", "云朵商人", "花园旅人", "星屑收藏家",
 }
 
-local PACK_ROLL_WEIGHTS = {
-    { packId = "pack_rare", weight = 56 },
-    { packId = "pack_epic", weight = 34 },
-    { packId = "pack_legendary", weight = 10 },
-}
-
 local COLOR_REQUIREMENTS = {
     "yellow", "blue", "red", "white", "purple", "black",
 }
@@ -42,20 +37,65 @@ local SPECIAL_REQUIREMENTS = {
 }
 
 local PACK_DIFFICULTY = {
+    pack_common = {
+        mutationKinds = { "basic" },
+        minWeightScale = { 0.90, 1.20 },
+    },
+    pack_uncommon = {
+        mutationKinds = { "color", "basic" },
+        minWeightScale = { 1.00, 1.40 },
+    },
     pack_rare = {
-        rarityPool = { "罕见", "稀有" },
         mutationKinds = { "color", "basic" },
         minWeightScale = { 1.05, 1.55 },
     },
     pack_epic = {
-        rarityPool = { "稀有", "史诗" },
         mutationKinds = { "color", "special" },
         minWeightScale = { 1.35, 2.20 },
     },
     pack_legendary = {
-        rarityPool = { "史诗", "传奇" },
         mutationKinds = { "special", "giant" },
         minWeightScale = { 2.00, 3.60 },
+    },
+}
+
+local LEVEL_RARITY_TIERS = {
+    { minLevel = 1, maxLevel = 5, rarityPool = { "普通" } },
+    { minLevel = 6, maxLevel = 10, rarityPool = { "普通", "罕见" } },
+    { minLevel = 11, maxLevel = 15, rarityPool = { "普通", "罕见", "稀有" } },
+    { minLevel = 16, maxLevel = 20, rarityPool = { "普通", "罕见", "稀有", "史诗" } },
+    { minLevel = 21, maxLevel = nil, rarityPool = { "普通", "罕见", "稀有", "史诗", "传奇" } },
+}
+
+local REWARD_PACK_POOLS_BY_PLANT_RARITY = {
+    ["普通"] = {
+        { packId = "pack_common", weight = 94 },
+        { packId = "pack_uncommon", weight = 6 },
+    },
+    ["罕见"] = {
+        { packId = "pack_common", weight = 35 },
+        { packId = "pack_uncommon", weight = 55 },
+        { packId = "pack_rare", weight = 10 },
+    },
+    ["稀有"] = {
+        { packId = "pack_common", weight = 18 },
+        { packId = "pack_uncommon", weight = 30 },
+        { packId = "pack_rare", weight = 45 },
+        { packId = "pack_epic", weight = 7 },
+    },
+    ["史诗"] = {
+        { packId = "pack_common", weight = 8 },
+        { packId = "pack_uncommon", weight = 18 },
+        { packId = "pack_rare", weight = 32 },
+        { packId = "pack_epic", weight = 38 },
+        { packId = "pack_legendary", weight = 4 },
+    },
+    ["传奇"] = {
+        { packId = "pack_common", weight = 3 },
+        { packId = "pack_uncommon", weight = 10 },
+        { packId = "pack_rare", weight = 22 },
+        { packId = "pack_epic", weight = 40 },
+        { packId = "pack_legendary", weight = 25 },
     },
 }
 
@@ -93,12 +133,17 @@ local function FindMutationByKey(list, key)
     return nil
 end
 
+local function IsCommissionEligiblePlant(plant)
+    return plant ~= nil and plant.limited ~= true and plant.activityTag == nil
+end
+
 local function GetPlantIndicesByRarity(rarity)
     local result = {}
     local rarityIndices = cfg_.RARITY_PLANT_INDICES and cfg_.RARITY_PLANT_INDICES[rarity]
     if rarityIndices ~= nil then
         for _, plantIndex in ipairs(rarityIndices) do
-            if cfg_.PLANTS[plantIndex] ~= nil then
+            local plant = cfg_.PLANTS[plantIndex]
+            if IsCommissionEligiblePlant(plant) then
                 table.insert(result, plantIndex)
             end
         end
@@ -106,14 +151,52 @@ local function GetPlantIndicesByRarity(rarity)
     return result
 end
 
-local function PickPlantForPack(packId)
-    local difficulty = PACK_DIFFICULTY[packId] or PACK_DIFFICULTY.pack_rare
-    local rarity = RandItem(difficulty.rarityPool)
-    local pool = GetPlantIndicesByRarity(rarity)
+local function GetCurrentPlayerLevel()
+    if getPlayerLevel_ ~= nil then
+        return math.max(1, getPlayerLevel_() or 1)
+    end
+    return 1
+end
+
+local function GetLevelRarityPool(level)
+    for _, tier in ipairs(LEVEL_RARITY_TIERS) do
+        local maxLevel = tier.maxLevel or math.huge
+        if level >= tier.minLevel and level <= maxLevel then
+            return tier.rarityPool
+        end
+    end
+    return LEVEL_RARITY_TIERS[#LEVEL_RARITY_TIERS].rarityPool
+end
+
+local function BuildPlantPoolByRarities(rarityPool)
+    local result = {}
+    for _, rarity in ipairs(rarityPool) do
+        local indices = GetPlantIndicesByRarity(rarity)
+        for _, plantIndex in ipairs(indices) do
+            table.insert(result, plantIndex)
+        end
+    end
+    return result
+end
+
+local function PickPlantForCurrentLevel()
+    local level = GetCurrentPlayerLevel()
+    local rarityPool = GetLevelRarityPool(level)
+    local pool = BuildPlantPoolByRarities(rarityPool)
+    if #pool == 0 then
+        pool = BuildPlantPoolByRarities({ "普通" })
+    end
     if #pool == 0 then
         return 1
     end
     return RandItem(pool)
+end
+
+local function GetRewardPackForPlant(plant)
+    local rarity = plant and plant.rarity or "普通"
+    local pool = REWARD_PACK_POOLS_BY_PLANT_RARITY[rarity] or REWARD_PACK_POOLS_BY_PLANT_RARITY["普通"]
+    local reward = RollWeighted(pool)
+    return reward and reward.packId or "pack_common"
 end
 
 local function BuildMutationRequirement(packId)
@@ -153,12 +236,12 @@ local function FormatTimer(seconds)
 end
 
 local function BuildCommission(index)
-    local reward = RollWeighted(PACK_ROLL_WEIGHTS)
-    local plantIndex = PickPlantForPack(reward.packId)
+    local plantIndex = PickPlantForCurrentLevel()
     local plant = cfg_.PLANTS[plantIndex]
-    local mutationRequirement = BuildMutationRequirement(reward.packId)
-    local minWeight = BuildMinWeight(reward.packId, plantIndex)
-    local packCfg = cfg_.SEED_PACK_CONFIG[reward.packId]
+    local rewardPackId = GetRewardPackForPlant(plant)
+    local mutationRequirement = BuildMutationRequirement(rewardPackId)
+    local minWeight = BuildMinWeight(rewardPackId, plantIndex)
+    local packCfg = cfg_.SEED_PACK_CONFIG[rewardPackId]
     local customer = RandItem(CUSTOMER_NAMES)
 
     return {
@@ -169,8 +252,8 @@ local function BuildCommission(index)
         plantRarity = plant and plant.rarity or "普通",
         mutation = mutationRequirement,
         minWeight = minWeight,
-        rewardPackId = reward.packId,
-        rewardPackName = packCfg and packCfg.packName or "稀有种子包",
+        rewardPackId = rewardPackId,
+        rewardPackName = packCfg and packCfg.packName or "普通种子包",
         completed = false,
     }
 end
@@ -228,6 +311,7 @@ function CommissionSystem.Init(config, inventorySystem, callbacks)
     cfg_ = config
     inventory_ = inventorySystem
     callbacks_ = callbacks or {}
+    getPlayerLevel_ = callbacks_.getPlayerLevel
     RefreshCommissions()
 end
 
@@ -272,24 +356,19 @@ end
 
 function CommissionSystem.CompleteCommission(commission, item)
     if commission == nil or item == nil then
-        AudioSystem.PlaySFX("error_denied")
         return false, "委托或作物无效"
     end
     if commission.completed then
-        AudioSystem.PlaySFX("error_denied")
         return false, "委托已完成"
     end
     if not CommissionSystem.DoesItemMatch(commission, item) then
-        AudioSystem.PlaySFX("error_denied")
         return false, "作物不满足委托条件"
     end
     if not inventory_.ConsumeHarvestedItem(item) then
-        AudioSystem.PlaySFX("error_denied")
         return false, "作物已不存在"
     end
     inventory_.AddSeedPack(commission.rewardPackId, 1)
     commission.completed = true
-    AudioSystem.PlaySFX("commission_complete")
     local text = string.format("完成%s的委托，获得%s", commission.customer, commission.rewardPackName)
     if callbacks_.showToast then
         callbacks_.showToast(text)

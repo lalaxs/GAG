@@ -10,6 +10,13 @@ local PlayerSystem = {}
 local GameConfig = require("config.game_config")
 
 local SAVE_PATH = "player_profile.json"
+local NICKNAME_MIN_LENGTH = 2
+local NICKNAME_MAX_LENGTH = 12
+
+local NICKNAME_BLOCK_WORDS = {
+    "官方", "系统", "管理员", "客服", "gm", "taptap", "tap", "平台", "开发者",
+    "外挂", "作弊", "代充", "充值返利", "诈骗", "广告", "qq群", "微信", "wx", "qq",
+}
 
 local function ColorToRgba(color)
     if color == nil then return {112, 190, 118, 255} end
@@ -25,7 +32,8 @@ local function BuildAvatarList()
     local list = {}
     for i, plant in ipairs(GameConfig.PLANTS or {}) do
         table.insert(list, {
-            id = plant.visual or ("plant_" .. i),
+            id = "plant_" .. i,
+            visualId = plant.visual,
             plantIndex = i,
             name = plant.name,
             rarity = plant.rarity,
@@ -37,12 +45,25 @@ local function BuildAvatarList()
 end
 
 local AVATARS = BuildAvatarList()
+local DEFAULT_UNLOCKED_AVATAR_INDICES = { 1, 2, 3 }
+
+local function BuildDefaultUnlockedAvatars()
+    local unlocked = {}
+    for _, index in ipairs(DEFAULT_UNLOCKED_AVATAR_INDICES) do
+        local avatar = AVATARS[index]
+        if avatar ~= nil then
+            unlocked[avatar.id] = true
+        end
+    end
+    return unlocked
+end
 
 local state_ = {
     userId = nil,
     tapNickname = "Tap玩家",
     customNickname = "",
     selectedAvatar = 1,
+    unlockedAvatars = BuildDefaultUnlockedAvatars(),
 }
 
 local callbacks_ = {}
@@ -53,14 +74,107 @@ local function NotifyChanged()
     end
 end
 
+local function FindAvatarIndexById(avatarId)
+    if avatarId == nil then return nil end
+    for i, avatar in ipairs(AVATARS) do
+        if avatar.id == avatarId or avatar.visualId == avatarId or avatar.name == avatarId then
+            return i
+        end
+    end
+    return nil
+end
+
+local function FindAvatarIndex(avatarRef)
+    if type(avatarRef) == "number" then
+        local index = math.floor(avatarRef)
+        if AVATARS[index] ~= nil then return index end
+        return nil
+    end
+    local textRef = tostring(avatarRef or "")
+    local numericRef = tonumber(textRef)
+    if numericRef ~= nil then
+        local index = math.floor(numericRef)
+        if AVATARS[index] ~= nil then return index end
+    end
+    return FindAvatarIndexById(textRef)
+end
+
+local function IsAvatarUnlockedIndex(index)
+    local avatar = AVATARS[index]
+    return avatar ~= nil and state_.unlockedAvatars[avatar.id] == true
+end
+
+local function EnsureSelectedAvatarUnlocked()
+    if IsAvatarUnlockedIndex(state_.selectedAvatar) then return end
+    for i = 1, #AVATARS do
+        if IsAvatarUnlockedIndex(i) then
+            state_.selectedAvatar = i
+            return
+        end
+    end
+    state_.unlockedAvatars = BuildDefaultUnlockedAvatars()
+    state_.selectedAvatar = 1
+end
+
+local function MergeUnlockedAvatars(saved)
+    local unlocked = BuildDefaultUnlockedAvatars()
+    if type(saved) == "table" then
+        for key, value in pairs(saved) do
+            if value == true then
+                local index = FindAvatarIndex(key)
+                if index ~= nil then unlocked[AVATARS[index].id] = true end
+            elseif type(value) == "string" or type(value) == "number" then
+                local index = FindAvatarIndex(value)
+                if index ~= nil then unlocked[AVATARS[index].id] = true end
+            end
+        end
+    end
+    return unlocked
+end
+
 local function TrimName(name)
     name = tostring(name or "")
     name = string.gsub(name, "^%s+", "")
     name = string.gsub(name, "%s+$", "")
-    if #name > 24 then
-        name = string.sub(name, 1, 24)
-    end
     return name
+end
+
+local function GetTextLength(text)
+    local ok, length = pcall(utf8.len, text or "")
+    if ok and length ~= nil then
+        return length
+    end
+    return #(text or "")
+end
+
+local function NormalizeNicknameForCheck(name)
+    local normalized = string.lower(name or "")
+    normalized = string.gsub(normalized, "%s+", "")
+    normalized = string.gsub(normalized, "[%.%-_]+", "")
+    return normalized
+end
+
+function PlayerSystem.ValidateNickname(name)
+    local trimmed = TrimName(name)
+    local length = GetTextLength(trimmed)
+    if length <= 0 then
+        return false, "昵称不能为空", trimmed
+    end
+    if length < NICKNAME_MIN_LENGTH then
+        return false, string.format("昵称至少 %d 个字符", NICKNAME_MIN_LENGTH), trimmed
+    end
+    if length > NICKNAME_MAX_LENGTH then
+        return false, string.format("昵称最多 %d 个字符", NICKNAME_MAX_LENGTH), trimmed
+    end
+
+    local normalized = NormalizeNicknameForCheck(trimmed)
+    for _, word in ipairs(NICKNAME_BLOCK_WORDS) do
+        if string.find(normalized, NormalizeNicknameForCheck(word), 1, true) ~= nil then
+            return false, "昵称包含不可用词", trimmed
+        end
+    end
+
+    return true, nil, trimmed
 end
 
 local function GetCurrentUserId()
@@ -95,7 +209,9 @@ local function LoadLocalProfile()
     end
 
     state_.customNickname = TrimName(data.customNickname or "")
+    state_.unlockedAvatars = MergeUnlockedAvatars(data.unlockedAvatars)
     state_.selectedAvatar = Clamp(tonumber(data.selectedAvatar or 1) or 1, 1, #AVATARS)
+    EnsureSelectedAvatarUnlocked()
 end
 
 local function SaveLocalProfile()
@@ -108,6 +224,7 @@ local function SaveLocalProfile()
     file:WriteString(cjson.encode({
         customNickname = state_.customNickname,
         selectedAvatar = state_.selectedAvatar,
+        unlockedAvatars = state_.unlockedAvatars,
     }))
     file:Close()
     return true
@@ -158,6 +275,7 @@ function PlayerSystem.Init(callbacks)
         tapNickname = "Tap玩家",
         customNickname = "",
         selectedAvatar = 1,
+        unlockedAvatars = BuildDefaultUnlockedAvatars(),
     }
     LoadLocalProfile()
     FetchTapNickname()
@@ -183,10 +301,14 @@ function PlayerSystem.GetDisplayName()
 end
 
 function PlayerSystem.SetNickname(name)
-    state_.customNickname = TrimName(name)
+    local valid, message, trimmed = PlayerSystem.ValidateNickname(name)
+    if not valid then
+        return nil, message
+    end
+    state_.customNickname = trimmed
     SaveLocalProfile()
     NotifyChanged()
-    return state_.customNickname
+    return state_.customNickname, nil
 end
 
 function PlayerSystem.ClearCustomNickname()
@@ -195,35 +317,106 @@ function PlayerSystem.ClearCustomNickname()
     NotifyChanged()
 end
 
+function PlayerSystem.ClearSave()
+    state_.customNickname = ""
+    state_.selectedAvatar = 1
+    state_.unlockedAvatars = BuildDefaultUnlockedAvatars()
+    EnsureSelectedAvatarUnlocked()
+    local ok = SaveLocalProfile()
+    NotifyChanged()
+    return ok
+end
+
 function PlayerSystem.GetAvatars()
-    return AVATARS
+    local list = {}
+    for i, avatar in ipairs(AVATARS) do
+        local copy = {}
+        for key, value in pairs(avatar) do
+            copy[key] = value
+        end
+        copy.unlocked = IsAvatarUnlockedIndex(i)
+        copy.unlockHint = copy.unlocked and "已解锁" or "通过活动或奖励获取"
+        table.insert(list, copy)
+    end
+    return list
+end
+
+function PlayerSystem.IsAvatarUnlocked(avatarRef)
+    local index = FindAvatarIndex(avatarRef)
+    return index ~= nil and IsAvatarUnlockedIndex(index)
 end
 
 function PlayerSystem.GetSelectedAvatarIndex()
+    EnsureSelectedAvatarUnlocked()
     return state_.selectedAvatar
 end
 
 function PlayerSystem.GetSelectedAvatar()
+    EnsureSelectedAvatarUnlocked()
     return AVATARS[state_.selectedAvatar] or AVATARS[1]
 end
 
 function PlayerSystem.SelectAvatar(index)
-    state_.selectedAvatar = Clamp(index or 1, 1, #AVATARS)
+    index = Clamp(index or 1, 1, #AVATARS)
+    if not IsAvatarUnlockedIndex(index) then
+        local avatar = AVATARS[index]
+        return false, string.format("%s头像尚未解锁", avatar and avatar.name or "该")
+    end
+    state_.selectedAvatar = index
     SaveLocalProfile()
     NotifyChanged()
+    return true, nil
+end
+
+function PlayerSystem.UnlockAvatarReward(avatarRef)
+    local index = FindAvatarIndex(avatarRef)
+    if index == nil then
+        return false, "头像奖励不存在", nil
+    end
+
+    local avatar = AVATARS[index]
+    if state_.unlockedAvatars[avatar.id] == true then
+        return false, "头像已拥有", avatar
+    end
+
+    state_.unlockedAvatars[avatar.id] = true
+    SaveLocalProfile()
+    NotifyChanged()
+    return true, nil, avatar
+end
+
+function PlayerSystem.GrantReward(reward)
+    if type(reward) ~= "table" then
+        return false, "奖励配置无效"
+    end
+    if reward.type == "avatar" then
+        return PlayerSystem.UnlockAvatarReward(reward.avatarId or reward.avatarIndex or reward.index or reward.id)
+    end
+    return false, "不支持的奖励类型"
+end
+
+function PlayerSystem.GetUnlockedAvatarMap()
+    local map = {}
+    for key, value in pairs(state_.unlockedAvatars) do
+        map[key] = value
+    end
+    return map
 end
 
 function PlayerSystem.GetSaveData()
     return {
         customNickname = state_.customNickname,
         selectedAvatar = state_.selectedAvatar,
+        unlockedAvatars = state_.unlockedAvatars,
     }
 end
 
 function PlayerSystem.LoadSaveData(data)
     if data == nil then return end
     state_.customNickname = TrimName(data.customNickname or state_.customNickname)
+    state_.unlockedAvatars = MergeUnlockedAvatars(data.unlockedAvatars or state_.unlockedAvatars)
     state_.selectedAvatar = Clamp(tonumber(data.selectedAvatar or state_.selectedAvatar) or 1, 1, #AVATARS)
+    EnsureSelectedAvatarUnlocked()
     SaveLocalProfile()
     NotifyChanged()
 end

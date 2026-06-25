@@ -178,11 +178,24 @@ function PlantMaterials.Bind(PlantVisual, colorKey)
         if plant.visualTheme == "alien_pulse" or plant.visualTheme == "alien_eye" or plant.visualTheme == "zero_gravity" then
             return PlantVisual.materials.alienGlow
         end
-        if plant.visualTheme == "honey_hive" then
+        if plant.visualTheme == "honey_hive" or plant.visualTheme == "caramel_star" then
             return PlantVisual.materials.honeyGlow
         end
-        if plant.visualTheme == "crystal_sweet" or plant.visualTheme == "dream_candy" then
+        if plant.visualTheme == "crystal_sweet" or plant.visualTheme == "dream_candy" or plant.visualTheme == "cotton_berry" or plant.visualTheme == "sundae_hydrangea" then
             return PlantVisual.materials.candyCrystal
+        end
+        if plant.visualTheme == "quantum_bamboo" or plant.visualTheme == "prism_brain" or plant.visualTheme == "starship_coconut" then
+            return PlantVisual.materials.alienGlow
+        end
+
+        if plant.visualTheme == "moon_shadow_lotus" then
+            return PlantVisual.CreateMaterial("plant_moon_shadow_lotus_" .. tostring(math.random(100000, 999999)), color, 0.0, 0.30, Color(0.08, 0.06, 0.22, 1.0))
+        end
+        if plant.visualTheme == "ghost_lantern" or plant.visualTheme == "night_dew_hyacinth" then
+            return PlantVisual.materials.alienEye
+        end
+        if plant.visualTheme == "eclipse_crown" or plant.visualTheme == "shadow_veil_rose" or plant.visualTheme == "styx_starfruit" then
+            return PlantVisual.CreateMaterial("plant_dark_limited_" .. tostring(math.random(100000, 999999)), color, 0.0, 0.24, Color(0.12, 0.06, 0.24, 1.0))
         end
 
         local key = "plant_" .. plant.name .. "_" .. colorKey(color)

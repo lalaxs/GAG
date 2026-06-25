@@ -7,7 +7,6 @@
 
 local SeedPackSystem = require("systems.seed_pack_system")
 local SeedPackView = require("ui.seed_pack_view")
-local AudioSystem = require("systems.audio_system")
 
 local SeedPackOpeningController = {}
 
@@ -72,7 +71,6 @@ function SeedPackOpeningController.StartOpening(title, results)
     openingStage_ = "unseal"
     openingTimer_ = 0
     revealIndex_ = 1
-    AudioSystem.PlaySFX("seed_pack_open_start")
     RebuildUI()
 end
 
@@ -96,7 +94,6 @@ end
 function SeedPackOpeningController.OpenPack(packId)
     local results, err, title = SeedPackSystem.PreviewPack(packId, 1)
     if results == nil then
-        AudioSystem.PlaySFX("error_denied")
         if err ~= nil then ShowToast(err) end
         return
     end
@@ -108,24 +105,20 @@ end
 function SeedPackOpeningController.OpenAllPacks(packId)
     local results, err, title, openedCount = SeedPackSystem.OpenAllPacks(packId)
     if results == nil then
-        AudioSystem.PlaySFX("error_denied")
         if err ~= nil then ShowToast(err) end
         return
     end
     local rarity = GetHighestResultRarity(results)
-    AudioSystem.PlaySFX("seed_pack_reveal_" .. rarity)
     SeedPackView.ShowBatchResultModal(title, results, openedCount)
     RefreshUI(true)
 end
 
 function SeedPackOpeningController.OpenHub()
     if deps_.countSeedPacks == nil or deps_.countSeedPacks() <= 0 then
-        AudioSystem.PlaySFX("error_denied")
         ShowToast("暂无可开启的种子包")
         return
     end
     panelOpen_ = true
-    AudioSystem.PlaySFX("ui_modal_open")
     SeedPackView.OpenPackModal()
 end
 
@@ -144,13 +137,10 @@ function SeedPackOpeningController.Update(dt)
     if openingStage_ == "unseal" and openingTimer_ >= 0.3 then
         openingStage_ = "rolling"
         openingTimer_ = 0
-        AudioSystem.PlaySFX("seed_pack_roll")
         RebuildUI()
     elseif openingStage_ == "rolling" and openingTimer_ >= 1.8 then
         openingStage_ = "selected"
         openingTimer_ = 0
-        local rarity = GetHighestResultRarity(opening_.results)
-        AudioSystem.PlaySFX("seed_pack_reveal_" .. rarity)
         RebuildUI()
     elseif openingStage_ == "selected" then
         -- 停在 selected 等用户点确认

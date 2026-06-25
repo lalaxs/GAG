@@ -15,6 +15,12 @@ local CodexView = {}
 local deps_ = {}
 local codexModal_ = nil
 local detailModal_ = nil
+local activeTab_ = "base"
+local tabButtonRefs_ = {}
+local progressPercentLabel_ = nil
+local progressFill_ = nil
+local progressCountLabel_ = nil
+local cardGrid_ = nil
 
 local RARITY_COLORS = {
     ["普通"] = {120, 105, 82, 255},
@@ -37,11 +43,37 @@ local function IsPlantDiscovered(plantIndex)
     return collected[plantIndex] == true
 end
 
-local function CountDiscoveredPlants()
+local function IsActivityPlant(plant)
+    return plant ~= nil and (plant.limited == true or plant.activityTag ~= nil)
+end
+
+local function IsPlantInActiveTab(plant)
+    local isActivity = IsActivityPlant(plant)
+    if activeTab_ == "activity" then
+        return isActivity
+    end
+    return not isActivity
+end
+
+local function CountDiscoveredPlants(tab)
     local plants = deps_.plants or {}
     local count = 0
-    for i = 1, #plants do
-        if IsPlantDiscovered(i) then
+    for i, plant in ipairs(plants) do
+        local isActivity = IsActivityPlant(plant)
+        local include = (tab == "activity") and isActivity or not isActivity
+        if include and IsPlantDiscovered(i) then
+            count = count + 1
+        end
+    end
+    return count
+end
+
+local function CountPlantsInTab(tab)
+    local plants = deps_.plants or {}
+    local count = 0
+    for _, plant in ipairs(plants) do
+        local isActivity = IsActivityPlant(plant)
+        if ((tab == "activity") and isActivity) or ((tab ~= "activity") and not isActivity) then
             count = count + 1
         end
     end
@@ -197,6 +229,30 @@ local function ShowPlantDetail(plantIndex)
     detailModal_:Open()
 end
 
+local RefreshCodexTabContent
+
+local function BuildTabButton(tab, text, count)
+    local selected = activeTab_ == tab
+    local button = UI.Button {
+        text = string.format("%s %d", text, count or 0),
+        width = 136,
+        height = 42,
+        fontSize = 15,
+        fontWeight = "bold",
+        variant = selected and "primary" or "secondary",
+        borderRadius = 16,
+        onClick = function()
+            if activeTab_ == tab then return end
+            activeTab_ = tab
+            if RefreshCodexTabContent ~= nil then
+                RefreshCodexTabContent()
+            end
+        end,
+    }
+    tabButtonRefs_[tab] = { button = button, text = text }
+    return button
+end
+
 local function BuildCodexCard(plantIndex, plant)
     local discovered = IsPlantDiscovered(plantIndex)
     local rarityColor = RARITY_COLORS[plant.rarity] or {170, 145, 105, 255}
@@ -243,21 +299,98 @@ local function BuildCodexCard(plantIndex, plant)
     }
 end
 
+RefreshCodexTabContent = function()
+    if cardGrid_ == nil then return end
+
+    local plants = deps_.plants or {}
+    local discoveredCount = CountDiscoveredPlants(activeTab_)
+    local totalCount = CountPlantsInTab(activeTab_)
+    local baseCount = CountPlantsInTab("base")
+    local activityCount = CountPlantsInTab("activity")
+    local progressRatio = totalCount > 0 and (discoveredCount / totalCount) or 0
+    local progressPercent = math.floor(progressRatio * 100 + 0.5)
+
+    for tab, ref in pairs(tabButtonRefs_) do
+        if ref.button ~= nil then
+            local count = tab == "activity" and activityCount or baseCount
+            ref.button:SetText(string.format("%s %d", ref.text, count))
+            ref.button:SetStyle({ variant = activeTab_ == tab and "primary" or "secondary" })
+        end
+    end
+
+    if progressPercentLabel_ ~= nil then
+        progressPercentLabel_:SetText(string.format("%d%%", progressPercent))
+    end
+    if progressFill_ ~= nil then
+        progressFill_:SetStyle({ width = tostring(progressPercent) .. "%" })
+    end
+    if progressCountLabel_ ~= nil then
+        progressCountLabel_:SetText(string.format("已点亮 %d / %d", discoveredCount, totalCount))
+    end
+
+    cardGrid_:RemoveAllChildren()
+    for i, plant in ipairs(plants) do
+        if IsPlantInActiveTab(plant) then
+            cardGrid_:AddChild(BuildCodexCard(i, plant))
+        end
+    end
+end
+
 function CodexView.Show()
     if codexModal_ ~= nil then
         codexModal_:Close()
     end
     CloseDetailModal()
 
+    tabButtonRefs_ = {}
+    progressPercentLabel_ = nil
+    progressFill_ = nil
+    progressCountLabel_ = nil
+    cardGrid_ = nil
+
     local plants = deps_.plants or {}
-    local discoveredCount = CountDiscoveredPlants()
-    local totalCount = #plants
+    local discoveredCount = CountDiscoveredPlants(activeTab_)
+    local totalCount = CountPlantsInTab(activeTab_)
+    local baseCount = CountPlantsInTab("base")
+    local activityCount = CountPlantsInTab("activity")
     local progressRatio = totalCount > 0 and (discoveredCount / totalCount) or 0
     local progressPercent = math.floor(progressRatio * 100 + 0.5)
     local cards = {}
     for i, plant in ipairs(plants) do
-        table.insert(cards, BuildCodexCard(i, plant))
+        if IsPlantInActiveTab(plant) then
+            table.insert(cards, BuildCodexCard(i, plant))
+        end
     end
+
+    progressPercentLabel_ = UI.Label {
+        text = string.format("%d%%", progressPercent),
+        fontSize = 18,
+        fontWeight = "bold",
+        fontColor = {78, 155, 100, 255},
+    }
+
+    progressFill_ = UI.Panel {
+        width = tostring(progressPercent) .. "%",
+        height = "100%",
+        borderRadius = 6,
+        backgroundColor = {94, 194, 131, 255},
+    }
+
+    progressCountLabel_ = UI.Label {
+        text = string.format("已点亮 %d / %d", discoveredCount, totalCount),
+        fontSize = 12,
+        fontColor = {106, 136, 88, 235},
+        textAlign = "center",
+    }
+
+    cardGrid_ = UI.Panel {
+        width = "100%",
+        flexDirection = "row",
+        flexWrap = "wrap",
+        gap = 5,
+        justifyContent = "flex-start",
+        children = cards,
+    }
 
     codexModal_ = UI.Modal {
         title = "作物图鉴",
@@ -268,6 +401,11 @@ function CodexView.Show()
         onClose = function()
             if deps_.suppressWorldTap then deps_.suppressWorldTap() end
             codexModal_ = nil
+            tabButtonRefs_ = {}
+            progressPercentLabel_ = nil
+            progressFill_ = nil
+            progressCountLabel_ = nil
+            cardGrid_ = nil
             CloseDetailModal()
         end,
     }
@@ -298,7 +436,7 @@ function CodexView.Show()
                         alignItems = "center",
                         children = {
                             UI.Label { text = "收藏进度", fontSize = 15, fontWeight = "bold", fontColor = {74, 120, 70, 255} },
-                            UI.Label { text = string.format("%d%%", progressPercent), fontSize = 18, fontWeight = "bold", fontColor = {78, 155, 100, 255} },
+                            progressPercentLabel_,
                         },
                     },
                     UI.Panel {
@@ -307,20 +445,20 @@ function CodexView.Show()
                         backgroundColor = {218, 232, 206, 255},
                         overflow = "hidden",
                         children = {
-                            UI.Panel {
-                                width = tostring(progressPercent) .. "%",
-                                height = "100%",
-                                borderRadius = 6,
-                                backgroundColor = {94, 194, 131, 255},
-                            },
+                            progressFill_,
                         },
                     },
-                    UI.Label {
-                        text = string.format("已点亮 %d / %d", discoveredCount, totalCount),
-                        fontSize = 12,
-                        fontColor = {106, 136, 88, 235},
-                        textAlign = "center",
-                    },
+                    progressCountLabel_,
+                },
+            },
+            UI.Panel {
+                flexDirection = "row",
+                justifyContent = "center",
+                alignItems = "center",
+                gap = 10,
+                children = {
+                    BuildTabButton("base", "基础", baseCount),
+                    BuildTabButton("activity", "活动", activityCount),
                 },
             },
             UI.ScrollView {
@@ -328,14 +466,7 @@ function CodexView.Show()
                 scrollY = true,
                 showScrollbar = false,
                 children = {
-                    UI.Panel {
-                        width = "100%",
-                        flexDirection = "row",
-                        flexWrap = "wrap",
-                        gap = 5,
-                        justifyContent = "flex-start",
-                        children = cards,
-                    },
+                    cardGrid_,
                 },
             },
         },

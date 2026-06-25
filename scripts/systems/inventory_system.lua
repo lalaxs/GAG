@@ -7,7 +7,6 @@
 -- ============================================================================
 
 local InventoryRules = require("systems.inventory_rules")
-local AudioSystem = require("systems.audio_system")
 
 local InventorySystem = {}
 
@@ -43,8 +42,30 @@ local function RollWeighted(pool)
     return InventoryRules.RollWeighted(pool)
 end
 
+local function IsLimitedSeed(seedId)
+    local plant = cfg_ and cfg_.PLANTS and cfg_.PLANTS[seedId]
+    return plant ~= nil and (plant.limited == true or plant.activityTag ~= nil)
+end
+
+local function GetPackRollPool(packCfg)
+    if packCfg.allowLimitedSeeds == true then
+        return packCfg.weightPool
+    end
+
+    local filtered = {}
+    for _, item in ipairs(packCfg.weightPool or {}) do
+        if not IsLimitedSeed(item.seedId) then
+            table.insert(filtered, item)
+        end
+    end
+    if #filtered == 0 then
+        return packCfg.weightPool
+    end
+    return filtered
+end
+
 local function RollSeedFromPack(packCfg)
-    local item = RollWeighted(packCfg.weightPool)
+    local item = RollWeighted(GetPackRollPool(packCfg))
     return item.seedId
 end
 
@@ -61,7 +82,7 @@ local function RollSeedWithPity(packCfg)
 
     -- 如果没有更高品级（传奇包），直接正常抽
     if threshold == nil or upgradePackId == nil then
-        return RollSeedFromPack(packCfg), false
+        return RollSeedFromPack(packCfg), false, packId
     end
 
     local pity = state_.pityCounters[packId] or 0
@@ -72,7 +93,7 @@ local function RollSeedWithPity(packCfg)
         if upgradeCfg ~= nil then
             state_.pityCounters[packId] = 0
             print(string.format("[保底] %s 保底触发！从 %s 池抽取", packCfg.packName, upgradeCfg.packName))
-            return RollSeedFromPack(upgradeCfg), true
+            return RollSeedFromPack(upgradeCfg), true, upgradePackId
         end
     end
 
@@ -91,7 +112,7 @@ local function RollSeedWithPity(packCfg)
         state_.pityCounters[packId] = pity + 1
     end
 
-    return seedId, isUpgrade
+    return seedId, isUpgrade, packId
 end
 
 local function IsRarityCollected(rarity)
@@ -112,6 +133,64 @@ end
 
 function InventorySystem.GetState()
     return state_
+end
+
+local function CopyNumericKeyMap(source)
+    local result = {}
+    if type(source) ~= "table" then return result end
+    for key, value in pairs(source) do
+        local numericKey = tonumber(key)
+        if numericKey ~= nil then
+            result[math.floor(numericKey)] = value
+        else
+            result[key] = value
+        end
+    end
+    return result
+end
+
+local function CopyTable(source, fallback)
+    if type(source) == "table" then return source end
+    return fallback or {}
+end
+
+local function ReplaceTable(target, source)
+    for key in pairs(target) do
+        target[key] = nil
+    end
+    if type(source) ~= "table" then return target end
+    for key, value in pairs(source) do
+        target[key] = value
+    end
+    return target
+end
+
+function InventorySystem.GetSaveData()
+    return {
+        seedBag = state_.seedBag,
+        seedBagBuffs = state_.seedBagBuffs,
+        harvested = state_.harvested,
+        seedPacks = state_.seedPacks,
+        collectedPlants = state_.collectedPlants,
+        codexStats = state_.codexStats,
+        silverRewardClaimed = state_.silverRewardClaimed,
+        pityCounters = state_.pityCounters,
+        dailyTaskState = state_.dailyTaskState,
+    }
+end
+
+function InventorySystem.LoadSaveData(data)
+    if data == nil then return end
+    ReplaceTable(state_.seedBag, CopyNumericKeyMap(data.seedBag))
+    ReplaceTable(state_.seedBagBuffs, CopyNumericKeyMap(data.seedBagBuffs))
+    ReplaceTable(state_.harvested, CopyTable(data.harvested))
+    ReplaceTable(state_.seedPacks, CopyTable(data.seedPacks))
+    ReplaceTable(state_.collectedPlants, CopyNumericKeyMap(data.collectedPlants))
+    ReplaceTable(state_.codexStats, CopyNumericKeyMap(data.codexStats))
+    ReplaceTable(state_.silverRewardClaimed, CopyTable(data.silverRewardClaimed))
+    ReplaceTable(state_.pityCounters, CopyTable(data.pityCounters))
+    ReplaceTable(state_.dailyTaskState, CopyTable(data.dailyTaskState, { progress = { plant = 0, harvest = 0, sell = 0 }, rewardClaimed = false }))
+    state_.dailyTaskState.progress = CopyTable(state_.dailyTaskState.progress, { plant = 0, harvest = 0, sell = 0 })
 end
 
 function InventorySystem.GetSeedBag()
@@ -409,10 +488,11 @@ function InventorySystem.BuildSeedPackResults(packCfg, packCount)
     local results = {}
     for _ = 1, packCount do
         for _ = 1, packCfg.onceOpenCount do
-            local seedId, isPity = RollSeedWithPity(packCfg)
+            local seedId, isPity, rollPackId = RollSeedWithPity(packCfg)
             table.insert(results, {
                 seedId = seedId,
                 packId = packCfg.packId,
+                rollPackId = rollPackId or packCfg.packId,
                 seedBuff = packCfg.seedBuff or 0,
                 isNew = not state_.collectedPlants[seedId],
                 isPity = isPity,
@@ -576,7 +656,6 @@ function InventorySystem.CheckSilverPackRewardsEnhanced()
     for rarity, packId in pairs(cfg_.SEED_PACK_BY_RARITY) do
         if not state_.silverRewardClaimed[rarity] and IsRarityCollected(rarity) then
             state_.silverRewardClaimed[rarity] = true
-            AudioSystem.PlaySFX("collection_reward")
             -- 集齐奖励：该品级包 x2 + 上一级包 x1
             InventorySystem.AddSeedPack(packId, 2)
             local upgradeId = SYNTHESIS_MAP[packId]

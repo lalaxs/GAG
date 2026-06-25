@@ -93,12 +93,10 @@ function PlantActionController.BuySelectedSeed()
     local selectedSeed = GetSelectedSeed()
     local plant = GetPlants()[selectedSeed]
     if not deps_.WalletSystem.Spend(plant.seedPrice) then
-        AudioSystem.PlaySFX("error_denied")
         print("金币不足，无法购买: " .. plant.name)
         return false
     end
     deps_.addSeedToBag(selectedSeed, 1, 0)
-    AudioSystem.PlaySFX("buy_seed")
     print("购买种子: " .. plant.name .. "，剩余金币 " .. deps_.WalletSystem.GetBalance())
     return true
 end
@@ -111,7 +109,6 @@ function PlantActionController.SellAllHarvested()
             deps_.clearBagPreview()
         end
         deps_.WalletSystem.Add(total)
-        AudioSystem.PlaySFX("sell_success")
     end
     return total
 end
@@ -124,7 +121,6 @@ function PlantActionController.SellBagItem(item)
             deps_.clearBagPreview()
         end
         deps_.WalletSystem.Add(earned)
-        AudioSystem.PlaySFX("sell_success")
     end
     return earned
 end
@@ -137,7 +133,6 @@ function PlantActionController.SellHarvestedByFilter(filter)
             deps_.clearBagPreview()
         end
         deps_.WalletSystem.Add(total)
-        AudioSystem.PlaySFX("sell_success")
     end
     return count, total
 end
@@ -200,14 +195,12 @@ function PlantActionController.PerformPlotAction(plotIndex, localPos)
     if plot == nil then return end
 
     if not plot.unlocked then
-        AudioSystem.PlaySFX("error_denied")
         ShowToast("这块田地尚未解锁")
         RefreshUI(true)
         return
     end
 
     if not deps_.isPlantView() then
-        AudioSystem.PlaySFX("error_denied")
         ShowToast("当前是查看状态，请先点击下方“开始种植”")
         RefreshUI(true)
         return
@@ -217,10 +210,8 @@ function PlantActionController.PerformPlotAction(plotIndex, localPos)
     if deps_.getPlantTab() == "seed" then
         -- 播种模式：点击土地播种
         if deps_.countPlotPlants(plot) >= deps_.config.MaxCropsPerPlot then
-            AudioSystem.PlaySFX("error_denied")
             ShowToast("这块田地已满")
         elseif not PlantActionController.EnsureSelectedSeedAvailable() then
-            AudioSystem.PlaySFX("error_denied")
             ShowToast("没有可用种子，前往商店购买")
         else
             local plantedSeed = GetSelectedSeed()
@@ -230,19 +221,16 @@ function PlantActionController.PerformPlotAction(plotIndex, localPos)
                 ShowToast("已播种 " .. GetPlants()[plantedSeed].name, true)
                 PlantActionController.SelectNextOwnedSeedIfEmpty(plantedSeed)
             elseif reason == "occupied" then
-                AudioSystem.PlaySFX("error_denied")
                 local text = "请换个地方播种"
                 ShowToast(text)
                 FloatingToast.Show(text)
             else
-                AudioSystem.PlaySFX("error_denied")
                 ShowToast("没有该种子，前往商店购买")
             end
         end
     elseif deps_.getPlantTab() == "harvest" then
         -- 收获模式：点击成熟作物收获
         if deps_.countMaturePlants(plot) <= 0 then
-            AudioSystem.PlaySFX("error_denied")
             ShowToast("当前地块暂无成熟作物")
         else
             local crop = nil
@@ -272,7 +260,6 @@ function PlantActionController.PerformPlotAction(plotIndex, localPos)
             end
         end
     else
-        AudioSystem.PlaySFX("error_denied")
         ShowToast("切换到播种或收获进行操作")
     end
     RebuildUI()
@@ -280,7 +267,6 @@ end
 
 function PlantActionController.SelectSeedIndex(index)
     PlantActionController.SetSelectedSeedIndex(index)
-    AudioSystem.PlaySFX("bag_select_item")
     ShowToast("已选择 " .. GetPlants()[GetSelectedSeed()].name)
     RefreshUI(true)
 end

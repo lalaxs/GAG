@@ -27,6 +27,7 @@ local TalentSystem = require("systems.talent_system")
 local ActivitySystem = require("systems.activity_system")
 local ModelPreviewSystem = require("systems.model_preview_system")
 local PlayerSystem = require("systems.player_system")
+local SaveSystem = require("systems.save_system")
 local TalentView = require("ui.talent_view")
 local ExpansionView = require("ui.expansion_view")
 local SeedPackView = require("ui.seed_pack_view")
@@ -81,6 +82,11 @@ local ViewMode = CameraSystem.ViewMode
 local unlockedPlotCount_ = CONFIG.InitialUnlockedPlots
 local plantTab_ = "seed"  -- "seed" | "harvest" | "bag"
 local gameTime_ = 0
+local saveData_ = nil
+local hasSaveData_ = false
+local saveTimer_ = 0
+local saveDirty_ = false
+local saveDisabled_ = false
 local suppressNextWorldTap_ = false
 local RefreshUI = nil
 local ShowToast = nil
@@ -102,6 +108,78 @@ local function RandomRange(minValue, maxValue)
     return minValue + math.random() * (maxValue - minValue)
 end
 
+local function SyncInventoryRefs()
+    inventoryState_ = InventorySystem.GetState()
+    seedBag_ = inventoryState_.seedBag
+    seedBagBuffs_ = inventoryState_.seedBagBuffs
+    harvested_ = inventoryState_.harvested
+    seedPacks_ = inventoryState_.seedPacks
+    collectedPlants_ = inventoryState_.collectedPlants
+    codexStats_ = inventoryState_.codexStats
+    silverRewardClaimed_ = inventoryState_.silverRewardClaimed
+    dailyTaskState_ = inventoryState_.dailyTaskState
+end
+
+local function MarkSaveDirty()
+    if not saveDisabled_ then
+        saveDirty_ = true
+    end
+end
+
+local function BuildGameSaveData()
+    return {
+        wallet = WalletSystem.GetSaveData(),
+        inventory = InventorySystem.GetSaveData(),
+        progression = ProgressionSystem.GetSaveData(),
+        talent = TalentSystem.GetSaveData(),
+        shop = Shop.GetSaveData(),
+        commission = CommissionSystem.GetSaveData(),
+        activity = ActivitySystem.GetSaveData(),
+        farm = {
+            selectedPlot = selectedPlot_,
+            selectedSeed = selectedSeed_,
+            plantTab = plantTab_,
+            plots = CropSystem.GetPlotsSaveData(plots_),
+        },
+        view = {
+            plotDisplay = PlotDisplayController.GetSaveData(),
+        },
+    }
+end
+
+local function SaveGameNow()
+    if saveDisabled_ then return false end
+    return SaveSystem.Save(BuildGameSaveData())
+end
+
+local function ClearGameSave()
+    local ok = SaveSystem.Clear()
+    if ok then
+        saveDirty_ = false
+        saveDisabled_ = true
+    end
+    return ok
+end
+
+local function ApplyGameSaveData(data)
+    if data == nil then return end
+    WalletSystem.LoadSaveData(data.wallet)
+    InventorySystem.LoadSaveData(data.inventory)
+    SyncInventoryRefs()
+    ProgressionSystem.LoadSaveData(data.progression)
+    TalentSystem.LoadSaveData(data.talent)
+    Shop.LoadSaveData(data.shop)
+    CommissionSystem.LoadSaveData(data.commission)
+    ActivitySystem.LoadSaveData(data.activity)
+
+    local farm = data.farm or {}
+    selectedPlot_ = Clamp(tonumber(farm.selectedPlot or selectedPlot_) or selectedPlot_, 1, math.max(1, ProgressionSystem.GetUnlockedPlotCount()))
+    selectedSeed_ = Clamp(tonumber(farm.selectedSeed or selectedSeed_) or selectedSeed_, 1, #PLANTS)
+    plantTab_ = farm.plantTab or plantTab_
+    CropSystem.RestorePlotsFromSave(plots_, farm.plots)
+    PlotDisplayController.LoadSaveData(data.view and data.view.plotDisplay or nil)
+end
+
 local function RollCropWeightScale()
     local r = math.random()
     if r < 0.25 then
@@ -119,7 +197,9 @@ local function GetWeightBonusForPlot(plotIndex)
 end
 
 local function AddSeedToBag(plantIndex, count, buff)
-    return InventorySystem.AddSeedToBag(plantIndex, count, buff)
+    local added = InventorySystem.AddSeedToBag(plantIndex, count, buff)
+    if added > 0 then MarkSaveDirty() end
+    return added
 end
 
 local function RemoveSeedFromBag(plantIndex)
@@ -147,7 +227,9 @@ local function GetHighestPackIcon()
 end
 
 local function AddSeedPack(packId, count)
-    return InventorySystem.AddSeedPack(packId, count)
+    local ok = InventorySystem.AddSeedPack(packId, count)
+    if ok then MarkSaveDirty() end
+    return ok
 end
 
 local function IsTaskCompleted(taskCfg)
@@ -224,7 +306,6 @@ local function EnterPlantView()
     CameraSystem.SetTarget(FarmSystem.PlotWorldPosition(selectedPlot_))
     CameraSystem.EnterPlantView()
     RefreshSelection()
-    AudioSystem.PlaySFX("ui_click")
     ShowToast(string.format("进入第 %d 块地种植模式", selectedPlot_), true)
     if RebuildUI ~= nil then RebuildUI() end
     RefreshUI(true)
@@ -237,7 +318,6 @@ local function EnterFarmView()
     if ClearBagPreview ~= nil then
         ClearBagPreview()
     end
-    AudioSystem.PlaySFX("ui_click")
     ShowToast("自由查看农场", true)
     if RebuildUI ~= nil then RebuildUI() end
     RefreshUI(true)
@@ -294,7 +374,6 @@ end
 local function CloseBagItemDetail()
     selectedBagItem_ = nil
     ClearBagPreview()
-    AudioSystem.PlaySFX("ui_modal_close")
     if RebuildUI ~= nil then RebuildUI() end
 end
 
@@ -302,7 +381,6 @@ local function OpenBagItemDetail(item)
     if item == nil then return end
     selectedBagItem_ = item
     CreateBagPreview(item)
-    AudioSystem.PlaySFX("bag_select_item")
     if RebuildUI ~= nil then RebuildUI() end
 end
 
@@ -316,12 +394,15 @@ local function FindPlantAtLocalPosition(plot, localPos, matureOnly)
 end
 
 local function PlantSeedAt(plotIndex, plantIndex, centerLocalPos)
-    return PlantActionController.PlantSeedAt(plotIndex, plantIndex, centerLocalPos)
+    local ok, reason = PlantActionController.PlantSeedAt(plotIndex, plantIndex, centerLocalPos)
+    if ok then MarkSaveDirty() end
+    return ok, reason
 end
 
 local function HarvestNearestMature(plotIndex, localPos)
     local success, harvestInfo = PlantActionController.HarvestNearestMature(plotIndex, localPos)
     if success then
+        MarkSaveDirty()
         local cropName = harvestInfo and harvestInfo.name or "作物"
         local exp = harvestInfo and harvestInfo.exp or 0
         local text = "收获了" .. cropName .. "，获得了" .. exp .. "经验"
@@ -332,23 +413,33 @@ local function HarvestNearestMature(plotIndex, localPos)
 end
 
 local function PlantSeed(plotIndex, plantIndex)
-    return PlantActionController.PlantSeed(plotIndex, plantIndex)
+    local ok, reason = PlantActionController.PlantSeed(plotIndex, plantIndex)
+    if ok then MarkSaveDirty() end
+    return ok, reason
 end
 
 local function BuySelectedSeed()
-    return PlantActionController.BuySelectedSeed()
+    local ok, reason = PlantActionController.BuySelectedSeed()
+    if ok then MarkSaveDirty() end
+    return ok, reason
 end
 
 local function SellAllHarvested()
-    return PlantActionController.SellAllHarvested()
+    local ok, value = PlantActionController.SellAllHarvested()
+    if ok then MarkSaveDirty() end
+    return ok, value
 end
 
 local function SellBagItem(item)
-    return PlantActionController.SellBagItem(item)
+    local ok, value = PlantActionController.SellBagItem(item)
+    if ok then MarkSaveDirty() end
+    return ok, value
 end
 
 local function SellHarvestedByFilter(filter)
-    return PlantActionController.SellHarvestedByFilter(filter)
+    local ok, value = PlantActionController.SellHarvestedByFilter(filter)
+    if ok then MarkSaveDirty() end
+    return ok, value
 end
 
 local function CountPlotPlants(plot)
@@ -364,9 +455,6 @@ local function GetPlotText(plot)
 end
 
 ShowToast = function(text, silent)
-    if not silent then
-        AudioSystem.PlaySFX("toast_notice")
-    end
     UIController.ShowToast(text)
 end
 
@@ -529,6 +617,14 @@ function HandleUpdate(eventType, eventData)
     ModelPreviewSystem.Update(dt)
     Shop.Update(dt)
     CommissionSystem.Update(dt)
+    if saveDirty_ then
+        saveTimer_ = saveTimer_ + dt
+        if saveTimer_ >= 5.0 then
+            SaveGameNow()
+            saveDirty_ = false
+            saveTimer_ = 0
+        end
+    end
     FloatingToast.Update(dt)
 
     UIController.Update(dt)
@@ -543,7 +639,6 @@ end
 
 function InitBGM()
     AudioSystem.InitSFX(scene_)
-    AudioSystem.PlayAmbient("ambient_farm_day", 0.18)
     AudioSystem.InitBGM(scene_)
 end
 
@@ -555,6 +650,7 @@ function Start()
     SampleStart()
     graphics.windowTitle = CONFIG.Title
     math.randomseed(os.time())
+    saveData_, hasSaveData_ = SaveSystem.Load()
 
     InitMaterials()
     FarmSystem.Init(CONFIG, materials_)
@@ -665,6 +761,9 @@ function Start()
     })
     CommissionSystem.Init(GameConfig, InventorySystem, {
         showToast = ShowToast,
+        getPlayerLevel = function()
+            return TalentSystem.GetLevel()
+        end,
         onRefresh = function()
             print("[委托] 新委托已刷新")
         end,
@@ -719,12 +818,27 @@ function Start()
 
     ActivityView.Init({
         plants = PLANTS,
+        seedPackConfig = SEED_PACK_CONFIG,
+        activityConfig = GameConfig.ACTIVITY_CONFIG,
         getActiveActivity = function() return ActivitySystem.GetActiveActivity() end,
+        getActivityState = function(activityId) return ActivitySystem.GetState()[activityId] end,
         getTimeLeftText = function() return ActivitySystem.GetTimeLeftText() end,
         getSweetSubmitItems = function() return ActivitySystem.GetSweetSubmitItems() end,
-        submitSweetCrop = function(item) return ActivitySystem.SubmitSweetCrop(item) end,
-        exchangeSweetReward = function(rewardId) return ActivitySystem.ExchangeSweetReward(rewardId) end,
-        drawAlienPack = function(count) return ActivitySystem.DrawAlienPack(count) end,
+        submitSweetCrop = function(item)
+            local ok, err = ActivitySystem.SubmitSweetCrop(item)
+            if ok then MarkSaveDirty() end
+            return ok, err
+        end,
+        exchangeSweetReward = function(rewardId)
+            local ok, err = ActivitySystem.ExchangeSweetReward(rewardId)
+            if ok then MarkSaveDirty() end
+            return ok, err
+        end,
+        drawAlienPack = function(count)
+            local ok, err = ActivitySystem.DrawAlienPack(count)
+            if ok then MarkSaveDirty() end
+            return ok, err
+        end,
         getLeaderboard = function(activityId) return ActivitySystem.GetLeaderboard(activityId) end,
         suppressWorldTap = function() suppressNextWorldTap_ = true end,
         showToast = ShowToast,
@@ -759,6 +873,7 @@ function Start()
         getMatchingItems = function(commission) return CommissionSystem.GetMatchingHarvestedItems(commission) end,
         completeCommission = function(commission, item)
             local ok = CommissionSystem.CompleteCommission(commission, item)
+            if ok then MarkSaveDirty() end
             RefreshUI(true)
             return ok
         end,
@@ -867,7 +982,7 @@ function Start()
         getAvatars = function() return PlayerSystem.GetAvatars() end,
         getSelectedAvatar = function() return PlayerSystem.GetSelectedAvatar() end,
         getSelectedAvatarIndex = function() return PlayerSystem.GetSelectedAvatarIndex() end,
-        selectAvatar = function(index) PlayerSystem.SelectAvatar(index) end,
+        selectAvatar = function(index) return PlayerSystem.SelectAvatar(index) end,
         setNickname = function(name) return PlayerSystem.SetNickname(name) end,
         getLevel = function() return TalentSystem.GetLevel() end,
         getExp = function() return TalentSystem.GetExp() end,
@@ -882,6 +997,8 @@ function Start()
 
     SettingsView.Init({
         suppressWorldTap = function() suppressNextWorldTap_ = true end,
+        clearSave = ClearGameSave,
+        showToast = ShowToast,
         getPlotDisplayMode = function()
             return PlotDisplayController.GetDisplayMode()
         end,
@@ -908,7 +1025,6 @@ function Start()
         end,
         onLevelUp = function(level, pointGain)
             ProgressionSystem.SetGardenLevel(level)
-            AudioSystem.PlaySFX("level_up")
             local levelUpText = "升级! 等级 " .. level .. " — 获得 " .. (pointGain or 1) .. " 天赋点"
             ShowToast(levelUpText)
             FloatingToast.Show(levelUpText, { fontSize = 22, duration = 2.0, yRatio = 0.29, priority = 10 })
@@ -928,7 +1044,7 @@ function Start()
     TalentView.Init({
         suppressWorldTap = function() suppressNextWorldTap_ = true end,
         onTalentChanged = function()
-            -- 天赋变更后刷新UI
+            MarkSaveDirty()
         end,
     })
 
@@ -961,7 +1077,9 @@ function Start()
             return ProgressionSystem.GetTourValue()
         end,
         expandNextPlot = function()
-            return ExpandNextPlot()
+            local ok, err = ExpandNextPlot()
+            if ok then MarkSaveDirty() end
+            return ok, err
         end,
     })
 
@@ -983,14 +1101,22 @@ function Start()
             WalletSystem.Spend(cost)
             if plantIndex ~= nil then
                 AddSeedToBag(plantIndex, 1, 0)
-                AudioSystem.PlaySFX("buy_seed")
-            else
-                AudioSystem.PlaySFX("ui_click")
             end
+            MarkSaveDirty()
             RefreshUI(true)
         end,
         showToast = ShowToast,
     })
+
+    if hasSaveData_ then
+        ApplyGameSaveData(saveData_)
+        unlockedPlotCount_ = ProgressionSystem.GetUnlockedPlotCount()
+        ApplyUnlockedPlotCount()
+        UpdateCurrentTourValue()
+        saveDirty_ = false
+        saveTimer_ = 0
+        print("[存档] 游戏进度已恢复")
+    end
 
     InteractionSystem.Init(CONFIG, CameraSystem, {
         getCamera = function() return camera_ end,
@@ -1020,13 +1146,15 @@ function Start()
         end,
     })
 
-    AddSeedToBag(1, 6, 0)
-    AddSeedToBag(21, 4, 0)
-    AddSeedToBag(2, 2, 0)
-    AddSeedToBag(30, 1, 0)
-    AddSeedToBag(33, 1, 0)
-    AddSeedToBag(36, 1, 0)
-    AddSeedPack("pack_common", 1)
+    if not hasSaveData_ then
+        AddSeedToBag(1, 6, 0)
+        AddSeedToBag(21, 4, 0)
+        AddSeedToBag(2, 2, 0)
+        AddSeedPack("pack_common", 1)
+        SaveGameNow()
+        saveDirty_ = false
+        print("已赠送胡萝卜x6、玉米x4、番茄x2，以及普通种子包x1。")
+    end
 
     RebuildUI()
     RefreshUI(true)
@@ -1046,9 +1174,9 @@ function Start()
     InitBGM()
 
     print("=== Grow A Garden 核心玩法原型启动 ===")
-    print("已赠送胡萝卜x6、玉米x4、番茄x2，以及普通种子包x1。")
 end
 
 function Stop()
+    SaveGameNow()
     UI.Shutdown()
 end

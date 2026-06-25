@@ -257,7 +257,6 @@ RefreshDetailPanel = function(successText)
                 local unlockedTalentId = selectedTalentId_
                 local talentName = talent.name
                 if TalentSystem.UnlockTalent(unlockedTalentId) then
-                    AudioSystem.PlaySFX("talent_unlock")
                     local successText = "解锁成功: " .. talentName
                     FloatingToast.Show(successText)
                     RefreshTalentState(successText)
@@ -271,7 +270,6 @@ RefreshDetailPanel = function(successText)
 end
 
 local function OnNodeClick(talentId)
-    AudioSystem.PlaySFX("ui_click")
     selectedTalentId_ = talentId
     HighlightSelected(talentId)
     RefreshDetailPanel()
@@ -372,7 +370,6 @@ local function BuildChainRow(chain)
 end
 
 function TalentView.Show()
-    AudioSystem.PlaySFX("ui_modal_open")
     if modal_ ~= nil then
         modal_:Close()
     end
@@ -502,7 +499,6 @@ end
 
 function TalentView.Hide()
     if modal_ ~= nil then
-        AudioSystem.PlaySFX("ui_modal_close")
         modal_:Close()
     end
 end

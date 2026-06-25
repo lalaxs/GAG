@@ -28,27 +28,23 @@ function ExpansionController.ExpandNextPlot()
 
     local canExpand, reason = ProgressionSystem.CanAffordNextPlot(TalentSystem.GetLevel(), WalletSystem.GetBalance(), ProgressionSystem.GetTourValue())
     if not canExpand then
-        AudioSystem.PlaySFX("error_denied")
         ShowToast(reason or "暂时无法扩展地块")
         return false
     end
 
     local requirement = ProgressionSystem.GetExpansionRequirement()
     if requirement == nil then
-        AudioSystem.PlaySFX("error_denied")
         ShowToast("已经扩展到最大地块")
         return false
     end
 
     if not WalletSystem.Spend(requirement.gold) then
-        AudioSystem.PlaySFX("error_denied")
         ShowToast("金币不足")
         return false
     end
 
     if not ProgressionSystem.UnlockNextPlot() then
         WalletSystem.Add(requirement.gold)
-        AudioSystem.PlaySFX("error_denied")
         ShowToast("扩展失败")
         return false
     end
@@ -77,7 +73,6 @@ function ExpansionController.ExpandNextPlot()
     end
 
     local maxPlots = ProgressionSystem.GetMaxPlotCount()
-    AudioSystem.PlaySFX("land_unlock")
     if unlockedPlotCount >= maxPlots then
         ShowToast("解锁成功！所有地块已全部解锁")
     else

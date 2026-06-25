@@ -13,6 +13,7 @@ local SettingsView = {}
 
 local deps_ = {}
 local settingsModal_ = nil
+local clearSaveModal_ = nil
 local musicVolume_ = 80
 local sfxVolume_ = 80
 
@@ -24,7 +25,7 @@ function SettingsView.Init(deps)
 end
 
 function SettingsView.IsOpen()
-    return settingsModal_ ~= nil
+    return settingsModal_ ~= nil or clearSaveModal_ ~= nil
 end
 
 local function GetPlotDisplayMode()
@@ -72,9 +73,6 @@ local function BuildVolumeSection(title, value, soundType)
                         sfxVolume_ = volume
                     end
                     audio:SetMasterGain(soundType, volume / 100.0)
-                    if soundType == SOUND_EFFECT then
-                        AudioSystem.PlaySFX("settings_slider")
-                    end
                     SettingsView.RebuildContent()
                 end,
             },
@@ -93,7 +91,6 @@ local function BuildModeButton(text, active, onClick)
         fontColor = active and {255, 255, 255, 255} or {92, 72, 48, 255},
         borderRadius = 14,
         onClick = function()
-            AudioSystem.PlaySFX("ui_click")
             onClick()
         end,
     }
@@ -169,7 +166,6 @@ end
 
 function SettingsView.Open()
     if deps_.suppressWorldTap then deps_.suppressWorldTap() end
-    AudioSystem.PlaySFX("ui_modal_open")
 
     settingsModal_ = UI.Modal {
         title = "设置",
@@ -195,71 +191,164 @@ function SettingsView.RebuildContent()
     settingsModal_:AddContent(BuildContent())
 end
 
+function SettingsView.OpenClearSaveConfirm()
+    if deps_.suppressWorldTap then deps_.suppressWorldTap() end
+    if clearSaveModal_ ~= nil then clearSaveModal_:Close() end
+
+    clearSaveModal_ = UI.Modal {
+        title = "清除存档",
+        size = "sm",
+        closeOnOverlay = true,
+        showCloseButton = true,
+        contentPadding = {16, 20, 18, 20},
+        contentGap = 14,
+        onClose = function()
+            clearSaveModal_ = nil
+        end,
+    }
+
+    clearSaveModal_:AddContent(UI.Panel {
+        gap = 16,
+        children = {
+            UI.Label {
+                text = "确定要清除游戏存档吗？金币、背包、种植进度和活动进度都会重置。名片昵称和头像不会被清除。",
+                fontSize = 14,
+                fontColor = {92, 70, 48, 255},
+                textAlign = "center",
+            },
+            UI.Panel {
+                flexDirection = "row",
+                gap = 10,
+                children = {
+                    UI.Button {
+                        text = "取消",
+                        height = 42,
+                        flexGrow = 1,
+                        fontSize = 15,
+                        fontWeight = "bold",
+                        backgroundColor = {245, 238, 220, 255},
+                        fontColor = {92, 72, 48, 255},
+                        borderRadius = 16,
+                        onClick = function()
+                            if clearSaveModal_ ~= nil then
+                                clearSaveModal_:Close()
+                                clearSaveModal_ = nil
+                            end
+                        end,
+                    },
+                    UI.Button {
+                        text = "确认清除",
+                        height = 42,
+                        flexGrow = 1,
+                        fontSize = 15,
+                        fontWeight = "bold",
+                        backgroundColor = {205, 88, 70, 255},
+                        fontColor = {255, 255, 255, 255},
+                        borderRadius = 16,
+                        onClick = function()
+                            local ok = true
+                            if deps_.clearSave then ok = deps_.clearSave() end
+                            if clearSaveModal_ ~= nil then
+                                clearSaveModal_:Close()
+                                clearSaveModal_ = nil
+                            end
+                            if deps_.showToast then
+                                deps_.showToast(ok and "游戏存档已清除，重新进入后生效" or "清除存档失败")
+                            end
+                            if deps_.rebuildUI then deps_.rebuildUI() end
+                        end,
+                    },
+                },
+            },
+        },
+    })
+
+    ModalAnim.Apply(clearSaveModal_, { fixedHeight = 230 })
+    clearSaveModal_:Open()
+end
+
 function SettingsView.Close()
     if settingsModal_ ~= nil then
-        AudioSystem.PlaySFX("ui_modal_close")
         settingsModal_:Close()
         settingsModal_ = nil
     end
+    if clearSaveModal_ ~= nil then
+        clearSaveModal_:Close()
+        clearSaveModal_ = nil
+    end
 end
 
---- 构建右上角设置入口，以及入口下方的地块显示切换按钮
+--- 构建名片弹窗内的设置与清档入口
 function SettingsView.BuildButton()
     return UI.Panel {
-        position = "absolute",
-        top = 132,
-        right = 14,
-        gap = 8,
-        alignItems = "flex-end",
+        flexDirection = "row",
+        gap = 10,
         children = {
             UI.Button {
                 text = "设置",
-                width = 56,
-                height = 56,
+                height = 44,
+                flexGrow = 1,
                 fontSize = 15,
                 fontWeight = "bold",
                 backgroundColor = {255, 250, 240, 245},
                 fontColor = {78, 155, 100, 255},
-                borderRadius = 18,
+                borderRadius = 16,
                 onClick = function()
                     if deps_.suppressWorldTap then deps_.suppressWorldTap() end
-                    AudioSystem.PlaySFX("ui_click")
                     SettingsView.Open()
                 end,
             },
-            UI.Panel {
-                width = 56,
-                gap = 8,
-                alignItems = "flex-end",
-                children = {
-                    BuildModeButton("全部", GetPlotDisplayMode() ~= "single", function()
-                        if deps_.suppressWorldTap then deps_.suppressWorldTap() end
-                        if deps_.setPlotDisplayMode then deps_.setPlotDisplayMode("all") end
-                    end),
-                    BuildModeButton("单个", GetPlotDisplayMode() == "single", function()
-                        if deps_.suppressWorldTap then deps_.suppressWorldTap() end
-                        if deps_.setPlotDisplayMode then deps_.setPlotDisplayMode("single") end
-                    end),
-                    GetPlotDisplayMode() == "single" and UI.Button {
-                        text = "下一块",
-                        height = 40,
-                        fontSize = 14,
-                        fontWeight = "bold",
-                        backgroundColor = {255, 210, 110, 255},
-                        fontColor = {92, 62, 32, 255},
-                        borderRadius = 14,
-                        onClick = function()
-                            if deps_.suppressWorldTap then deps_.suppressWorldTap() end
-                            if deps_.switchNextPlot then deps_.switchNextPlot() end
-                        end,
-                    } or UI.Panel { width = 0, height = 0 },
-                },
+            UI.Button {
+                text = "清除存档",
+                height = 44,
+                flexGrow = 1,
+                fontSize = 15,
+                fontWeight = "bold",
+                backgroundColor = {255, 238, 226, 245},
+                fontColor = {188, 82, 62, 255},
+                borderRadius = 16,
+                onClick = function()
+                    SettingsView.OpenClearSaveConfirm()
+                end,
             },
         },
     }
 end
 
---- 构建弹窗覆盖层（Modal 自行管理渲染，此处返回空占位）
+function SettingsView.BuildPlotDisplayButtons()
+    return UI.Panel {
+        position = "absolute",
+        top = 132,
+        right = 14,
+        width = 56,
+        gap = 8,
+        alignItems = "flex-end",
+        children = {
+            BuildModeButton("全部", GetPlotDisplayMode() ~= "single", function()
+                if deps_.suppressWorldTap then deps_.suppressWorldTap() end
+                if deps_.setPlotDisplayMode then deps_.setPlotDisplayMode("all") end
+            end),
+            BuildModeButton("单个", GetPlotDisplayMode() == "single", function()
+                if deps_.suppressWorldTap then deps_.suppressWorldTap() end
+                if deps_.setPlotDisplayMode then deps_.setPlotDisplayMode("single") end
+            end),
+            GetPlotDisplayMode() == "single" and UI.Button {
+                text = "下一块",
+                height = 40,
+                fontSize = 14,
+                fontWeight = "bold",
+                backgroundColor = {255, 210, 110, 255},
+                fontColor = {92, 62, 32, 255},
+                borderRadius = 14,
+                onClick = function()
+                    if deps_.suppressWorldTap then deps_.suppressWorldTap() end
+                    if deps_.switchNextPlot then deps_.switchNextPlot() end
+                end,
+            } or UI.Panel { width = 0, height = 0 },
+        },
+    }
+end
+
 function SettingsView.BuildOverlay()
     return UI.Panel { width = 0, height = 0 }
 end

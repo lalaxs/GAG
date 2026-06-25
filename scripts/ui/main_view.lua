@@ -443,7 +443,6 @@ local function BuildTalentButton(labels)
                 end,
             } or nil,
             ActivityView.BuildButton(),
-            ModelPreviewView.BuildButton(),
             UI.Button {
                 text = "图鉴",
                 width = 69,
@@ -492,7 +491,7 @@ function MainView.BuildRoot(labels, children)
             deps_.isFarmView() and BuildTalentButton(labels) or UI.Panel { width = 0, height = 0 },
             deps_.isFarmView() and BuildFarmControls(labels, actionButton) or BuildPlantShell(children.plantContent),
             BuildCollapseButton(),
-            SettingsView.BuildButton(),
+            deps_.isFarmView() and SettingsView.BuildPlotDisplayButtons() or UI.Panel { width = 0, height = 0 },
             children.bagDetail,
             children.seedPackOverlay,
             children.seedPackOpeningOverlay,

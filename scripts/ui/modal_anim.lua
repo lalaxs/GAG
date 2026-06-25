@@ -69,8 +69,9 @@ function ModalAnim.Apply(modal, opts)
         end
 
         -- 尺寸计算
-        local modalWidth = screenWidth * 0.90
-        local modalMaxHeight = screenHeight * 0.90
+        local modalWidth = opts.fixedWidth or (screenWidth * (opts.widthRatio or 0.90))
+        modalWidth = math.min(modalWidth, screenWidth * (opts.maxWidthRatio or 0.96))
+        local modalMaxHeight = screenHeight * (opts.maxHeightRatio or 0.90)
 
         local footerHeight = 0
         if self.footerWidget_ then

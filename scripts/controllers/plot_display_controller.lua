@@ -113,6 +113,19 @@ function PlotDisplayController.SetFocusedPlotIndex(plotIndex)
     focusedPlotIndex_ = plotIndex
 end
 
+function PlotDisplayController.GetSaveData()
+    return {
+        displayMode = displayMode_,
+        focusedPlotIndex = focusedPlotIndex_,
+    }
+end
+
+function PlotDisplayController.LoadSaveData(data)
+    if data == nil then return end
+    displayMode_ = data.displayMode == "single" and "single" or "all"
+    focusedPlotIndex_ = Clamp(tonumber(data.focusedPlotIndex or 1) or 1, 1, math.max(1, GetUnlockedPlotCount()))
+end
+
 function PlotDisplayController.IsSingleMode()
     return displayMode_ == "single"
 end

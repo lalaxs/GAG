@@ -8,17 +8,23 @@
 
 local UI = require("urhox-libs/UI")
 
-local function GetFallbackPlantIndex(index)
+local function GetFallbackSeedIndex(index)
     if index == nil then return nil end
     return ((index - 1) % 29) + 1
 end
 
+local function GetPlantImageIndex(index)
+    if index == nil then return nil end
+    if index >= 1 and index <= 47 then return index end
+    return ((index - 1) % 29) + 1
+end
+
 local function GetSeedIconPath(index)
-    return string.format("image/icons_3d/seed (%d).png", GetFallbackPlantIndex(index) or 1)
+    return string.format("image/icons_3d/seed (%d).png", GetFallbackSeedIndex(index) or 1)
 end
 
 local function GetPlantImagePath(index)
-    return string.format("image/plants/plants (%d).png", GetFallbackPlantIndex(index) or 1)
+    return string.format("image/plants/plants (%d).png", GetPlantImageIndex(index) or 1)
 end
 
 local PlantPanelView = {}

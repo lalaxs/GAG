@@ -37,4 +37,15 @@ function WalletSystem.Add(amount)
     return amount
 end
 
+function WalletSystem.GetSaveData()
+    return {
+        balance = balance_,
+    }
+end
+
+function WalletSystem.LoadSaveData(data)
+    if data == nil then return end
+    balance_ = math.max(0, tonumber(data.balance or balance_) or balance_)
+end
+
 return WalletSystem

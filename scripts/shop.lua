@@ -336,7 +336,6 @@ end
 local function BuySeed(seedName)
     local stock = state_.seed.stock[seedName] or 0
     if stock <= 0 then
-        AudioSystem.PlaySFX("error_denied")
         if gameRef_.showToast then gameRef_.showToast("该种子已售罄") end
         return false
     end
@@ -348,7 +347,6 @@ local function BuySeed(seedName)
     local currentMoney = gameRef_.money and gameRef_.money() or 0
 
     if currentMoney < plant.seedPrice then
-        AudioSystem.PlaySFX("error_denied")
         if gameRef_.showToast then gameRef_.showToast("金币不足") end
         return false
     end
@@ -360,7 +358,6 @@ local function BuySeed(seedName)
 
     -- 扣库存
     state_.seed.stock[seedName] = stock - 1
-    AudioSystem.PlaySFX("buy_seed")
     print(string.format("[Shop] 购买种子: %s, 花费 %d, 剩余库存 %d", seedName, plant.seedPrice, stock - 1))
     return true
 end
@@ -369,7 +366,6 @@ end
 local function BuyTool(toolName)
     local stock = state_.tool.stock[toolName] or 0
     if stock <= 0 then
-        AudioSystem.PlaySFX("error_denied")
         if gameRef_.showToast then gameRef_.showToast("该工具暂无库存") end
         return false
     end
@@ -382,7 +378,6 @@ local function BuyTool(toolName)
 
     local currentMoney = gameRef_.money and gameRef_.money() or 0
     if currentMoney < cfg.price then
-        AudioSystem.PlaySFX("error_denied")
         if gameRef_.showToast then gameRef_.showToast("金币不足") end
         return false
     end
@@ -393,7 +388,6 @@ local function BuyTool(toolName)
     end
 
     state_.tool.stock[toolName] = stock - 1
-    AudioSystem.PlaySFX("buy_seed")
     if gameRef_.showToast then gameRef_.showToast("购买 " .. toolName .. " 成功") end
     print(string.format("[Shop] 购买工具: %s, 花费 %d", toolName, cfg.price))
     return true
@@ -943,7 +937,6 @@ end
 --- 打开商店弹窗
 function Shop.Open()
     state_.isOpen = true
-    AudioSystem.PlaySFX("ui_modal_open")
 
     -- 计算固定商店高度：弹窗高度固定在屏幕 88%，列表超出时只在列表区域内滚动
     local screenH = graphics:GetHeight() / graphics:GetDPR()
@@ -979,7 +972,6 @@ end
 --- 关闭商店弹窗
 function Shop.Close()
     if shopModal_ ~= nil then
-        AudioSystem.PlaySFX("ui_modal_close")
         shopModal_:Close()
         shopModal_ = nil
     end

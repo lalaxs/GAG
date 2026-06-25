@@ -97,6 +97,23 @@ function ActivitySystem.GetState()
     return state_
 end
 
+local function CopyTable(source, fallback)
+    if type(source) == "table" then return source end
+    return fallback or {}
+end
+
+function ActivitySystem.GetSaveData()
+    return state_
+end
+
+function ActivitySystem.LoadSaveData(data)
+    if data == nil then return end
+    state_.sweet = CopyTable(data.sweet, { value = 0, submitted = 0, exchanged = {} })
+    state_.sweet.exchanged = CopyTable(state_.sweet.exchanged)
+    state_.alien = CopyTable(data.alien, { genes = 0, totalGenes = 0, drawCount = 0 })
+    state_.dark = CopyTable(data.dark, { devourHarvestCount = 0, darkSeedDrops = 0 })
+end
+
 function ActivitySystem.GetActiveActivityId()
     local activityConfig = cfg_.ACTIVITY_CONFIG or {}
     local sequence = activityConfig.sequence or { "sweet", "alien", "dark" }
@@ -175,7 +192,7 @@ function ActivitySystem.OnCropHarvested(crop)
         local rarityOrder = GetRarityOrder(crop.config and crop.config.rarity)
         local rates = activity.darkSeedDropRates or { 0.08, 0.12, 0.18, 0.28, 0.45 }
         if math.random() <= (rates[rarityOrder] or 0.08) then
-            local pool = activity.darkSeedPool or { 36, 37, 38 }
+            local pool = activity.darkSeedPool or { 42, 43, 44, 45, 46, 47 }
             local plantIndex = pool[math.random(1, #pool)]
             inventory_.AddSeedToBag(plantIndex, 1, 0)
             state_.dark.darkSeedDrops = state_.dark.darkSeedDrops + 1

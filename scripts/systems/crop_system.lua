@@ -6,8 +6,6 @@
 -- 预留农田道具加速和产出加成入口：plotModifiers。
 -- ============================================================================
 
-local AudioSystem = require("systems.audio_system")
-
 local CropSystem = {}
 
 local cfg_ = nil
@@ -218,7 +216,82 @@ local function CreateSeedVisual(root, plant, seedRadius)
     return deps_.SeedVisual.Create(root, plant, naturalScale)
 end
 
-local function SetVisualScaleByProgress(plantData)
+local SetVisualScaleByProgress
+
+local function CreateCropFromSave(plot, data)
+    if plot == nil or type(data) ~= "table" then return nil end
+    local plantIndex = tonumber(data.plantIndex or 0)
+    local plant = cfg_.PLANTS[plantIndex]
+    if plant == nil then return nil end
+
+    local localPosData = data.localPos or {}
+    local localPos = Vector3(tonumber(localPosData.x or 0) or 0, 0, tonumber(localPosData.z or 0) or 0)
+    local mutation = data.mutation or {
+        sizeScale = 1.0,
+        sizePrefix = nil,
+        colorMutation = nil,
+        specials = {},
+        priceMultiplier = 1.0,
+        timeMultiplier = 1.0,
+        seedBuff = 0,
+    }
+    mutation.specials = mutation.specials or {}
+    mutation.priceMultiplier = mutation.priceMultiplier or 1.0
+    mutation.timeMultiplier = mutation.timeMultiplier or 1.0
+    mutation.sizeScale = mutation.sizeScale or 1.0
+
+    local root = plot.node:CreateChild("PlantRoot")
+    root.position = Vector3(localPos.x, cfg_.CONFIG.SeedVisualY, localPos.z)
+    root.rotation = Quaternion(tonumber(data.rotationYaw or 0) or 0, Vector3.UP)
+
+    local material = deps_.PlantVisual.ResolvePlantMaterial(plant, mutation)
+    local crop = {
+        config = plant,
+        plantIndex = plantIndex,
+        root = root,
+        seedVisual = nil,
+        visual = nil,
+        material = material,
+        mutation = mutation,
+        effectNodes = {},
+        name = data.name or BuildCropName(plant, mutation),
+        price = tonumber(data.price or plant.fruitPrice) or plant.fruitPrice,
+        sightValue = tonumber(data.sightValue or 0) or 0,
+        weight = tonumber(data.weight or plant.baseWeight or 1.0) or 1.0,
+        baseWeight = tonumber(data.baseWeight or plant.baseWeight or 1.0) or 1.0,
+        weightScale = tonumber(data.weightScale or 1.0) or 1.0,
+        weightTier = data.weightTier or "Normal",
+        weightBonus = tonumber(data.weightBonus or 1.0) or 1.0,
+        weightMultiplier = tonumber(data.weightMultiplier or 1.0) or 1.0,
+        elapsed = tonumber(data.elapsed or 0) or 0,
+        growTime = math.max(0.1, tonumber(data.growTime or plant.growTime or 1.0) or 1.0),
+        mature = data.mature == true,
+        sprouted = data.sprouted == true,
+        localPos = localPos,
+        seedRadius = tonumber(data.seedRadius or 0.09) or 0.09,
+        seedHeight = tonumber(data.seedHeight or 0.015) or 0.015,
+        pickRadius = tonumber(data.pickRadius or 0.55) or 0.55,
+    }
+    if crop.sightValue <= 0 then
+        crop.sightValue = CalculateCropBaseSightValue(crop)
+    end
+
+    if crop.mature or crop.sprouted or crop.elapsed >= crop.growTime * 0.18 then
+        crop.sprouted = true
+        crop.visual = deps_.PlantVisual.CreatePlantVisual(root, plant, mutation, material)
+        SetVisualScaleByProgress(crop)
+        if crop.mature then
+            crop.elapsed = crop.growTime
+            deps_.PlantVisual.CreateSpecialEffects(crop)
+        end
+    else
+        crop.seedVisual = CreateSeedVisual(root, plant, crop.seedRadius)
+    end
+
+    return crop
+end
+
+SetVisualScaleByProgress = function(plantData)
     local progress = plantData.elapsed / plantData.growTime
     progress = Clamp(progress, 0.0, 1.0)
     if progress < 0.18 then
@@ -235,7 +308,6 @@ local function SetVisualScaleByProgress(plantData)
             plantData.seedVisual:Remove()
             plantData.seedVisual = nil
         end
-        AudioSystem.PlaySFX("crop_sprout")
         print("种子发芽，切换为作物模型: " .. plantData.name)
     end
 
@@ -245,6 +317,64 @@ local function SetVisualScaleByProgress(plantData)
     if plantData.visual ~= nil then
         plantData.visual.scale = Vector3(scale, scale, scale)
     end
+end
+
+function CropSystem.RestorePlotsFromSave(plots, data)
+    if plots == nil or type(data) ~= "table" then return end
+    for plotKey, plotData in pairs(data) do
+        local plotIndex = tonumber(plotKey)
+        local plot = plotIndex ~= nil and plots[plotIndex] or nil
+        if plot ~= nil then
+            if plot.plants ~= nil then
+                for _, crop in ipairs(plot.plants) do
+                    if crop.root ~= nil then crop.root:Remove() end
+                end
+            end
+            plot.plants = {}
+            local savedPlants = plotData.plants or {}
+            for _, cropData in ipairs(savedPlants) do
+                local crop = CreateCropFromSave(plot, cropData)
+                if crop ~= nil then
+                    table.insert(plot.plants, crop)
+                end
+            end
+        end
+    end
+end
+
+function CropSystem.GetPlotsSaveData(plots)
+    local result = {}
+    if plots == nil then return result end
+    for plotIndex, plot in ipairs(plots) do
+        local savedPlants = {}
+        for _, crop in ipairs(plot.plants or {}) do
+            table.insert(savedPlants, {
+                plantIndex = crop.plantIndex,
+                name = crop.name,
+                price = crop.price,
+                sightValue = crop.sightValue,
+                weight = crop.weight,
+                baseWeight = crop.baseWeight,
+                weightScale = crop.weightScale,
+                weightTier = crop.weightTier,
+                weightBonus = crop.weightBonus,
+                weightMultiplier = crop.weightMultiplier,
+                elapsed = crop.elapsed,
+                growTime = crop.growTime,
+                mature = crop.mature,
+                sprouted = crop.sprouted,
+                localPos = crop.localPos and { x = crop.localPos.x, z = crop.localPos.z } or { x = 0, z = 0 },
+                seedRadius = crop.seedRadius,
+                seedHeight = crop.seedHeight,
+                pickRadius = crop.pickRadius,
+                mutation = crop.mutation,
+            })
+        end
+        result[plotIndex] = {
+            plants = savedPlants,
+        }
+    end
+    return result
 end
 
 local function RainbowColor(t)
@@ -607,7 +737,6 @@ function CropSystem.HarvestNearestMature(plots, plotIndex, localPos)
     local packQuality = GetTalentBonus("packQuality")
     local droppedPack = deps_.InventorySystem.RollHarvestDrop(crop.config.rarity or "普通", dropRateBonus, packQuality)
     if droppedPack ~= nil and deps_.showToast then
-        AudioSystem.PlaySFX("harvest_pack_drop")
         local packCfg = cfg_.SEED_PACK_CONFIG[droppedPack]
         local packName = packCfg and packCfg.packName or droppedPack
         deps_.showToast("掉落: " .. packName)
@@ -708,7 +837,6 @@ function CropSystem.UpdatePlants(plots, dt)
                         end
                         plantData.root:Translate(Vector3(0, 0.06, 0))
                         deps_.PlantVisual.CreateSpecialEffects(plantData)
-                        AudioSystem.PlaySFX("crop_mature")
                         print("成熟: " .. plantData.name .. "，可收获")
                     end
                 else
