@@ -58,6 +58,11 @@ local function GetTourValue()
     return 0
 end
 
+local function GetBestTourValue()
+    if deps_.getBestTourValue then return deps_.getBestTourValue() end
+    return GetTourValue()
+end
+
 local function GetUserId()
     if deps_.getUserId then return deps_.getUserId() end
     return nil
@@ -65,11 +70,6 @@ end
 
 local function GetDisplayName()
     if deps_.getDisplayName then return deps_.getDisplayName() end
-    return "Tap玩家"
-end
-
-local function GetTapNickname()
-    if deps_.getTapNickname then return deps_.getTapNickname() end
     return "Tap玩家"
 end
 
@@ -335,8 +335,7 @@ function ProfileView.RebuildProfileContent()
                                         height = 1,
                                         backgroundColor = {226, 188, 126, 180},
                                     },
-                                    BuildInfoLine("Type ID", userId ~= nil and tostring(userId) or "未登录"),
-                                    BuildInfoLine("头像", selectedAvatar.name or "--"),
+                                    BuildInfoLine("Tap ID", userId ~= nil and tostring(userId) or "未登录"),
                                 },
                             },
                         },
@@ -354,14 +353,8 @@ function ProfileView.RebuildProfileContent()
                 borderColor = {224, 199, 158, 170},
                 gap = 8,
                 children = {
-                    UI.Label {
-                        text = "花园资料",
-                        fontSize = 15,
-                        fontWeight = "bold",
-                        fontColor = {76, 58, 40, 255},
-                    },
-                    BuildInfoLine("花园观光值", Format.Gold(GetTourValue())),
-                    BuildInfoLine("Tap 昵称", GetTapNickname()),
+                    BuildInfoLine("当前花园观光值", Format.Gold(GetTourValue())),
+                    BuildInfoLine("历史最高观光值", Format.Gold(GetBestTourValue())),
                 },
             },
         },

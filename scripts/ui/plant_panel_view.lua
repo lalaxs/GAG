@@ -8,6 +8,19 @@
 
 local UI = require("urhox-libs/UI")
 
+local function GetFallbackPlantIndex(index)
+    if index == nil then return nil end
+    return ((index - 1) % 29) + 1
+end
+
+local function GetSeedIconPath(index)
+    return string.format("image/icons_3d/seed (%d).png", GetFallbackPlantIndex(index) or 1)
+end
+
+local function GetPlantImagePath(index)
+    return string.format("image/plants/plants (%d).png", GetFallbackPlantIndex(index) or 1)
+end
+
 local PlantPanelView = {}
 
 local deps_ = {}
@@ -75,7 +88,7 @@ function PlantPanelView.BuildContent()
             local plantIndex = ownedList[actualIdx]
             local plant = deps_.plants[plantIndex]
             local owned = deps_.seedBag[plantIndex] or 0
-            local iconPath = string.format("image/icons_3d/seed (%d).png", plantIndex)
+            local iconPath = GetSeedIconPath(plantIndex)
             local cardW = isCenter and 137 or 107
             local cardH = isCenter and 137 or 107
             local iconW = isCenter and 102 or 78
@@ -249,7 +262,7 @@ function PlantPanelView.BuildContent()
         local slots = {}
         for i = 1, capacity do
             local item = deps_.harvested[i]
-            local itemIconPath = item and item.plantIndex and string.format("image/plants/plants (%d).png", item.plantIndex) or nil
+            local itemIconPath = item and item.plantIndex and GetPlantImagePath(item.plantIndex) or nil
             local weightText = item and item.weight and string.format("%.2fkg", item.weight) or ""
             local isGiant = item ~= nil and item.weightTier == "Giant"
             table.insert(slots, UI.Panel {

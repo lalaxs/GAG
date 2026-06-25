@@ -9,6 +9,19 @@ local UI = require("urhox-libs/UI")
 local ModalAnim = require("ui.modal_anim")
 local FloatingToast = require("ui.floating_toast")
 
+local function GetFallbackPlantIndex(index)
+    if index == nil then return nil end
+    return ((index - 1) % 29) + 1
+end
+
+local function GetSeedIconPath(index)
+    return string.format("image/icons_3d/seed (%d).png", GetFallbackPlantIndex(index) or 1)
+end
+
+local function GetPlantImagePath(index)
+    return string.format("image/plants/plants (%d).png", GetFallbackPlantIndex(index) or 1)
+end
+
 local SeedPackView = {}
 
 local deps_ = {}
@@ -67,7 +80,7 @@ local function BuildResultCards(results)
                     width = 50,
                     height = 44,
                     marginBottom = 4,
-                    backgroundImage = string.format("image/icons_3d/seed (%d).png", seedId),
+                    backgroundImage = GetSeedIconPath(seedId),
                     backgroundFit = "contain",
                 },
                 UI.Label { text = string.format("%s x%d", plantName, count), fontSize = 12, fontWeight = "bold", fontColor = {75, 55, 40, 255}, textAlign = "center" },
@@ -112,7 +125,7 @@ local function BuildCompactResultCards(results)
                     width = 86,
                     height = 82,
                     marginBottom = 3,
-                    backgroundImage = string.format("image/icons_3d/seed (%d).png", seedId),
+                    backgroundImage = GetSeedIconPath(seedId),
                     backgroundFit = "contain",
                 },
                 UI.Label { text = string.format("%s种子包 x%d", plant.name, count), width = 92, fontSize = 13, fontWeight = "bold", fontColor = {65, 48, 34, 255}, textAlign = "left" },
@@ -288,7 +301,7 @@ local function BuildPackDetailSection()
                 UI.Panel {
                     width = 36,
                     height = 40,
-                    backgroundImage = string.format("image/plants/plants (%d).png", seedId),
+                    backgroundImage = GetPlantImagePath(seedId),
                     backgroundFit = "contain",
                 },
             },
@@ -509,7 +522,7 @@ local function BuildRollingCards(results, targetResult, isSelected)
             height = scaleH,
             marginTop = -scaleH / 2,
         })
-        slot.icon:SetBackgroundImage(string.format("image/icons_3d/seed (%d).png", seedId))
+        slot.icon:SetBackgroundImage(GetSeedIconPath(seedId))
         slot.icon:SetStyle({ width = selected and 76 or 66, height = selected and 76 or 66 })
         slot.name:SetText(plant.name)
         slot.name:SetStyle({ fontColor = rarityColor, fontSize = selected and 14 or 12 })
@@ -521,7 +534,7 @@ local function BuildRollingCards(results, targetResult, isSelected)
         local rarityColor = deps_.getUiRarityColor(plant.rarity)
         local selected = isSelected and slotIndex == 3
         local scaleH = selected and 130 or 112
-        local icon = UI.Panel { width = selected and 76 or 66, height = selected and 76 or 66, backgroundImage = string.format("image/icons_3d/seed (%d).png", seedId), backgroundFit = "contain" }
+        local icon = UI.Panel { width = selected and 76 or 66, height = selected and 76 or 66, backgroundImage = GetSeedIconPath(seedId), backgroundFit = "contain" }
         local nameLabel = UI.Label { text = plant.name, fontSize = selected and 14 or 12, fontWeight = "bold", fontColor = rarityColor, textAlign = "center" }
         local panel = UI.Panel {
             position = "absolute",

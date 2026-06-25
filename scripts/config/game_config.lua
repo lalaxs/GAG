@@ -69,6 +69,21 @@ GameConfig.PLANTS = {
     { name = "杜鹃", rarity = "史诗", seedPrice = 38000, fruitPrice = 210000, volumeProb = 0.0, colorProb = 0.09, specialProb = 0.025, growTime = 240, visual = "azalea", color = Color(0.95, 0.2, 0.45, 1.0) },
     { name = "玉兰", rarity = "史诗", seedPrice = 52000, fruitPrice = 305000, volumeProb = 0.0, colorProb = 0.09, specialProb = 0.025, growTime = 270, visual = "magnolia", color = Color(0.98, 0.95, 0.92, 1.0) },
     { name = "牡丹", rarity = "传奇", seedPrice = 1000000, fruitPrice = 10000000, volumeProb = 0.0, colorProb = 0.09, specialProb = 0.025, growTime = 900, visual = "peony", color = Color(0.95, 0.4, 0.6, 1.0) },
+
+    -- 甜蜜蜜限定作物：糖果生态与蜂蜜魔法主题
+    { name = "糖晶铃兰", rarity = "稀有", seedPrice = 15000, fruitPrice = 76000, volumeProb = 0.0, colorProb = 0.10, specialProb = 0.035, growTime = 130, visual = "lily", visualTheme = "crystal_sweet", activityTag = "sweet", limited = true, baseWeight = 0.42, sightBase = 520, color = Color(1.0, 0.64, 0.86, 1.0) },
+    { name = "蜂巢曼德拉", rarity = "史诗", seedPrice = 85000, fruitPrice = 520000, volumeProb = 0.0, colorProb = 0.10, specialProb = 0.04, growTime = 290, visual = "root", visualTheme = "honey_hive", activityTag = "sweet", limited = true, baseWeight = 1.35, sightBase = 940, color = Color(1.0, 0.72, 0.16, 1.0) },
+    { name = "梦糖龙葵", rarity = "传奇", seedPrice = 620000, fruitPrice = 4800000, volumeProb = 0.0, colorProb = 0.11, specialProb = 0.045, growTime = 690, visual = "grape", visualTheme = "dream_candy", activityTag = "sweet", limited = true, baseWeight = 0.86, sightBase = 1780, color = Color(0.78, 0.34, 1.0, 1.0) },
+
+    -- 外星基因限定作物：异星生态与发光器官主题
+    { name = "脉冲孢子塔", rarity = "稀有", seedPrice = 18000, fruitPrice = 92000, volumeProb = 0.0, colorProb = 0.10, specialProb = 0.035, growTime = 145, visual = "mushroom", visualTheme = "alien_pulse", activityTag = "alien", limited = true, baseWeight = 0.68, sightBase = 560, color = Color(0.36, 1.0, 0.42, 1.0) },
+    { name = "异瞳星蕨", rarity = "史诗", seedPrice = 105000, fruitPrice = 720000, volumeProb = 0.0, colorProb = 0.10, specialProb = 0.04, growTime = 330, visual = "flower", visualTheme = "alien_eye", activityTag = "alien", limited = true, baseWeight = 0.54, sightBase = 1120, color = Color(0.22, 0.62, 1.0, 1.0) },
+    { name = "零重力胚果", rarity = "传奇", seedPrice = 760000, fruitPrice = 6400000, volumeProb = 0.0, colorProb = 0.11, specialProb = 0.045, growTime = 760, visual = "starfruit", visualTheme = "zero_gravity", activityTag = "alien", limited = true, baseWeight = 1.05, sightBase = 2100, color = Color(0.68, 0.92, 1.0, 1.0) },
+
+    -- 黑暗来临限定作物：深渊、吞噬与永夜奇观主题
+    { name = "噬光苔冠", rarity = "稀有", seedPrice = 22000, fruitPrice = 118000, volumeProb = 0.0, colorProb = 0.10, specialProb = 0.04, growTime = 155, visual = "cluster", visualTheme = "dark_moss", activityTag = "dark", limited = true, baseWeight = 0.74, sightBase = 640, color = Color(0.08, 0.05, 0.12, 1.0) },
+    { name = "裂隙肉芽", rarity = "史诗", seedPrice = 130000, fruitPrice = 930000, volumeProb = 0.0, colorProb = 0.10, specialProb = 0.045, growTime = 360, visual = "rose", visualTheme = "dark_rift", activityTag = "dark", limited = true, baseWeight = 0.66, sightBase = 1280, color = Color(0.36, 0.04, 0.10, 1.0) },
+    { name = "终夜王冠", rarity = "传奇", seedPrice = 900000, fruitPrice = 8200000, volumeProb = 0.0, colorProb = 0.11, specialProb = 0.05, growTime = 830, visual = "peony", visualTheme = "void_crown", activityTag = "dark", limited = true, baseWeight = 0.92, sightBase = 2450, color = Color(0.02, 0.01, 0.05, 1.0) },
 }
 
 GameConfig.PLANT_BASE_WEIGHTS = {
@@ -113,8 +128,12 @@ GameConfig.CONFIG.LAND_UNLOCK_SIGHT_REQUIREMENTS = GameConfig.LAND_UNLOCK_SIGHT_
 
 for i, weight in ipairs(GameConfig.PLANT_BASE_WEIGHTS) do
     if GameConfig.PLANTS[i] ~= nil then
-        GameConfig.PLANTS[i].baseWeight = weight
-        GameConfig.PLANTS[i].sightBase = GameConfig.PLANT_SIGHT_BASE_VALUES[i] or math.max(1, math.floor((GameConfig.PLANTS[i].fruitPrice or 10) * 0.5))
+        if GameConfig.PLANTS[i].baseWeight == nil then
+            GameConfig.PLANTS[i].baseWeight = weight
+        end
+        if GameConfig.PLANTS[i].sightBase == nil then
+            GameConfig.PLANTS[i].sightBase = GameConfig.PLANT_SIGHT_BASE_VALUES[i] or math.max(1, math.floor((GameConfig.PLANTS[i].fruitPrice or 10) * 0.5))
+        end
     end
 end
 
@@ -129,9 +148,9 @@ GameConfig.RARITY_ORDER = {
 GameConfig.RARITY_PLANT_INDICES = {
     ["普通"] = { 1, 2, 21, 22 },
     ["罕见"] = { 3, 4, 5, 6, 23, 24 },
-    ["稀有"] = { 7, 8, 9, 10, 25, 26 },
-    ["史诗"] = { 11, 12, 13, 14, 27, 28 },
-    ["传奇"] = { 15, 16, 17, 18, 19, 20, 29 },
+    ["稀有"] = { 7, 8, 9, 10, 25, 26, 30, 33, 36 },
+    ["史诗"] = { 11, 12, 13, 14, 27, 28, 31, 34, 37 },
+    ["传奇"] = { 15, 16, 17, 18, 19, 20, 29, 32, 35, 38 },
 }
 
 GameConfig.SEED_PACK_CONFIG = {
@@ -211,6 +230,20 @@ GameConfig.SEED_PACK_CONFIG = {
             { seedId = 15, weight = 93 }, { seedId = 16, weight = 93 }, { seedId = 17, weight = 93 }, { seedId = 18, weight = 93 }, { seedId = 19, weight = 93 }, { seedId = 20, weight = 93 }, { seedId = 29, weight = 92 },
         },
     },
+    pack_alien_gene = {
+        packId = "pack_alien_gene",
+        packName = "外星基因种子包",
+        packRarity = "传奇",
+        onceOpenCount = 1,
+        seedBuff = 0.01,
+        stackMax = 999,
+        packIcon = "image/seedpack_icon/seedpack_4.png",
+        themeColor = {155, 245, 215, 255},
+        weightPool = {
+            { seedId = 33, weight = 58 }, { seedId = 34, weight = 32 }, { seedId = 35, weight = 10 },
+            { seedId = 30, weight = 8 }, { seedId = 36, weight = 8 },
+        },
+    },
 }
 
 GameConfig.SEED_PACK_BY_RARITY = {
@@ -244,12 +277,78 @@ GameConfig.SPECIAL_MUTATIONS = {
     { key = "cloud", name = "云朵变异", multiplier = 3.0, sightMultiplier = 3.0, timeMultiplier = 1.10, prefixes = { "积云", "羽絮", "棉糖", "天穹" } },
     { key = "chocolate", name = "巧克力变异", multiplier = 3.5, sightMultiplier = 3.2, timeMultiplier = 1.12, prefixes = { "可可", "熔浆", "糖壳", "丝滑" } },
     { key = "pollen", name = "花粉变异", multiplier = 4.0, sightMultiplier = 3.8, timeMultiplier = 1.15, prefixes = { "粉雾", "授粉", "蜜腺", "蝶吻" } },
+    { key = "candy", name = "糖果变异", multiplier = 4.5, sightMultiplier = 4.0, timeMultiplier = 1.16, prefixes = { "糖晶", "蜜糖", "霜甜", "软糖" } },
+    { key = "honey", name = "蜂蜜变异", multiplier = 5.5, sightMultiplier = 4.8, timeMultiplier = 1.18, prefixes = { "流蜜", "蜂巢", "金蜜", "蜜蜡" } },
     { key = "glow", name = "荧光变异", multiplier = 5.0, sightMultiplier = 4.2, timeMultiplier = 1.20, prefixes = { "磷光", "夜辉", "萤火", "鬼火", "邪光" } },
     { key = "stardust", name = "星尘变异", multiplier = 6.0, sightMultiplier = 10.0, timeMultiplier = 1.25, prefixes = { "星屑", "彗尾", "银河", "星轨", "天坠" } },
     { key = "ceramic", name = "陶瓷变异", multiplier = 7.0, sightMultiplier = 5.0, timeMultiplier = 1.30, prefixes = { "青瓷", "素烧", "裂纹", "珐琅" } },
     { key = "rainbow", name = "彩虹变异", multiplier = 10.0, sightMultiplier = 6.0, timeMultiplier = 1.40, prefixes = { "虹霓", "幻光", "棱镜", "虹彩", "神谕" } },
+    { key = "devour", name = "吞噬变异", multiplier = 9.0, sightMultiplier = 9.0, timeMultiplier = 1.38, prefixes = { "噬光", "裂口", "深渊", "饥夜" } },
     { key = "void", name = "虚空变异", multiplier = 12.0, sightMultiplier = 12.0, timeMultiplier = 1.45, prefixes = { "裂隙", "以太", "吞噬", "低语" } },
     { key = "gold", name = "黄金变异", multiplier = 15.0, sightMultiplier = 8.0, timeMultiplier = 1.50, prefixes = { "镀金", "钱袋", "耀金", "神铸", "王权" } },
+}
+
+GameConfig.ACTIVITY_CONFIG = {
+    cycleDays = 3,
+    sequence = { "sweet", "alien", "dark" },
+    activities = {
+        sweet = {
+            id = "sweet",
+            name = "甜蜜蜜",
+            badge = "甜蜜循环",
+            desc = "活动期间播种作物可能出现糖果变异和蜂蜜变异，上交这两类变异作物获得甜蜜值，并兑换限定奇异作物种子。",
+            candyChance = 0.09,
+            honeyChance = 0.06,
+            limitedSeeds = { 30, 31, 32 },
+            leaderboardBase = 180,
+            backgroundColor = {255, 244, 228, 248},
+            badgeColor = {255, 206, 158, 255},
+            chipColor = {255, 224, 238, 255},
+            exchangeRewards = {
+                { id = "sweet_crystal", name = "糖晶铃兰种子 x1", type = "seed", plantIndex = 30, count = 1, cost = 65, limit = 8 },
+                { id = "hive_mandra", name = "蜂巢曼德拉种子 x1", type = "seed", plantIndex = 31, count = 1, cost = 160, limit = 4 },
+                { id = "dream_nightshade", name = "梦糖龙葵种子 x1", type = "seed", plantIndex = 32, count = 1, cost = 360, limit = 2 },
+                { id = "sweet_pack", name = "稀有种子包 x1", type = "pack", packId = "pack_rare", count = 1, cost = 90, limit = 5 },
+            },
+        },
+        alien = {
+            id = "alien",
+            name = "外星基因",
+            badge = "基因抽取",
+            desc = "活动期间收获作物可获得外星基因，消耗基因抽取种子包，有概率得到外星基因专属种子包和异星限定作物。",
+            limitedSeeds = { 33, 34, 35 },
+            drawCost = 10,
+            drawCostTen = 95,
+            leaderboardBase = 150,
+            backgroundColor = {232, 248, 238, 248},
+            badgeColor = {170, 245, 190, 255},
+            chipColor = {210, 245, 238, 255},
+            drawPool = {
+                { type = "pack", packId = "pack_common", weight = 34, name = "普通种子包" },
+                { type = "pack", packId = "pack_uncommon", weight = 28, name = "罕见种子包" },
+                { type = "pack", packId = "pack_rare", weight = 16, name = "稀有种子包" },
+                { type = "pack", packId = "pack_alien_gene", weight = 12, name = "外星基因种子包" },
+                { type = "seed", plantIndex = 33, weight = 6, name = "脉冲孢子塔种子" },
+                { type = "seed", plantIndex = 34, weight = 3, name = "异瞳星蕨种子" },
+                { type = "seed", plantIndex = 35, weight = 1, name = "零重力胚果种子" },
+            },
+        },
+        dark = {
+            id = "dark",
+            name = "黑暗来临",
+            badge = "永夜异变",
+            desc = "活动期间会出现吞噬变异，虚空变异概率提高。收获吞噬变异作物时，有概率掉落黑暗限定作物种子。",
+            devourChance = 0.065,
+            extraVoidChance = 0.045,
+            limitedSeeds = { 36, 37, 38 },
+            darkSeedPool = { 36, 37, 38 },
+            darkSeedDropRates = { 0.08, 0.12, 0.18, 0.28, 0.45 },
+            leaderboardBase = 130,
+            backgroundColor = {232, 224, 240, 248},
+            badgeColor = {204, 180, 235, 255},
+            chipColor = {226, 214, 238, 255},
+        },
+    },
 }
 
 return GameConfig

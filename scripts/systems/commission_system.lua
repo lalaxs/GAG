@@ -6,6 +6,8 @@
 -- 变异和重量要求的背包作物后，获得稀有至传奇种子包。
 -- ============================================================================
 
+local AudioSystem = require("systems.audio_system")
+
 local CommissionSystem = {}
 
 local cfg_ = nil
@@ -270,19 +272,24 @@ end
 
 function CommissionSystem.CompleteCommission(commission, item)
     if commission == nil or item == nil then
+        AudioSystem.PlaySFX("error_denied")
         return false, "委托或作物无效"
     end
     if commission.completed then
+        AudioSystem.PlaySFX("error_denied")
         return false, "委托已完成"
     end
     if not CommissionSystem.DoesItemMatch(commission, item) then
+        AudioSystem.PlaySFX("error_denied")
         return false, "作物不满足委托条件"
     end
     if not inventory_.ConsumeHarvestedItem(item) then
+        AudioSystem.PlaySFX("error_denied")
         return false, "作物已不存在"
     end
     inventory_.AddSeedPack(commission.rewardPackId, 1)
     commission.completed = true
+    AudioSystem.PlaySFX("commission_complete")
     local text = string.format("完成%s的委托，获得%s", commission.customer, commission.rewardPackName)
     if callbacks_.showToast then
         callbacks_.showToast(text)

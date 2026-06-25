@@ -7,6 +7,7 @@
 -- ============================================================================
 
 local FloatingToast = require("ui.floating_toast")
+local AudioSystem = require("systems.audio_system")
 
 local InteractionSystem = {}
 
@@ -121,6 +122,7 @@ local function HandleWorldTap(x, y)
     if plotIndex == nil then
         if missReason == "edge" and cameraSystem_.GetViewMode() == cameraSystem_.ViewMode.PLANT and deps_.getPlantTab ~= nil and deps_.getPlantTab() == "seed" then
             local text = "请换个地方播种"
+            AudioSystem.PlaySFX("error_denied")
             if deps_.showToast ~= nil then deps_.showToast(text) end
             FloatingToast.Show(text)
         end
@@ -130,6 +132,7 @@ local function HandleWorldTap(x, y)
     if cameraSystem_.GetViewMode() == cameraSystem_.ViewMode.FARM then
         deps_.setSelectedPlot(plotIndex)
         deps_.refreshSelection()
+        AudioSystem.PlaySFX("plot_select")
         deps_.showToast("已选中田地，可查看状态；点击下方开始种植后操作")
         deps_.refreshUI(true)
     else
@@ -164,6 +167,7 @@ function InteractionSystem.HandleMouseWheel(eventData)
     if cameraSystem_.GetViewMode() ~= cameraSystem_.ViewMode.FARM then return end
     local wheel = eventData["Wheel"]:GetInt()
     if wheel == 0 then return end
+    AudioSystem.PlaySFX("camera_zoom")
     cameraSystem_.AdjustDistance(-wheel * 0.8, config_.FarmViewMinDistance, config_.FarmViewMaxDistance)
 end
 
@@ -212,6 +216,7 @@ function InteractionSystem.UpdateTouchCameraGesture()
                 local delta = dist - lastPinchDistance_
                 if math.abs(delta) > 0.5 then
                     touchGestureActive_ = true
+                    AudioSystem.PlaySFX("camera_zoom")
                     cameraSystem_.AdjustDistance(-delta * 0.018, config_.FarmViewMinDistance, config_.FarmViewMaxDistance)
                 end
             end

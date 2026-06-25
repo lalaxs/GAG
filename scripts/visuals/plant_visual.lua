@@ -46,6 +46,15 @@ local function GetDominantAuraMaterial(mutation)
     if PlantVisual.HasSpecial(mutation, "void") then
         return PlantVisual.materials.voidSpark
     end
+    if PlantVisual.HasSpecial(mutation, "devour") then
+        return PlantVisual.materials.devourEdge
+    end
+    if PlantVisual.HasSpecial(mutation, "honey") then
+        return PlantVisual.materials.honeyGlow
+    end
+    if PlantVisual.HasSpecial(mutation, "candy") then
+        return PlantVisual.materials.candyCrystal
+    end
     if PlantVisual.HasSpecial(mutation, "glow") then
         return PlantVisual.materials.magicSpark
     end
@@ -214,10 +223,216 @@ local function AddChocolateCoating(visual)
     end
 end
 
+local function AddThemedLimitedDetails(visual, plant)
+    local theme = plant and plant.visualTheme
+    if theme == nil then return end
+
+    if theme == "crystal_sweet" then
+        for i = 1, 5 do
+            local angle = math.rad(i * 72)
+            local gem = PlantVisual.AddModel(visual, "CandyCrystal" .. i, "Models/Box.mdl", Vector3(math.cos(angle) * 0.22, 0.78 + (i % 2) * 0.06, math.sin(angle) * 0.22), Vector3(0.055, 0.12, 0.055), PlantVisual.materials.candyCrystal, false)
+            gem.rotation = Quaternion(i * 36, Vector3.UP) * Quaternion(28, Vector3.RIGHT)
+        end
+    elseif theme == "honey_hive" then
+        for i = 1, 6 do
+            local angle = math.rad(i * 60)
+            PlantVisual.AddModel(visual, "HiveCell" .. i, "Models/Box.mdl", Vector3(math.cos(angle) * 0.18, 0.66 + (i % 2) * 0.035, math.sin(angle) * 0.18), Vector3(0.095, 0.08, 0.045), PlantVisual.materials.honeyGlow, false)
+        end
+        PlantVisual.AddModel(visual, "HoneyDrop", "Models/Sphere.mdl", Vector3(0.0, 0.43, 0.24), Vector3(0.055, 0.09, 0.055), PlantVisual.materials.honeyGlow, false)
+    elseif theme == "dream_candy" then
+        for i = 1, 4 do
+            local angle = math.rad(i * 90 + 35)
+            PlantVisual.AddModel(visual, "DreamSugarOrb" .. i, "Models/Sphere.mdl", Vector3(math.cos(angle) * 0.25, 0.72 + i * 0.035, math.sin(angle) * 0.25), Vector3(0.075, 0.075, 0.075), PlantVisual.materials.candyCrystal, false)
+        end
+    elseif theme == "alien_pulse" then
+        for i = 1, 4 do
+            PlantVisual.AddModel(visual, "PulseRing" .. i, "Models/Torus.mdl", Vector3(0, 0.26 + i * 0.13, 0), Vector3(0.20 + i * 0.018, 0.018, 0.20 + i * 0.018), PlantVisual.materials.alienGlow, false)
+        end
+    elseif theme == "alien_eye" then
+        local eye = PlantVisual.AddModel(visual, "AlienEyeCore", "Models/Sphere.mdl", Vector3(0, 0.83, 0.08), Vector3(0.13, 0.09, 0.13), PlantVisual.materials.alienEye, false)
+        eye.rotation = Quaternion(15, Vector3.RIGHT)
+        PlantVisual.AddModel(visual, "AlienPupil", "Models/Sphere.mdl", Vector3(0, 0.84, 0.17), Vector3(0.045, 0.032, 0.045), PlantVisual.materials.darkCore, false)
+    elseif theme == "zero_gravity" then
+        PlantVisual.AddModel(visual, "FloatingEmbryo", "Models/Sphere.mdl", Vector3(0, 1.05, 0), Vector3(0.18, 0.18, 0.18), PlantVisual.materials.alienEye, false)
+        PlantVisual.AddModel(visual, "GravityHalo", "Models/Torus.mdl", Vector3(0, 1.05, 0), Vector3(0.27, 0.027, 0.27), PlantVisual.materials.alienGlow, false)
+    elseif theme == "dark_moss" then
+        for i = 1, 7 do
+            local angle = math.rad(i * 51)
+            PlantVisual.AddModel(visual, "LightEaterMoss" .. i, "Models/Sphere.mdl", Vector3(math.cos(angle) * 0.22, 0.48 + (i % 3) * 0.035, math.sin(angle) * 0.22), Vector3(0.08, 0.045, 0.08), PlantVisual.materials.darkCore, false)
+        end
+    elseif theme == "dark_rift" then
+        PlantVisual.AddModel(visual, "RiftCore", "Models/Sphere.mdl", Vector3(0, 0.78, 0), Vector3(0.11, 0.11, 0.11), PlantVisual.materials.darkCore, false)
+        PlantVisual.AddModel(visual, "RiftEdge", "Models/Torus.mdl", Vector3(0, 0.78, 0), Vector3(0.21, 0.022, 0.21), PlantVisual.materials.devourEdge, false)
+    elseif theme == "void_crown" then
+        for i = 1, 6 do
+            local angle = math.rad(i * 60)
+            local spike = PlantVisual.AddModel(visual, "NightCrownSpike" .. i, "Models/Cone.mdl", Vector3(math.cos(angle) * 0.18, 0.88, math.sin(angle) * 0.18), Vector3(0.045, 0.20, 0.045), PlantVisual.materials.darkCore, false)
+            spike.rotation = Quaternion(math.deg(angle), Vector3.UP)
+        end
+        PlantVisual.AddModel(visual, "VoidCrownHalo", "Models/Torus.mdl", Vector3(0, 0.98, 0), Vector3(0.25, 0.02, 0.25), PlantVisual.materials.voidSpark, false)
+    end
+end
+
+local function CreateLimitedCrystalBellLily(visual, material)
+    local stemMat = PlantVisual.materials.stem
+    CreateBlockFruit(visual, "CrystalStem", Vector3(0, 0.38, 0), Vector3(0.055, 0.76, 0.055), stemMat)
+    for i = 1, 3 do
+        local angle = math.rad(i * 120 + 18)
+        local branch = PlantVisual.AddModel(visual, "BellBranch" .. i, "Models/Box.mdl", Vector3(math.cos(angle) * 0.09, 0.66 - i * 0.055, math.sin(angle) * 0.09), Vector3(0.04, 0.16, 0.035), stemMat)
+        branch.rotation = Quaternion(math.deg(angle), Vector3.UP) * Quaternion(45, Vector3.RIGHT)
+        local bell = PlantVisual.AddModel(visual, "SugarBell" .. i, "Models/Box.mdl", Vector3(math.cos(angle) * 0.23, 0.62 - i * 0.055, math.sin(angle) * 0.23), Vector3(0.13, 0.16, 0.13), material, false)
+        bell.rotation = Quaternion(math.deg(angle), Vector3.UP) * Quaternion(15, Vector3.RIGHT)
+        PlantVisual.AddModel(visual, "BellClapper" .. i, "Models/Sphere.mdl", Vector3(math.cos(angle) * 0.23, 0.51 - i * 0.055, math.sin(angle) * 0.23), Vector3(0.038, 0.038, 0.038), PlantVisual.materials.candyCrystal, false)
+    end
+    CreateLeaves(visual, 4, 0.26, 0.18)
+end
+
+local function CreateLimitedHiveMandrake(visual, material)
+    local rootMat = PlantVisual.CreateMaterial("hiveRoot" .. tostring(math.random(100000, 999999)), Color(0.62, 0.40, 0.18, 1.0), 0.0, 0.7)
+    CreateBlockFruit(visual, "MandrakeRoot", Vector3(0, 0.25, 0), Vector3(0.24, 0.5, 0.22), rootMat)
+    CreateBlockFruit(visual, "RootLegL", Vector3(-0.08, -0.05, 0), Vector3(0.075, 0.18, 0.07), rootMat)
+    CreateBlockFruit(visual, "RootLegR", Vector3(0.08, -0.05, 0), Vector3(0.075, 0.18, 0.07), rootMat)
+    local hiveMat = PlantVisual.materials.honeyGlow or material
+    CreateBlockFruit(visual, "HiveCrownCore", Vector3(0, 0.66, 0), Vector3(0.30, 0.22, 0.30), hiveMat)
+    for i = 1, 6 do
+        local angle = math.rad(i * 60)
+        local cell = PlantVisual.AddModel(visual, "HiveCrownCell" .. i, "Models/Box.mdl", Vector3(math.cos(angle) * 0.20, 0.66, math.sin(angle) * 0.20), Vector3(0.11, 0.12, 0.055), hiveMat, false)
+        cell.rotation = Quaternion(math.deg(angle), Vector3.UP)
+    end
+    PlantVisual.AddModel(visual, "HoneyOrb", "Models/Sphere.mdl", Vector3(0, 0.82, 0), Vector3(0.08, 0.08, 0.08), hiveMat, false)
+    CreateLeaves(visual, 3, 0.5, 0.12)
+end
+
+local function CreateLimitedDreamCandyNightshade(visual, material)
+    local vineMat = PlantVisual.materials.stem
+    CreateBlockFruit(visual, "DreamVineA", Vector3(-0.06, 0.36, 0), Vector3(0.055, 0.72, 0.055), vineMat)
+    CreateBlockFruit(visual, "DreamVineB", Vector3(0.07, 0.43, 0.02), Vector3(0.05, 0.66, 0.05), vineMat)
+    for i = 1, 5 do
+        local angle = math.rad(i * 72 + 20)
+        local y = 0.42 + (i % 3) * 0.12
+        PlantVisual.AddModel(visual, "DreamCandyFruit" .. i, "Models/Sphere.mdl", Vector3(math.cos(angle) * 0.22, y, math.sin(angle) * 0.22), Vector3(0.09, 0.09, 0.09), material, false)
+        PlantVisual.AddModel(visual, "DreamCandyHalo" .. i, "Models/Torus.mdl", Vector3(math.cos(angle) * 0.22, y, math.sin(angle) * 0.22), Vector3(0.13, 0.012, 0.13), PlantVisual.materials.candyCrystal, false)
+    end
+    CreateLeaves(visual, 4, 0.32, 0.16)
+end
+
+local function CreateLimitedPulseSporeTower(visual, material)
+    local baseMat = PlantVisual.CreateMaterial("sporeBase" .. tostring(math.random(100000, 999999)), Color(0.10, 0.36, 0.26, 1.0), 0.0, 0.58)
+    for i = 1, 5 do
+        local y = 0.11 + i * 0.13
+        local size = 0.24 - i * 0.018
+        CreateBlockFruit(visual, "PulseSegment" .. i, Vector3(0, y, 0), Vector3(size, 0.11, size), i % 2 == 0 and material or baseMat)
+        PlantVisual.AddModel(visual, "PulseBand" .. i, "Models/Torus.mdl", Vector3(0, y + 0.04, 0), Vector3(size * 0.68, 0.01, size * 0.68), PlantVisual.materials.alienGlow, false)
+    end
+    PlantVisual.AddModel(visual, "SporeBeacon", "Models/Sphere.mdl", Vector3(0, 0.86, 0), Vector3(0.12, 0.12, 0.12), PlantVisual.materials.alienGlow, false)
+end
+
+local function CreateLimitedAlienEyeFern(visual, material)
+    CreateBlockStem(visual, 0.46, 0.07)
+    for i = 1, 6 do
+        local angle = math.rad(i * 60)
+        local leaf = PlantVisual.AddModel(visual, "EyeFernFrond" .. i, "Models/Box.mdl", Vector3(math.cos(angle) * 0.18, 0.48 + (i % 2) * 0.05, math.sin(angle) * 0.18), Vector3(0.07, 0.04, 0.28), material, false)
+        leaf.rotation = Quaternion(math.deg(angle), Vector3.UP) * Quaternion(36, Vector3.RIGHT)
+        PlantVisual.AddModel(visual, "FrondEye" .. i, "Models/Sphere.mdl", Vector3(math.cos(angle) * 0.31, 0.51 + (i % 2) * 0.05, math.sin(angle) * 0.31), Vector3(0.045, 0.045, 0.045), PlantVisual.materials.alienEye, false)
+        PlantVisual.AddModel(visual, "FrondPupil" .. i, "Models/Sphere.mdl", Vector3(math.cos(angle) * 0.34, 0.51 + (i % 2) * 0.05, math.sin(angle) * 0.34), Vector3(0.018, 0.018, 0.018), PlantVisual.materials.darkCore, false)
+    end
+    PlantVisual.AddModel(visual, "CentralAlienEye", "Models/Sphere.mdl", Vector3(0, 0.72, 0), Vector3(0.10, 0.08, 0.10), PlantVisual.materials.alienEye, false)
+end
+
+local function CreateLimitedZeroGravityEmbryo(visual, material)
+    local stalkMat = PlantVisual.materials.stem
+    CreateBlockFruit(visual, "GravityStem", Vector3(0, 0.28, 0), Vector3(0.055, 0.56, 0.055), stalkMat)
+    for i = 1, 3 do
+        local angle = math.rad(i * 120)
+        local arc = PlantVisual.AddModel(visual, "GravityTendril" .. i, "Models/Box.mdl", Vector3(math.cos(angle) * 0.12, 0.54, math.sin(angle) * 0.12), Vector3(0.04, 0.34, 0.035), stalkMat, false)
+        arc.rotation = Quaternion(math.deg(angle), Vector3.UP) * Quaternion(-28, Vector3.RIGHT)
+    end
+    PlantVisual.AddModel(visual, "EmbryoMembrane", "Models/Sphere.mdl", Vector3(0, 0.92, 0), Vector3(0.22, 0.26, 0.22), material, false)
+    PlantVisual.AddModel(visual, "EmbryoCore", "Models/Sphere.mdl", Vector3(0.02, 0.92, 0.02), Vector3(0.095, 0.095, 0.095), PlantVisual.materials.alienGlow, false)
+    PlantVisual.AddModel(visual, "OrbitRingA", "Models/Torus.mdl", Vector3(0, 0.92, 0), Vector3(0.34, 0.018, 0.34), PlantVisual.materials.alienEye, false)
+    local ringB = PlantVisual.AddModel(visual, "OrbitRingB", "Models/Torus.mdl", Vector3(0, 0.92, 0), Vector3(0.28, 0.014, 0.28), PlantVisual.materials.alienGlow, false)
+    ringB.rotation = Quaternion(62, Vector3.RIGHT)
+end
+
+local function CreateLimitedLightEaterMoss(visual, material)
+    local mat = PlantVisual.materials.darkCore or material
+    CreateBlockFruit(visual, "MossShadowBase", Vector3(0, 0.12, 0), Vector3(0.48, 0.10, 0.42), mat)
+    for i = 1, 10 do
+        local angle = math.rad(i * 137.5)
+        local radius = 0.06 + (i % 4) * 0.065
+        PlantVisual.AddModel(visual, "MossDome" .. i, "Models/Sphere.mdl", Vector3(math.cos(angle) * radius, 0.20 + (i % 3) * 0.04, math.sin(angle) * radius), Vector3(0.07 + (i % 3) * 0.012, 0.045, 0.07 + (i % 3) * 0.012), mat, false)
+    end
+    PlantVisual.AddModel(visual, "LightEaterRim", "Models/Torus.mdl", Vector3(0, 0.23, 0), Vector3(0.34, 0.018, 0.30), PlantVisual.materials.voidSpark, false)
+end
+
+local function CreateLimitedRiftFleshBud(visual, material)
+    local stalkMat = PlantVisual.CreateMaterial("riftStem" .. tostring(math.random(100000, 999999)), Color(0.22, 0.04, 0.06, 1.0), 0.0, 0.7)
+    CreateBlockFruit(visual, "RiftStem", Vector3(0, 0.32, 0), Vector3(0.09, 0.64, 0.09), stalkMat)
+    CreateBlockFruit(visual, "FleshBudCore", Vector3(0, 0.72, 0), Vector3(0.18, 0.22, 0.18), material)
+    for i = 1, 6 do
+        local angle = math.rad(i * 60)
+        local petal = PlantVisual.AddModel(visual, "FleshPetal" .. i, "Models/Box.mdl", Vector3(math.cos(angle) * 0.14, 0.70, math.sin(angle) * 0.14), Vector3(0.105, 0.18, 0.055), material, false)
+        petal.rotation = Quaternion(math.deg(angle), Vector3.UP) * Quaternion(-22, Vector3.RIGHT)
+    end
+    PlantVisual.AddModel(visual, "MiniBlackHole", "Models/Sphere.mdl", Vector3(0, 0.75, 0), Vector3(0.075, 0.075, 0.075), PlantVisual.materials.darkCore, false)
+    PlantVisual.AddModel(visual, "RiftGlowRing", "Models/Torus.mdl", Vector3(0, 0.75, 0), Vector3(0.18, 0.018, 0.18), PlantVisual.materials.devourEdge, false)
+end
+
+local function CreateLimitedEternalNightCrown(visual, material)
+    local darkMat = PlantVisual.materials.darkCore or material
+    CreateBlockFruit(visual, "CrownStem", Vector3(0, 0.30, 0), Vector3(0.10, 0.60, 0.10), darkMat)
+    PlantVisual.AddModel(visual, "CrownBaseRing", "Models/Torus.mdl", Vector3(0, 0.64, 0), Vector3(0.30, 0.025, 0.30), material, false)
+    for i = 1, 7 do
+        local angle = math.rad(i * 360 / 7)
+        local spike = PlantVisual.AddModel(visual, "CrownBlade" .. i, "Models/Box.mdl", Vector3(math.cos(angle) * 0.22, 0.80, math.sin(angle) * 0.22), Vector3(0.06, 0.32, 0.055), material, false)
+        spike.rotation = Quaternion(math.deg(angle), Vector3.UP) * Quaternion(-14, Vector3.RIGHT)
+        PlantVisual.AddModel(visual, "CrownGem" .. i, "Models/Sphere.mdl", Vector3(math.cos(angle) * 0.22, 0.98, math.sin(angle) * 0.22), Vector3(0.04, 0.04, 0.04), PlantVisual.materials.voidSpark, false)
+    end
+    PlantVisual.AddModel(visual, "NightSingularity", "Models/Sphere.mdl", Vector3(0, 0.78, 0), Vector3(0.085, 0.085, 0.085), darkMat, false)
+    PlantVisual.AddModel(visual, "NightStarRing", "Models/Torus.mdl", Vector3(0, 0.86, 0), Vector3(0.20, 0.014, 0.20), PlantVisual.materials.voidSpark, false)
+end
+
+local function CreateLimitedPlantVisual(visual, plant, material)
+    if plant.visualTheme == "crystal_sweet" then
+        CreateLimitedCrystalBellLily(visual, material)
+        return true
+    elseif plant.visualTheme == "honey_hive" then
+        CreateLimitedHiveMandrake(visual, material)
+        return true
+    elseif plant.visualTheme == "dream_candy" then
+        CreateLimitedDreamCandyNightshade(visual, material)
+        return true
+    elseif plant.visualTheme == "alien_pulse" then
+        CreateLimitedPulseSporeTower(visual, material)
+        return true
+    elseif plant.visualTheme == "alien_eye" then
+        CreateLimitedAlienEyeFern(visual, material)
+        return true
+    elseif plant.visualTheme == "zero_gravity" then
+        CreateLimitedZeroGravityEmbryo(visual, material)
+        return true
+    elseif plant.visualTheme == "dark_moss" then
+        CreateLimitedLightEaterMoss(visual, material)
+        return true
+    elseif plant.visualTheme == "dark_rift" then
+        CreateLimitedRiftFleshBud(visual, material)
+        return true
+    elseif plant.visualTheme == "void_crown" then
+        CreateLimitedEternalNightCrown(visual, material)
+        return true
+    end
+    return false
+end
+
 function PlantVisual.CreatePlantVisual(parent, plant, mutation, material)
     local visual = parent:CreateChild("Visual")
     local stageScale = 0.42
     visual.scale = Vector3(stageScale, stageScale, stageScale) * mutation.sizeScale
+
+    if CreateLimitedPlantVisual(visual, plant, material) then
+        AddThemedLimitedDetails(visual, plant)
+        return visual
+    end
 
     if plant.visual == "root" then
         -- 胡萝卜：锥形橙色身体 + 绿叶冠
@@ -687,6 +902,7 @@ function PlantVisual.CreatePlantVisual(parent, plant, mutation, material)
     if PlantVisual.HasSpecial(mutation, "chocolate") then
         AddChocolateCoating(visual)
     end
+    AddThemedLimitedDetails(visual, plant)
 
     return visual
 end
@@ -1481,11 +1697,15 @@ function PlantVisual.CreateSpecialEffects(plantData)
         AddVoidGlowEffect(plantData, effectScale, baseY, height)
     end
 
+    if PlantVisual.HasSpecial(mutation, "devour") then
+        AddVoidGlowEffect(plantData, effectScale, baseY, height)
+    end
+
     if PlantVisual.HasSpecial(mutation, "glow") then
         AddGlowLightEffect(plantData, effectScale, baseY, height)
     end
 
-    if not PlantVisual.HasSpecial(mutation, "glow") and not PlantVisual.HasSpecial(mutation, "ceramic") and not PlantVisual.HasSpecial(mutation, "wet") and not PlantVisual.HasSpecial(mutation, "pollen") and not PlantVisual.HasSpecial(mutation, "rainbow") and not PlantVisual.HasSpecial(mutation, "frozen") and not PlantVisual.HasSpecial(mutation, "gold") and not PlantVisual.HasSpecial(mutation, "void") and not UsesEmitterStyle(mutation) then
+    if not PlantVisual.HasSpecial(mutation, "glow") and not PlantVisual.HasSpecial(mutation, "ceramic") and not PlantVisual.HasSpecial(mutation, "wet") and not PlantVisual.HasSpecial(mutation, "pollen") and not PlantVisual.HasSpecial(mutation, "rainbow") and not PlantVisual.HasSpecial(mutation, "frozen") and not PlantVisual.HasSpecial(mutation, "gold") and not PlantVisual.HasSpecial(mutation, "void") and not PlantVisual.HasSpecial(mutation, "devour") and not UsesEmitterStyle(mutation) then
         local structureRoot = CreateSignatureStructure(root, "MutationStructure", mutation, fleckMaterials, spread, baseY, height)
         RegisterEffect(plantData, structureRoot, 10.0, 0.75, 0.018, 1.2, 0.08, EFFECT_AMBIENT_INTERVAL)
     end

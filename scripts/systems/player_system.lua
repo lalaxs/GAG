@@ -70,8 +70,9 @@ local function GetCurrentUserId()
             return userId
         end
     end
-    if lobby ~= nil and lobby.GetMyUserId ~= nil then
-        local ok, userId = pcall(function() return lobby:GetMyUserId() end)
+    local lobbyService = rawget(_G, "lobby")
+    if lobbyService ~= nil and lobbyService.GetMyUserId ~= nil then
+        local ok, userId = pcall(function() return lobbyService:GetMyUserId() end)
         if ok and userId ~= nil and userId ~= 0 then
             return userId
         end

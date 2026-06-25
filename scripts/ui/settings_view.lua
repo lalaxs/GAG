@@ -7,6 +7,7 @@
 
 local UI = require("urhox-libs/UI")
 local ModalAnim = require("ui.modal_anim")
+local AudioSystem = require("systems.audio_system")
 
 local SettingsView = {}
 
@@ -71,6 +72,9 @@ local function BuildVolumeSection(title, value, soundType)
                         sfxVolume_ = volume
                     end
                     audio:SetMasterGain(soundType, volume / 100.0)
+                    if soundType == SOUND_EFFECT then
+                        AudioSystem.PlaySFX("settings_slider")
+                    end
                     SettingsView.RebuildContent()
                 end,
             },
@@ -88,7 +92,10 @@ local function BuildModeButton(text, active, onClick)
         backgroundColor = active and {78, 172, 110, 255} or {245, 238, 220, 255},
         fontColor = active and {255, 255, 255, 255} or {92, 72, 48, 255},
         borderRadius = 14,
-        onClick = onClick,
+        onClick = function()
+            AudioSystem.PlaySFX("ui_click")
+            onClick()
+        end,
     }
 end
 
@@ -162,6 +169,7 @@ end
 
 function SettingsView.Open()
     if deps_.suppressWorldTap then deps_.suppressWorldTap() end
+    AudioSystem.PlaySFX("ui_modal_open")
 
     settingsModal_ = UI.Modal {
         title = "设置",
@@ -189,6 +197,7 @@ end
 
 function SettingsView.Close()
     if settingsModal_ ~= nil then
+        AudioSystem.PlaySFX("ui_modal_close")
         settingsModal_:Close()
         settingsModal_ = nil
     end
@@ -214,6 +223,7 @@ function SettingsView.BuildButton()
                 borderRadius = 18,
                 onClick = function()
                     if deps_.suppressWorldTap then deps_.suppressWorldTap() end
+                    AudioSystem.PlaySFX("ui_click")
                     SettingsView.Open()
                 end,
             },

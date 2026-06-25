@@ -7,6 +7,7 @@
 -- ============================================================================
 
 local InventoryRules = require("systems.inventory_rules")
+local AudioSystem = require("systems.audio_system")
 
 local InventorySystem = {}
 
@@ -575,6 +576,7 @@ function InventorySystem.CheckSilverPackRewardsEnhanced()
     for rarity, packId in pairs(cfg_.SEED_PACK_BY_RARITY) do
         if not state_.silverRewardClaimed[rarity] and IsRarityCollected(rarity) then
             state_.silverRewardClaimed[rarity] = true
+            AudioSystem.PlaySFX("collection_reward")
             -- 集齐奖励：该品级包 x2 + 上一级包 x1
             InventorySystem.AddSeedPack(packId, 2)
             local upgradeId = SYNTHESIS_MAP[packId]

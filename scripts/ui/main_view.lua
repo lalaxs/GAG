@@ -10,6 +10,8 @@ local UI = require("urhox-libs/UI")
 local SettingsView = require("ui.settings_view")
 local FloatingToast = require("ui.floating_toast")
 local ProfileView = require("ui.profile_view")
+local ActivityView = require("ui.activity_view")
+local ModelPreviewView = require("ui.model_preview_view")
 
 local MainView = {}
 
@@ -440,6 +442,8 @@ local function BuildTalentButton(labels)
                     end
                 end,
             } or nil,
+            ActivityView.BuildButton(),
+            ModelPreviewView.BuildButton(),
             UI.Button {
                 text = "图鉴",
                 width = 69,
@@ -468,6 +472,17 @@ function MainView.BuildRoot(labels, children)
     local actionButton = BuildActionButton()
     labels.actionButton = actionButton
 
+    if ModelPreviewView.IsOpen and ModelPreviewView.IsOpen() then
+        return UI.Panel {
+            width = "100%",
+            height = "100%",
+            pointerEvents = "box-none",
+            children = {
+                ModelPreviewView.BuildOverlay(),
+            },
+        }
+    end
+
     return UI.Panel {
         width = "100%",
         height = "100%",
@@ -481,6 +496,7 @@ function MainView.BuildRoot(labels, children)
             children.bagDetail,
             children.seedPackOverlay,
             children.seedPackOpeningOverlay,
+            ModelPreviewView.BuildOverlay(),
             SettingsView.BuildOverlay(),
             FloatingToast.GetContainer(),
         },

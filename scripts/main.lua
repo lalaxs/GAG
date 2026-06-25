@@ -24,6 +24,8 @@ local UIController = require("controllers.ui_controller")
 local PlantActionController = require("controllers.plant_action_controller")
 local WalletSystem = require("systems.wallet_system")
 local TalentSystem = require("systems.talent_system")
+local ActivitySystem = require("systems.activity_system")
+local ModelPreviewSystem = require("systems.model_preview_system")
 local PlayerSystem = require("systems.player_system")
 local TalentView = require("ui.talent_view")
 local ExpansionView = require("ui.expansion_view")
@@ -34,6 +36,8 @@ local CodexView = require("ui.codex_view")
 local PlantPanelView = require("ui.plant_panel_view")
 local BagDetailView = require("ui.bag_detail_view")
 local MainView = require("ui.main_view")
+local ActivityView = require("ui.activity_view")
+local ModelPreviewView = require("ui.model_preview_view")
 local ProfileView = require("ui.profile_view")
 local SettingsView = require("ui.settings_view")
 local BulkSellView = require("ui.bulk_sell_view")
@@ -220,7 +224,8 @@ local function EnterPlantView()
     CameraSystem.SetTarget(FarmSystem.PlotWorldPosition(selectedPlot_))
     CameraSystem.EnterPlantView()
     RefreshSelection()
-    ShowToast(string.format("进入第 %d 块地种植模式", selectedPlot_))
+    AudioSystem.PlaySFX("ui_click")
+    ShowToast(string.format("进入第 %d 块地种植模式", selectedPlot_), true)
     if RebuildUI ~= nil then RebuildUI() end
     RefreshUI(true)
 end
@@ -232,7 +237,8 @@ local function EnterFarmView()
     if ClearBagPreview ~= nil then
         ClearBagPreview()
     end
-    ShowToast("自由查看农场")
+    AudioSystem.PlaySFX("ui_click")
+    ShowToast("自由查看农场", true)
     if RebuildUI ~= nil then RebuildUI() end
     RefreshUI(true)
 end
@@ -288,6 +294,7 @@ end
 local function CloseBagItemDetail()
     selectedBagItem_ = nil
     ClearBagPreview()
+    AudioSystem.PlaySFX("ui_modal_close")
     if RebuildUI ~= nil then RebuildUI() end
 end
 
@@ -295,6 +302,7 @@ local function OpenBagItemDetail(item)
     if item == nil then return end
     selectedBagItem_ = item
     CreateBagPreview(item)
+    AudioSystem.PlaySFX("bag_select_item")
     if RebuildUI ~= nil then RebuildUI() end
 end
 
@@ -317,7 +325,7 @@ local function HarvestNearestMature(plotIndex, localPos)
         local cropName = harvestInfo and harvestInfo.name or "作物"
         local exp = harvestInfo and harvestInfo.exp or 0
         local text = "收获了" .. cropName .. "，获得了" .. exp .. "经验"
-        ShowToast(text)
+        ShowToast(text, true)
         FloatingToast.Show(text, { fontSize = 19, duration = 1.6, yRatio = 0.42, priority = 0 })
     end
     return success, harvestInfo
@@ -355,7 +363,10 @@ local function GetPlotText(plot)
     return CropSystem.GetPlotText(plot)
 end
 
-ShowToast = function(text)
+ShowToast = function(text, silent)
+    if not silent then
+        AudioSystem.PlaySFX("toast_notice")
+    end
     UIController.ShowToast(text)
 end
 
@@ -508,16 +519,20 @@ end
 function HandleUpdate(eventType, eventData)
     local dt = eventData["TimeStep"]:GetFloat()
 
-    HandleInput(dt)
-    UpdateTouchCameraGesture()
+    if not ModelPreviewSystem.IsOpen() then
+        HandleInput(dt)
+        UpdateTouchCameraGesture()
+    end
     UpdatePlotBounceAnimation(dt)
     UpdatePlants(dt)
     UpdateSeedPackOpening(dt)
+    ModelPreviewSystem.Update(dt)
     Shop.Update(dt)
     CommissionSystem.Update(dt)
     FloatingToast.Update(dt)
 
     UIController.Update(dt)
+    AudioSystem.Update(dt)
     RefreshUI(false)
 end
 
@@ -527,6 +542,8 @@ local function GetGardenLevel()
 end
 
 function InitBGM()
+    AudioSystem.InitSFX(scene_)
+    AudioSystem.PlayAmbient("ambient_farm_day", 0.18)
     AudioSystem.InitBGM(scene_)
 end
 
@@ -542,6 +559,11 @@ function Start()
     InitMaterials()
     FarmSystem.Init(CONFIG, materials_)
     CreateScene()
+    ModelPreviewSystem.Init(GameConfig, {
+        scene = scene_,
+        cameraNode = cameraNode_,
+        PlantVisual = PlantVisual,
+    })
     ProgressionSystem.Init(CONFIG)
     PlayerSystem.Init({
         onChanged = function()
@@ -595,6 +617,7 @@ function Start()
         getTalentPoints = function() return TalentSystem.GetTalentPoints() end,
         isFarmView = function() return GetViewMode() == ViewMode.FARM end,
         isPlantView = function() return GetViewMode() == ViewMode.PLANT end,
+        rarityOrder = RARITY_ORDER,
         countSeedPacks = CountSeedPacks,
         countMaturePlants = CountMaturePlants,
         countPlotPlants = CountPlotPlants,
@@ -637,6 +660,9 @@ function Start()
     })
 
     SeedPackSystem.Init(GameConfig, InventorySystem)
+    ActivitySystem.Init(GameConfig, InventorySystem, {
+        showToast = ShowToast,
+    })
     CommissionSystem.Init(GameConfig, InventorySystem, {
         showToast = ShowToast,
         onRefresh = function()
@@ -644,6 +670,8 @@ function Start()
         end,
     })
     SeedPackOpeningController.Init({
+        plants = PLANTS,
+        rarityOrder = RARITY_ORDER,
         countSeedPacks = CountSeedPacks,
         showToast = ShowToast,
         refreshUI = RefreshUI,
@@ -684,6 +712,40 @@ function Start()
         claimDailyReward = function() return InventorySystem.ClaimDailyReward() end,
         suppressWorldTap = function() suppressNextWorldTap_ = true end,
         showToast = ShowToast,
+        rebuildUI = function()
+            if RebuildUI ~= nil then RebuildUI() end
+        end,
+    })
+
+    ActivityView.Init({
+        plants = PLANTS,
+        getActiveActivity = function() return ActivitySystem.GetActiveActivity() end,
+        getTimeLeftText = function() return ActivitySystem.GetTimeLeftText() end,
+        getSweetSubmitItems = function() return ActivitySystem.GetSweetSubmitItems() end,
+        submitSweetCrop = function(item) return ActivitySystem.SubmitSweetCrop(item) end,
+        exchangeSweetReward = function(rewardId) return ActivitySystem.ExchangeSweetReward(rewardId) end,
+        drawAlienPack = function(count) return ActivitySystem.DrawAlienPack(count) end,
+        getLeaderboard = function(activityId) return ActivitySystem.GetLeaderboard(activityId) end,
+        suppressWorldTap = function() suppressNextWorldTap_ = true end,
+        showToast = ShowToast,
+        rebuildUI = function()
+            if RebuildUI ~= nil then RebuildUI() end
+        end,
+    })
+
+    ModelPreviewView.Init({
+        isOpen = function() return ModelPreviewSystem.IsOpen() end,
+        openPreview = function() ModelPreviewSystem.Open() end,
+        closePreview = function()
+            ModelPreviewSystem.Close()
+            CameraSystem.EnterFarmView()
+            UpdateCameraTargetForPlotDisplay()
+        end,
+        nextPreview = function() ModelPreviewSystem.Next() end,
+        prevPreview = function() ModelPreviewSystem.Prev() end,
+        showKind = function(kind) return ModelPreviewSystem.ShowKind(kind) end,
+        getCurrentItem = function() return ModelPreviewSystem.GetCurrentItem() end,
+        suppressWorldTap = function() suppressNextWorldTap_ = true end,
         rebuildUI = function()
             if RebuildUI ~= nil then RebuildUI() end
         end,
@@ -811,6 +873,7 @@ function Start()
         getExp = function() return TalentSystem.GetExp() end,
         getExpToNextLevel = function() return TalentSystem.GetExpToNextLevel() end,
         getTourValue = function() return ProgressionSystem.GetTourValue() end,
+        getBestTourValue = function() return ProgressionSystem.GetBestTourValue() end,
         showToast = ShowToast,
         rebuildUI = function()
             if RebuildUI ~= nil then RebuildUI() end
@@ -845,6 +908,7 @@ function Start()
         end,
         onLevelUp = function(level, pointGain)
             ProgressionSystem.SetGardenLevel(level)
+            AudioSystem.PlaySFX("level_up")
             local levelUpText = "升级! 等级 " .. level .. " — 获得 " .. (pointGain or 1) .. " 天赋点"
             ShowToast(levelUpText)
             FloatingToast.Show(levelUpText, { fontSize = 22, duration = 2.0, yRatio = 0.29, priority = 10 })
@@ -906,6 +970,7 @@ function Start()
         PlantVisual = PlantVisual,
         SeedVisual = SeedVisual,
         TalentSystem = TalentSystem,
+        ActivitySystem = ActivitySystem,
         showToast = ShowToast,
     })
 
@@ -918,6 +983,9 @@ function Start()
             WalletSystem.Spend(cost)
             if plantIndex ~= nil then
                 AddSeedToBag(plantIndex, 1, 0)
+                AudioSystem.PlaySFX("buy_seed")
+            else
+                AudioSystem.PlaySFX("ui_click")
             end
             RefreshUI(true)
         end,
@@ -948,13 +1016,16 @@ function Start()
         harvestNearestMature = HarvestNearestMature,
         plantSeed = PlantSeed,
         isUIBlocking = function()
-            return ProfileView.IsOpen() or SettingsView.IsOpen() or Shop.IsOpen() or CommissionView.IsOpen() or ExpansionView.IsOpen() or TalentView.IsOpen() or BulkSellView.IsOpen() or CodexView.IsOpen()
+            return ModelPreviewSystem.IsOpen() or ActivityView.IsOpen() or ProfileView.IsOpen() or SettingsView.IsOpen() or Shop.IsOpen() or CommissionView.IsOpen() or ExpansionView.IsOpen() or TalentView.IsOpen() or BulkSellView.IsOpen() or CodexView.IsOpen()
         end,
     })
 
     AddSeedToBag(1, 6, 0)
     AddSeedToBag(21, 4, 0)
     AddSeedToBag(2, 2, 0)
+    AddSeedToBag(30, 1, 0)
+    AddSeedToBag(33, 1, 0)
+    AddSeedToBag(36, 1, 0)
     AddSeedPack("pack_common", 1)
 
     RebuildUI()

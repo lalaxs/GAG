@@ -104,6 +104,12 @@ function PlantMaterials.Bind(PlantVisual, colorKey)
         PlantVisual.CreateGlowMaterial("rainbowBlue", Color(0.12, 0.55, 1.0, 1.0), 1.25)
         PlantVisual.CreateGlowMaterial("magicSpark", Color(0.56, 0.18, 0.72, 1.0), 0.5)
         PlantVisual.CreateGlowMaterial("voidSpark", Color(0.24, 0.015, 0.48, 1.0), 0.55)
+        PlantVisual.CreateGlowMaterial("candyCrystal", Color(1.0, 0.52, 0.86, 1.0), 1.05)
+        PlantVisual.CreateGlowMaterial("honeyGlow", Color(1.0, 0.68, 0.10, 1.0), 0.95)
+        PlantVisual.CreateGlowMaterial("alienGlow", Color(0.28, 1.0, 0.56, 1.0), 1.15)
+        PlantVisual.CreateGlowMaterial("alienEye", Color(0.30, 0.72, 1.0, 1.0), 1.10)
+        PlantVisual.CreateGlowMaterial("darkCore", Color(0.18, 0.02, 0.34, 1.0), 0.85)
+        PlantVisual.CreateGlowMaterial("devourEdge", Color(0.52, 0.05, 0.10, 1.0), 0.75)
         PlantVisual.CreateGlowMaterial("chocolateSpark", Color(0.9, 0.42, 0.12, 1.0), 0.65)
         PlantVisual.CreateTransparentMaterial("softSmoke", Color(0.86, 0.92, 0.88, 0.28))
         PlantVisual.CreateTransparentMaterial("magicSmoke", Color(0.72, 0.86, 1.0, 0.22))
@@ -155,6 +161,28 @@ function PlantMaterials.Bind(PlantVisual, colorKey)
         end
         if PlantVisual.HasSpecial(mutation, "void") then
             return PlantVisual.materials.void
+        end
+        if PlantVisual.HasSpecial(mutation, "devour") then
+            return PlantVisual.materials.darkCore
+        end
+        if PlantVisual.HasSpecial(mutation, "honey") then
+            return PlantVisual.materials.honeyGlow
+        end
+        if PlantVisual.HasSpecial(mutation, "candy") then
+            return PlantVisual.materials.candyCrystal
+        end
+
+        if plant.visualTheme == "dark_moss" or plant.visualTheme == "dark_rift" or plant.visualTheme == "void_crown" then
+            return PlantVisual.materials.darkCore
+        end
+        if plant.visualTheme == "alien_pulse" or plant.visualTheme == "alien_eye" or plant.visualTheme == "zero_gravity" then
+            return PlantVisual.materials.alienGlow
+        end
+        if plant.visualTheme == "honey_hive" then
+            return PlantVisual.materials.honeyGlow
+        end
+        if plant.visualTheme == "crystal_sweet" or plant.visualTheme == "dream_candy" then
+            return PlantVisual.materials.candyCrystal
         end
 
         local key = "plant_" .. plant.name .. "_" .. colorKey(color)

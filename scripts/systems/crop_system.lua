@@ -6,6 +6,8 @@
 -- 预留农田道具加速和产出加成入口：plotModifiers。
 -- ============================================================================
 
+local AudioSystem = require("systems.audio_system")
+
 local CropSystem = {}
 
 local cfg_ = nil
@@ -158,8 +160,12 @@ local function RollMutation(plant, seedBuff, plotIndex)
         mutation.timeMultiplier = mutation.timeMultiplier * (special.timeMultiplier or 1.05)
     end
 
-    mutation.priceMultiplier = math.min(mutation.priceMultiplier, 60.0)
-    mutation.timeMultiplier = math.min(mutation.timeMultiplier, 2.5)
+    if deps_.ActivitySystem and deps_.ActivitySystem.ApplyPlantingMutation then
+        deps_.ActivitySystem.ApplyPlantingMutation(plant, mutation)
+    end
+
+    mutation.priceMultiplier = math.min(mutation.priceMultiplier, 80.0)
+    mutation.timeMultiplier = math.min(mutation.timeMultiplier, 2.7)
 
     return mutation
 end
@@ -229,6 +235,7 @@ local function SetVisualScaleByProgress(plantData)
             plantData.seedVisual:Remove()
             plantData.seedVisual = nil
         end
+        AudioSystem.PlaySFX("crop_sprout")
         print("种子发芽，切换为作物模型: " .. plantData.name)
     end
 
@@ -600,9 +607,14 @@ function CropSystem.HarvestNearestMature(plots, plotIndex, localPos)
     local packQuality = GetTalentBonus("packQuality")
     local droppedPack = deps_.InventorySystem.RollHarvestDrop(crop.config.rarity or "普通", dropRateBonus, packQuality)
     if droppedPack ~= nil and deps_.showToast then
+        AudioSystem.PlaySFX("harvest_pack_drop")
         local packCfg = cfg_.SEED_PACK_CONFIG[droppedPack]
         local packName = packCfg and packCfg.packName or droppedPack
         deps_.showToast("掉落: " .. packName)
+    end
+
+    if deps_.ActivitySystem and deps_.ActivitySystem.OnCropHarvested then
+        deps_.ActivitySystem.OnCropHarvested(crop)
     end
 
     -- 收藏成就检查（只发放种子包奖励）
@@ -696,6 +708,7 @@ function CropSystem.UpdatePlants(plots, dt)
                         end
                         plantData.root:Translate(Vector3(0, 0.06, 0))
                         deps_.PlantVisual.CreateSpecialEffects(plantData)
+                        AudioSystem.PlaySFX("crop_mature")
                         print("成熟: " .. plantData.name .. "，可收获")
                     end
                 else
