@@ -99,6 +99,7 @@ function PlantPanelView.BuildContent()
             local cardH = isCenter and 137 or 107
             local iconW = isCenter and 102 or 78
             local iconH = isCenter and 88 or 68
+            local rarityColor = deps_.getUiRarityColor and deps_.getUiRarityColor(plant.rarity or "普通") or COL_TXT
 
             table.insert(cards, UI.Panel {
                 width = cardW, height = cardH,
@@ -122,7 +123,7 @@ function PlantPanelView.BuildContent()
                         backgroundImage = iconPath,
                         backgroundFit = "contain",
                     },
-                    UI.Label { text = plant.name .. "种子", fontSize = isCenter and 12 or 10, fontColor = COL_TXT, textAlign = "center" },
+                    UI.Label { text = plant.name .. "种子", fontSize = isCenter and 12 or 10, fontWeight = "bold", fontColor = rarityColor, textAlign = "center" },
                     UI.Panel {
                         position = "absolute",
                         right = -4, bottom = -4,

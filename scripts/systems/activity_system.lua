@@ -79,6 +79,23 @@ local function GetRarityOrder(rarity)
     return (cfg_.RARITY_ORDER or {})[rarity or "普通"] or 1
 end
 
+local function GetDarkSeedWeight(plantIndex)
+    local plant = cfg_.PLANTS and cfg_.PLANTS[plantIndex]
+    local rarityOrder = GetRarityOrder(plant and plant.rarity)
+    local weights = { 55, 32, 16, 7, 3 }
+    return weights[rarityOrder] or 1
+end
+
+local function RollDarkSeed(activity)
+    local pool = activity.darkSeedPool or { 42, 43, 44, 45, 46, 47 }
+    local weightedPool = {}
+    for _, plantIndex in ipairs(pool) do
+        table.insert(weightedPool, { plantIndex = plantIndex, weight = GetDarkSeedWeight(plantIndex) })
+    end
+    local picked = RollWeighted(weightedPool)
+    return picked and picked.plantIndex or pool[1]
+end
+
 local function GetActivityConfig(activityId)
     return ((cfg_.ACTIVITY_CONFIG or {}).activities or {})[activityId]
 end
@@ -115,12 +132,7 @@ function ActivitySystem.LoadSaveData(data)
 end
 
 function ActivitySystem.GetActiveActivityId()
-    local activityConfig = cfg_.ACTIVITY_CONFIG or {}
-    local sequence = activityConfig.sequence or { "sweet", "alien", "dark" }
-    local cycleDays = activityConfig.cycleDays or 3
-    local now = os and os.time and os.time() or 0
-    local slot = math.floor(now / (cycleDays * SECONDS_PER_DAY)) % #sequence + 1
-    return sequence[slot]
+    return "alien"
 end
 
 function ActivitySystem.GetActiveActivity()
@@ -184,16 +196,17 @@ function ActivitySystem.OnCropHarvested(crop)
             end
             state_.alien.genes = state_.alien.genes + amount
             state_.alien.totalGenes = state_.alien.totalGenes + amount
-            if callbacks_.showToast then callbacks_.showToast("获得外星基因 x" .. amount) end
+            local text = "获得外星基因 x" .. amount
+            if callbacks_.showToast then callbacks_.showToast(text) end
+            if callbacks_.showFloatingToast then callbacks_.showFloatingToast(text) end
             return { type = "alien_gene", amount = amount }
         end
-    elseif id == "dark" and HasSpecial(crop.mutation, "devour") then
+    elseif id == "dark" and (HasSpecial(crop.mutation, "devour") or HasSpecial(crop.mutation, "void")) then
         state_.dark.devourHarvestCount = state_.dark.devourHarvestCount + 1
         local rarityOrder = GetRarityOrder(crop.config and crop.config.rarity)
         local rates = activity.darkSeedDropRates or { 0.08, 0.12, 0.18, 0.28, 0.45 }
         if math.random() <= (rates[rarityOrder] or 0.08) then
-            local pool = activity.darkSeedPool or { 42, 43, 44, 45, 46, 47 }
-            local plantIndex = pool[math.random(1, #pool)]
+            local plantIndex = RollDarkSeed(activity)
             inventory_.AddSeedToBag(plantIndex, 1, 0)
             state_.dark.darkSeedDrops = state_.dark.darkSeedDrops + 1
             local plant = cfg_.PLANTS[plantIndex]
@@ -277,15 +290,30 @@ function ActivitySystem.DrawAlienPack(count)
         if picked ~= nil then
             if picked.type == "pack" then
                 inventory_.AddSeedPack(picked.packId, picked.count or 1)
-                table.insert(rewards, picked.name or (cfg_.SEED_PACK_CONFIG[picked.packId] and cfg_.SEED_PACK_CONFIG[picked.packId].packName) or "种子包")
+                local packCfg = cfg_.SEED_PACK_CONFIG[picked.packId]
+                table.insert(rewards, {
+                    type = "pack",
+                    packId = picked.packId,
+                    count = picked.count or 1,
+                    name = picked.name or (packCfg and packCfg.packName) or "种子包",
+                })
             elseif picked.type == "seed" then
                 inventory_.AddSeedToBag(picked.plantIndex, picked.count or 1, 0)
                 local plant = cfg_.PLANTS[picked.plantIndex]
-                table.insert(rewards, picked.name or (plant and plant.name) or "限定种子")
+                table.insert(rewards, {
+                    type = "seed",
+                    plantIndex = picked.plantIndex,
+                    count = picked.count or 1,
+                    name = picked.name or (plant and (plant.name .. "种子")) or "限定种子",
+                })
             end
         end
     end
-    if callbacks_.showToast then callbacks_.showToast("基因抽取完成: " .. table.concat(rewards, "、")) end
+    local names = {}
+    for _, reward in ipairs(rewards) do
+        table.insert(names, reward.name)
+    end
+    if callbacks_.showToast then callbacks_.showToast("基因抽取完成: " .. table.concat(names, "、")) end
     return true, rewards
 end
 

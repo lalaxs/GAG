@@ -149,22 +149,22 @@ local function BuildCompactResultCards(results)
         local count = counts[seedId] or 0
         local rarityColor = deps_.getUiRarityColor(plant.rarity)
         table.insert(cards, UI.Panel {
-            width = "31%",
-            minHeight = 122,
-            padding = 4,
-            marginBottom = 4,
+            width = "46%",
+            minHeight = 150,
+            padding = 6,
+            marginBottom = 10,
             alignItems = "center",
             backgroundColor = {0, 0, 0, 0},
             children = {
                 UI.Panel {
-                    width = 86,
-                    height = 82,
-                    marginBottom = 3,
+                    width = 96,
+                    height = 88,
+                    marginBottom = 6,
                     backgroundImage = GetSeedIconPath(seedId),
                     backgroundFit = "contain",
                 },
-                UI.Label { text = string.format("%s种子包 x%d", plant.name, count), width = 92, fontSize = 13, fontWeight = "bold", fontColor = {65, 48, 34, 255}, textAlign = "left" },
-                UI.Label { text = plant.rarity, width = 92, fontSize = 12, fontWeight = "bold", fontColor = rarityColor, textAlign = "left", marginTop = 2 },
+                UI.Label { text = plant.name .. "种子包", width = 150, fontSize = 14, fontWeight = "bold", fontColor = rarityColor, textAlign = "center", maxLines = 2 },
+                UI.Label { text = "x" .. tostring(count), width = 150, fontSize = 13, fontWeight = "bold", fontColor = {100, 82, 60, 230}, textAlign = "center", marginTop = 4 },
             },
         })
     end
@@ -193,6 +193,11 @@ local function ComputePackProbabilities(cfg)
     return probList
 end
 
+local function GetPackSortOrder(cfg)
+    if cfg.allowLimitedSeeds then return 100 + (deps_.rarityOrder[cfg.packRarity or "普通"] or 0) end
+    return deps_.rarityOrder[cfg.packRarity or "普通"] or 0
+end
+
 local function BuildPackCardGrid()
     local cards = {}
     local seedPacks = deps_.seedPacks
@@ -204,8 +209,8 @@ local function BuildPackCardGrid()
         end
     end
     table.sort(sortedPacks, function(a, b)
-        local ra = deps_.rarityOrder[a.cfg.packRarity or "普通"] or 0
-        local rb = deps_.rarityOrder[b.cfg.packRarity or "普通"] or 0
+        local ra = GetPackSortOrder(a.cfg)
+        local rb = GetPackSortOrder(b.cfg)
         if ra == rb then return a.packId < b.packId end
         return ra < rb
     end)
@@ -553,7 +558,7 @@ local function BuildRollingCards(results, targetResult, isSelected)
     local function applySlot(slot, seedId, x, selected)
         local plant = deps_.plants[seedId] or { name = "种子", rarity = "普通" }
         local rarityColor = deps_.getUiRarityColor(plant.rarity or "普通")
-        local plantName = plant.name or "种子"
+        local plantName = tostring(plant.name or "种子")
         local scaleH = selected and 130 or 112
         slot.panel:SetStyle({
             marginLeft = -halfCard + x,
@@ -570,7 +575,7 @@ local function BuildRollingCards(results, targetResult, isSelected)
         local seedId = isSelected and (slotIndex == 3 and targetResult.seedId or getStripSeed(stripCount - 3 + slotIndex)) or getStripSeed(slotIndex)
         local plant = deps_.plants[seedId] or { name = "种子", rarity = "普通" }
         local rarityColor = deps_.getUiRarityColor(plant.rarity or "普通")
-        local plantName = plant.name or "种子"
+        local plantName = tostring(plant.name or "种子")
         local selected = isSelected and slotIndex == 3
         local scaleH = selected and 130 or 112
         local icon = UI.Panel { width = selected and 76 or 66, height = selected and 76 or 66, backgroundImage = GetSeedIconPath(seedId), backgroundFit = "contain" }
@@ -631,7 +636,7 @@ function SeedPackView.BuildOpeningOverlay(opening, stage, revealIndex, timer, sc
     local current = results[currentIndex]
     local currentPlant = deps_.plants[current.seedId] or { name = "种子", rarity = "普通" }
     local rarityColor = deps_.getUiRarityColor(currentPlant.rarity or "普通")
-    local currentPlantName = currentPlant.name or "种子"
+    local currentPlantName = tostring(currentPlant.name or "种子")
     local isSelected = stage == "selected"
     local isUnseal = stage == "unseal"
 
@@ -1021,19 +1026,20 @@ function SeedPackView.ShowBatchResultModal(title, results, openedCount)
 
     batchResultModal_:AddContent(UI.Panel {
         height = 560,
-        paddingTop = 4,
+        paddingTop = 20,
         paddingBottom = 4,
         children = {
             UI.Label {
                 text = "拆包结算",
+                width = "100%",
                 fontSize = 19,
                 fontWeight = "bold",
                 fontColor = {75, 55, 40, 255},
                 textAlign = "center",
-                marginBottom = 8,
+                marginBottom = 18,
             },
             UI.ScrollView {
-                height = 440,
+                height = 410,
                 scrollY = true,
                 showScrollbar = true,
                 children = {

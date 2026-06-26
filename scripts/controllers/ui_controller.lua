@@ -85,7 +85,9 @@ function UIController.Refresh(force)
         labels_.helpLabel:SetText(string.format("已解锁区域 %d/%d", deps_.getUnlockedPlotCount(), #plots))
     end
     if labels_.actionButton ~= nil then
-        if deps_.isFarmView() then
+        if deps_.isVisitMode and deps_.isVisitMode() then
+            labels_.actionButton:SetText("返回我的花园")
+        elseif deps_.isFarmView() then
             labels_.actionButton:SetText("开始种植")
         else
             labels_.actionButton:SetText("返回花园")

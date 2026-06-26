@@ -617,7 +617,8 @@ function CropSystem.FindPlantAtLocalPosition(plot, localPos, matureOnly)
     return bestCrop, bestIndex
 end
 
-function CropSystem.PlantSeedAt(plots, plotIndex, plantIndex, centerLocalPos)
+function CropSystem.PlantSeedAt(plots, plotIndex, plantIndex, centerLocalPos, options)
+    options = options or {}
     local plot = plots[plotIndex]
     if plot == nil or not plot.unlocked then return false end
     if plot.plants == nil then plot.plants = {} end
@@ -628,7 +629,7 @@ function CropSystem.PlantSeedAt(plots, plotIndex, plantIndex, centerLocalPos)
 
     local plant = cfg_.PLANTS[plantIndex]
     local seedBag = deps_.InventorySystem.GetSeedBag()
-    if seedBag[plantIndex] == nil or seedBag[plantIndex] <= 0 then
+    if options.skipSeedConsume ~= true and (seedBag[plantIndex] == nil or seedBag[plantIndex] <= 0) then
         return false
     end
 
@@ -637,7 +638,7 @@ function CropSystem.PlantSeedAt(plots, plotIndex, plantIndex, centerLocalPos)
         return false, "occupied"
     end
 
-    local seedBuff = deps_.InventorySystem.RemoveSeedFromBag(plantIndex)
+    local seedBuff = options.skipSeedConsume == true and (tonumber(options.seedBuff or 0) or 0) or deps_.InventorySystem.RemoveSeedFromBag(plantIndex)
     local mutation = RollMutation(plant, seedBuff, plotIndex)
     local naturalScale = 0.78 + math.random() * 0.62
     local weightScale, weightTier = RollCropWeightScale()
@@ -700,7 +701,8 @@ function CropSystem.PlantSeedAt(plots, plotIndex, plantIndex, centerLocalPos)
     return true
 end
 
-function CropSystem.HarvestNearestMature(plots, plotIndex, localPos)
+function CropSystem.HarvestNearestMature(plots, plotIndex, localPos, options)
+    options = options or {}
     local plot = plots[plotIndex]
     if plot == nil or plot.plants == nil then return false end
     local crop, cropIndex = nil, nil
@@ -717,7 +719,7 @@ function CropSystem.HarvestNearestMature(plots, plotIndex, localPos)
         end
     end
     if crop == nil or cropIndex == nil then return false end
-    if not deps_.InventorySystem.AddHarvestedCrop(crop) then
+    if options.skipAddHarvested ~= true and not deps_.InventorySystem.AddHarvestedCrop(crop) then
         return false
     end
     crop.root:Remove()
@@ -725,6 +727,12 @@ function CropSystem.HarvestNearestMature(plots, plotIndex, localPos)
     print("收获: " .. crop.name .. " 价值 " .. crop.price)
 
     local gainedExp = 0
+    if options.skipAddHarvested == true then
+        return true, {
+            name = crop.name,
+            exp = gainedExp,
+        }
+    end
     -- 天赋系统：收获获得经验值
     if deps_.TalentSystem and deps_.TalentSystem.AddHarvestExp then
         local rarity = crop.config.rarity or "普通"

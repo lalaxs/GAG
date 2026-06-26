@@ -509,12 +509,19 @@ function InventorySystem.ApplyPackResults(results)
 end
 
 function InventorySystem.GetFirstAvailablePackId()
+    local packs = {}
     for packId, packCfg in pairs(cfg_.SEED_PACK_CONFIG) do
         if (state_.seedPacks[packId] or 0) > 0 then
-            return packCfg.packId
+            local rarityOrder = (cfg_.RARITY_ORDER or {})[packCfg.packRarity or "普通"] or 0
+            if packCfg.allowLimitedSeeds then rarityOrder = rarityOrder + 100 end
+            table.insert(packs, { packId = packId, order = rarityOrder })
         end
     end
-    return nil
+    table.sort(packs, function(a, b)
+        if a.order == b.order then return a.packId < b.packId end
+        return a.order < b.order
+    end)
+    return packs[1] and packs[1].packId or nil
 end
 
 function InventorySystem.OpenSeedPack(packId, packCount)

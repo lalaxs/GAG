@@ -21,20 +21,20 @@ local function SetPlotMaterial(plot, material)
     end
 end
 
-local function CreateSelectionFrame(plot)
-    local root = plot.node:CreateChild("SelectionFrame")
+local function CreateSelectionFrame(plot, mode)
+    local root = plot.node:CreateChild("SelectionFrame", mode)
     root.enabled = false
     plot.selection = root
 end
 
-local function CreateRoundedPlotSurface(plotNode, material)
+local function CreateRoundedPlotSurface(plotNode, material, mode)
     local moundModels = {}
 
     local function addPiece(name, modelPath, position, scale, pieceMaterial, collect)
-        local node = plotNode:CreateChild(name)
+        local node = plotNode:CreateChild(name, mode)
         node.position = position
         node.scale = scale
-        local model = node:CreateComponent("StaticModel")
+        local model = node:CreateComponent("StaticModel", mode)
         model:SetModel(cache:GetResource("Model", modelPath))
         model:SetMaterial(pieceMaterial)
         model.castShadows = false
@@ -74,16 +74,17 @@ function FarmSystem.PlotWorldPosition(index)
     return Vector3(startX + (col - 1) * config_.PlotSpacing, 0.42, startZ + (row - 1) * config_.PlotSpacing)
 end
 
-function FarmSystem.CreateFarm(scene, unlockedPlotCount)
+function FarmSystem.CreateFarm(scene, unlockedPlotCount, mode)
+    mode = mode or REPLICATED
     local plots = {}
     for i = 1, config_.GridCols * config_.GridRows do
-        local plotNode = scene:CreateChild("Plot" .. i)
+        local plotNode = scene:CreateChild("Plot" .. i, mode)
         plotNode.position = FarmSystem.PlotWorldPosition(i)
         -- 初始 scale 为 0，等待弹出动画
         plotNode.scale = Vector3(0, 0, 0)
         local unlocked = i <= unlockedPlotCount
         local baseMaterial = unlocked and materials_.soil or materials_.soilLocked
-        local models = CreateRoundedPlotSurface(plotNode, baseMaterial)
+        local models = CreateRoundedPlotSurface(plotNode, baseMaterial, mode)
 
         local plot = {
             node = plotNode,
@@ -100,7 +101,7 @@ function FarmSystem.CreateFarm(scene, unlockedPlotCount)
             plot.lockNode = nil
         end
         plots[i] = plot
-        CreateSelectionFrame(plot)
+        CreateSelectionFrame(plot, mode)
     end
     return plots
 end

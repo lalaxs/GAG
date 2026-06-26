@@ -12,28 +12,28 @@ local SceneSystem = {}
 ---@return Scene, Node, Camera
 function SceneSystem.CreateScene()
     local scene = Scene()
-    scene:CreateComponent("Octree")
-    scene:CreateComponent("DebugRenderer")
+    scene:CreateComponent("Octree", LOCAL)
+    scene:CreateComponent("DebugRenderer", LOCAL)
 
-    local zoneNode = scene:CreateChild("Zone")
-    local zone = zoneNode:CreateComponent("Zone")
+    local zoneNode = scene:CreateChild("Zone", LOCAL)
+    local zone = zoneNode:CreateComponent("Zone", LOCAL)
     zone.boundingBox = BoundingBox(Vector3(-1000, -1000, -1000), Vector3(1000, 1000, 1000))
     zone.ambientColor = Color(0.48, 0.52, 0.48)
     zone.fogColor = Color(0.75, 0.88, 0.72, 1.0)
     zone.fogStart = 55.0
     zone.fogEnd = 120.0
 
-    local lightNode = scene:CreateChild("Sun")
+    local lightNode = scene:CreateChild("Sun", LOCAL)
     lightNode.direction = Vector3(0.45, -1.0, 0.55)
-    local light = lightNode:CreateComponent("Light")
+    local light = lightNode:CreateComponent("Light", LOCAL)
     light.lightType = LIGHT_DIRECTIONAL
     light.color = Color(1.0, 0.94, 0.82)
     light.castShadows = true
     light.shadowBias = BiasParameters(0.00025, 0.5)
     light.shadowCascade = CascadeParameters(10.0, 30.0, 90.0, 0.0, 0.8)
 
-    local cameraNode = scene:CreateChild("Camera")
-    local camera = cameraNode:CreateComponent("Camera")
+    local cameraNode = scene:CreateChild("Camera", LOCAL)
+    local camera = cameraNode:CreateComponent("Camera", LOCAL)
     camera.nearClip = 0.1
     camera.farClip = 300.0
     camera.fov = 45.0

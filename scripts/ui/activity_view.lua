@@ -14,6 +14,7 @@ local ActivityView = {}
 local deps_ = {}
 local modal_ = nil
 local submitModal_ = nil
+local alienResultModal_ = nil
 local previewActivityId_ = nil
 
 local COLORS = {
@@ -93,6 +94,52 @@ end
 local function GetPlantName(index)
     local plant = deps_.plants and deps_.plants[index]
     return (plant and plant.name) or "限定种子"
+end
+
+local RARITY_TEXT_COLORS = {
+    ["普通"] = {120, 114, 98, 255},
+    ["罕见"] = {68, 162, 92, 255},
+    ["稀有"] = {68, 118, 220, 255},
+    ["史诗"] = {146, 88, 204, 255},
+    ["传奇"] = {218, 132, 34, 255},
+}
+
+local function GetPlantRarityColor(index)
+    local plant = deps_.plants and deps_.plants[index]
+    return RARITY_TEXT_COLORS[plant and plant.rarity] or COLORS.text
+end
+
+local function GetRarityTextColor(rarity)
+    return RARITY_TEXT_COLORS[rarity] or COLORS.text
+end
+
+local function GetRewardNameColor(reward)
+    if reward.type == "seed" or reward.plantIndex ~= nil then
+        return GetPlantRarityColor(reward.plantIndex)
+    end
+    return COLORS.text
+end
+
+local function GetPlantRarityOrder(index)
+    local plant = deps_.plants and deps_.plants[index]
+    local order = { ["普通"] = 1, ["罕见"] = 2, ["稀有"] = 3, ["史诗"] = 4, ["传奇"] = 5 }
+    return order[plant and plant.rarity] or 99
+end
+
+local function GetRewardRarityOrder(reward)
+    if reward.type == "seed" or reward.plantIndex ~= nil then
+        return GetPlantRarityOrder(reward.plantIndex)
+    end
+    return 100
+end
+
+local function SortedCopy(items, compare)
+    local result = {}
+    for _, item in ipairs(items or {}) do
+        table.insert(result, item)
+    end
+    table.sort(result, compare)
+    return result
 end
 
 local function BuildDivider()
@@ -435,7 +482,7 @@ end
 local function BuildRewardCard(reward, state, canInteract)
     local claimed = (state.exchanged and state.exchanged[reward.id] or 0)
     local limitReached = reward.limit ~= nil and claimed >= reward.limit
-    local disabled = (not canInteract) or (state.value or 0) < reward.cost or limitReached
+    local disabled = not canInteract or limitReached
     local limitText = reward.limit and string.format("%d/%d", claimed, reward.limit) or "不限"
     local displayName = (reward.name or "奖励"):gsub("%s*x1$", "")
 
@@ -465,7 +512,7 @@ local function BuildRewardCard(reward, state, canInteract)
                 alignItems = "center",
                 children = {},
             },
-            UI.Label { text = displayName, fontSize = 14, fontWeight = "bold", fontColor = COLORS.text, textAlign = "center", maxLines = 2 },
+            UI.Label { text = displayName, fontSize = 14, fontWeight = "bold", fontColor = GetRewardNameColor(reward), textAlign = "center", maxLines = 2 },
             UI.Label { text = reward.cost .. " 甜蜜值 · " .. limitText, fontSize = 12, fontColor = COLORS.subText, textAlign = "center", maxLines = 1 },
             UI.Button {
                 text = limitReached and "售罄" or "兑换",
@@ -482,10 +529,9 @@ local function BuildRewardCard(reward, state, canInteract)
                     local ok, err = deps_.exchangeSweetReward(reward.id)
                     if ok then
                         ShowActivityFloatingToast("兑换成功: " .. displayName)
-                    elseif deps_.showToast then
-                        deps_.showToast(err or "兑换失败")
+                    else
+                        ShowActivityFloatingToast(err or "兑换失败")
                     end
-                    RefreshMainModalContent()
                 end,
             },
         },
@@ -494,7 +540,13 @@ end
 
 local function BuildRewardRow(activity, state, canInteract)
     local cards = {}
-    for _, reward in ipairs(activity.exchangeRewards or {}) do
+    local rewards = SortedCopy(activity.exchangeRewards or {}, function(a, b)
+        local rarityA = GetRewardRarityOrder(a)
+        local rarityB = GetRewardRarityOrder(b)
+        if rarityA ~= rarityB then return rarityA < rarityB end
+        return (a.plantIndex or 9999) < (b.plantIndex or 9999)
+    end)
+    for _, reward in ipairs(rewards) do
         table.insert(cards, BuildRewardCard(reward, state, canInteract))
     end
 
@@ -549,7 +601,7 @@ local function BuildDrawPoolCard(item, theme)
                 backgroundFit = "contain",
                 children = {},
             },
-            UI.Label { text = item.name or "基因奖励", fontSize = 13, fontWeight = "bold", fontColor = COLORS.text, textAlign = "center", maxLines = 2 },
+            UI.Label { text = item.name or "基因奖励", fontSize = 13, fontWeight = "bold", fontColor = GetRewardNameColor(item), textAlign = "center", maxLines = 2 },
             UI.Label { text = "权重 " .. tostring(item.weight or 0), fontSize = 11, fontColor = COLORS.subText, textAlign = "center", maxLines = 1 },
         },
     }
@@ -557,7 +609,13 @@ end
 
 local function BuildDrawPoolRow(activity, theme)
     local cards = {}
-    for _, item in ipairs(activity.drawPool or {}) do
+    local drawPool = SortedCopy(activity.drawPool or {}, function(a, b)
+        local rarityA = GetRewardRarityOrder(a)
+        local rarityB = GetRewardRarityOrder(b)
+        if rarityA ~= rarityB then return rarityA < rarityB end
+        return (a.plantIndex or 9999) < (b.plantIndex or 9999)
+    end)
+    for _, item in ipairs(drawPool) do
         table.insert(cards, BuildDrawPoolCard(item, theme))
     end
     local cardWidth = 148
@@ -613,7 +671,7 @@ local function BuildLimitedSeedCard(seedIndex, theme)
                 backgroundFit = "contain",
                 children = {},
             },
-            UI.Label { text = GetPlantName(seedIndex), fontSize = 13, fontWeight = "bold", fontColor = COLORS.text, textAlign = "center", maxLines = 2 },
+            UI.Label { text = GetPlantName(seedIndex), fontSize = 13, fontWeight = "bold", fontColor = GetPlantRarityColor(seedIndex), textAlign = "center", maxLines = 2 },
             UI.Label { text = "限定种子", fontSize = 11, fontColor = COLORS.subText, textAlign = "center" },
         },
     }
@@ -621,7 +679,13 @@ end
 
 local function BuildLimitedSeedRow(activity, theme)
     local cards = {}
-    for _, seedIndex in ipairs(activity.limitedSeeds or {}) do
+    local seedIndices = SortedCopy(activity.limitedSeeds or {}, function(a, b)
+        local rarityA = GetPlantRarityOrder(a)
+        local rarityB = GetPlantRarityOrder(b)
+        if rarityA ~= rarityB then return rarityA < rarityB end
+        return a < b
+    end)
+    for _, seedIndex in ipairs(seedIndices) do
         table.insert(cards, BuildLimitedSeedCard(seedIndex, theme))
     end
     local cardWidth = 148
@@ -650,6 +714,136 @@ local function BuildLimitedSeedRow(activity, theme)
             },
         },
     })
+end
+
+local function BuildAlienResultCards(rewards)
+    local cards = {}
+    local counts = {}
+    local lookup = {}
+    for _, reward in ipairs(rewards or {}) do
+        local key = reward.type .. ":" .. tostring(reward.packId or reward.plantIndex or reward.name)
+        counts[key] = (counts[key] or 0) + (reward.count or 1)
+        lookup[key] = reward
+    end
+    local keys = {}
+    for key in pairs(counts) do table.insert(keys, key) end
+    table.sort(keys, function(a, b)
+        local ra = lookup[a]
+        local rb = lookup[b]
+        local oa = ra.type == "seed" and GetPlantRarityOrder(ra.plantIndex) or 100
+        local ob = rb.type == "seed" and GetPlantRarityOrder(rb.plantIndex) or 100
+        if oa ~= ob then return oa < ob end
+        return a < b
+    end)
+
+    for _, key in ipairs(keys) do
+        local reward = lookup[key]
+        local count = counts[key]
+        local isSeed = reward.type == "seed"
+        local packCfg = (not isSeed) and deps_.seedPackConfig and deps_.seedPackConfig[reward.packId] or nil
+        local name = tostring(reward.name or (isSeed and GetPlantName(reward.plantIndex) or (packCfg and packCfg.packName) or "种子包"))
+        local rarity = isSeed and ((deps_.plants and deps_.plants[reward.plantIndex] and deps_.plants[reward.plantIndex].rarity) or "限定") or ((packCfg and packCfg.packRarity) or "种子包")
+        local nameColor = isSeed and GetPlantRarityColor(reward.plantIndex) or GetRarityTextColor(rarity)
+        local iconPath = isSeed and GetSeedIconPath(reward.plantIndex) or GetRewardIconPath(reward)
+        table.insert(cards, UI.Panel {
+            width = "46%",
+            minHeight = 150,
+            padding = 6,
+            marginBottom = 10,
+            alignItems = "center",
+            backgroundColor = {0, 0, 0, 0},
+            children = {
+                UI.Panel {
+                    width = 96,
+                    height = 88,
+                    marginBottom = 6,
+                    backgroundImage = iconPath,
+                    backgroundFit = "contain",
+                },
+                UI.Label { text = name, width = 150, fontSize = 14, fontWeight = "bold", fontColor = nameColor, textAlign = "center", maxLines = 2 },
+                UI.Label { text = "x" .. tostring(count), width = 150, fontSize = 13, fontWeight = "bold", fontColor = COLORS.subText, textAlign = "center", marginTop = 4 },
+            },
+        })
+    end
+    return cards
+end
+
+function ActivityView.ShowAlienDrawResult(rewards)
+    if rewards == nil then return end
+    if alienResultModal_ ~= nil then
+        alienResultModal_:Close()
+        alienResultModal_ = nil
+    end
+
+    alienResultModal_ = UI.Modal {
+        size = "fullscreen",
+        closeOnOverlay = false,
+        showCloseButton = false,
+        contentPadding = {8, 14, 8, 14},
+        onClose = function()
+            alienResultModal_ = nil
+        end,
+    }
+
+    alienResultModal_:AddContent(UI.Panel {
+        height = 560,
+        paddingTop = 20,
+        paddingBottom = 4,
+        children = {
+            UI.Label {
+                text = "基因抽取结算",
+                width = "100%",
+                fontSize = 19,
+                fontWeight = "bold",
+                fontColor = {75, 55, 40, 255},
+                textAlign = "center",
+                marginBottom = 18,
+            },
+            UI.ScrollView {
+                height = 410,
+                scrollY = true,
+                showScrollbar = true,
+                children = {
+                    UI.Panel {
+                        flexDirection = "row",
+                        flexWrap = "wrap",
+                        justifyContent = "flex-start",
+                        gap = 2,
+                        paddingTop = 2,
+                        paddingBottom = 4,
+                        children = BuildAlienResultCards(rewards),
+                    },
+                },
+            },
+            UI.Panel {
+                height = 58,
+                justifyContent = "center",
+                alignItems = "center",
+                marginTop = 4,
+                children = {
+                    UI.Button {
+                        text = "确认",
+                        width = 120,
+                        height = 42,
+                        fontSize = 16,
+                        fontWeight = "bold",
+                        backgroundColor = {95, 165, 105, 255},
+                        fontColor = {255, 255, 255, 255},
+                        borderRadius = 12,
+                        onClick = function()
+                            if deps_.suppressWorldTap then deps_.suppressWorldTap() end
+                            if alienResultModal_ ~= nil then
+                                alienResultModal_:Close()
+                            end
+                        end,
+                    },
+                },
+            },
+        },
+    })
+
+    ModalAnim.Apply(alienResultModal_, { fixedHeight = 610 })
+    alienResultModal_:Open()
 end
 
 local function BuildSweetPrototype(activity, state, isActive)
@@ -695,58 +889,53 @@ local function BuildSweetPrototype(activity, state, isActive)
 end
 
 local function BuildAlienActions(activity, state, isActive)
-    local canDrawOne = isActive and (state.genes or 0) >= (activity.drawCost or 10)
-    local canDrawTen = isActive and (state.genes or 0) >= (activity.drawCostTen or 95)
+    local theme = GetTheme("alien")
+    local function BuildDrawButton(text, cost, count)
+        return UI.Panel {
+            alignItems = "center",
+            gap = 5,
+            children = {
+                UI.Button {
+                    text = text,
+                    width = 150,
+                    height = 44,
+                    fontSize = 15,
+                    fontWeight = "bold",
+                    borderRadius = 20,
+                    variant = "primary",
+                    disabled = not isActive,
+                    backgroundColor = theme.accent,
+                    textColor = {255, 255, 255, 255},
+                    onClick = function()
+                        if deps_.suppressWorldTap then deps_.suppressWorldTap() end
+                        local ok, errOrRewards = deps_.drawAlienPack(count)
+                        if ok then
+                            ShowActivityFloatingToast("抽取成功")
+                            ActivityView.ShowAlienDrawResult(errOrRewards)
+                        else
+                            ShowActivityFloatingToast(errOrRewards or "抽取失败")
+                        end
+                    end,
+                },
+                UI.Label {
+                    text = "消耗 " .. tostring(cost) .. " 基因",
+                    fontSize = 12,
+                    fontWeight = "bold",
+                    fontColor = theme.accentDark,
+                    textAlign = "center",
+                },
+            },
+        }
+    end
+
     return UI.Panel {
         width = "100%",
         flexDirection = "row",
         justifyContent = "center",
         gap = 14,
         children = {
-            UI.Button {
-                text = "抽取一次",
-                width = 150,
-                height = 44,
-                fontSize = 15,
-                fontWeight = "bold",
-                borderRadius = 20,
-                variant = "primary",
-                disabled = not canDrawOne,
-                backgroundColor = GetTheme("alien").accent,
-                textColor = {255, 255, 255, 255},
-                onClick = function()
-                    if deps_.suppressWorldTap then deps_.suppressWorldTap() end
-                    local ok, errOrRewards = deps_.drawAlienPack(1)
-                    if ok then
-                        ShowActivityFloatingToast("抽取成功")
-                    elseif deps_.showToast then
-                        deps_.showToast(errOrRewards or "抽取失败")
-                    end
-                    RefreshMainModalContent()
-                end,
-            },
-            UI.Button {
-                text = "抽取十次",
-                width = 150,
-                height = 44,
-                fontSize = 15,
-                fontWeight = "bold",
-                borderRadius = 20,
-                variant = "primary",
-                disabled = not canDrawTen,
-                backgroundColor = GetTheme("alien").accent,
-                textColor = {255, 255, 255, 255},
-                onClick = function()
-                    if deps_.suppressWorldTap then deps_.suppressWorldTap() end
-                    local ok, errOrRewards = deps_.drawAlienPack(10)
-                    if ok then
-                        ShowActivityFloatingToast("抽取成功")
-                    elseif deps_.showToast then
-                        deps_.showToast(errOrRewards or "抽取失败")
-                    end
-                    RefreshMainModalContent()
-                end,
-            },
+            BuildDrawButton("抽取一次", activity.drawCost or 10, 1),
+            BuildDrawButton("抽取十次", activity.drawCostTen or 95, 10),
         },
     }
 end
@@ -900,8 +1089,6 @@ function ActivityView.OpenSubmitPicker()
                         elseif deps_.showToast then
                             deps_.showToast(errOrValue or "上交失败")
                         end
-                        RefreshMainModalContent()
-                        RefreshSubmitModalContent()
                     end,
                 },
             },

@@ -10,6 +10,7 @@ local UI = require("urhox-libs/UI")
 local SettingsView = require("ui.settings_view")
 local FloatingToast = require("ui.floating_toast")
 local ProfileView = require("ui.profile_view")
+local SocialView = require("ui.social_view")
 local ActivityView = require("ui.activity_view")
 local ModelPreviewView = require("ui.model_preview_view")
 
@@ -88,12 +89,56 @@ local function BuildActionButton()
         borderRadius = 28,
         onClick = function()
             deps_.suppressWorldTap()
-            if deps_.isFarmView() then
+            if deps_.isVisitMode and deps_.isVisitMode() then
+                if deps_.returnHome then deps_.returnHome() end
+            elseif deps_.isFarmView() then
                 deps_.enterPlantView()
             else
                 deps_.enterFarmView()
             end
         end,
+    }
+end
+
+local function BuildVisitTopHud()
+    return UI.Panel {
+        position = "absolute",
+        top = 50,
+        left = 16,
+        right = 16,
+        flexDirection = "row",
+        alignItems = "center",
+        justifyContent = "space-between",
+        gap = 8,
+        pointerEvents = "box-none",
+        children = {
+            UI.Panel {
+                flexDirection = "row",
+                alignItems = "center",
+                gap = 7,
+                paddingTop = 7, paddingBottom = 7,
+                paddingLeft = 10, paddingRight = 14,
+                backgroundColor = {255, 250, 240, 240},
+                borderRadius = 14,
+                children = {
+                    UI.Label { text = "★", fontSize = 13, fontColor = {155, 120, 210, 255} },
+                    UI.Label { text = "观光 " .. tostring(deps_.getVisitTourValue and deps_.getVisitTourValue() or 0), fontSize = 15, fontWeight = "bold", fontColor = {95, 75, 55, 255} },
+                },
+            },
+            UI.Panel {
+                flexDirection = "row",
+                alignItems = "center",
+                gap = 7,
+                paddingTop = 7, paddingBottom = 7,
+                paddingLeft = 10, paddingRight = 14,
+                backgroundColor = {255, 250, 240, 240},
+                borderRadius = 14,
+                children = {
+                    UI.Label { text = "♥", fontSize = 13, fontColor = {220, 92, 92, 255} },
+                    UI.Label { text = "点赞 " .. tostring(deps_.getVisitLikeCount and deps_.getVisitLikeCount() or 0), fontSize = 15, fontWeight = "bold", fontColor = {95, 75, 55, 255} },
+                },
+            },
+        },
     }
 end
 
@@ -108,7 +153,7 @@ local function BuildTopHud(labels)
         gap = 8,
         pointerEvents = "box-none",
         children = {
-            deps_.isFarmView() and ProfileView.BuildHudAvatar() or UI.Panel { width = 0, height = 0 },
+            (deps_.isFarmView() and (not deps_.isVisitMode or not deps_.isVisitMode())) and ProfileView.BuildHudAvatar() or UI.Panel { width = 0, height = 0 },
             UI.Panel {
                 flexDirection = "row",
                 alignItems = "center",
@@ -295,6 +340,156 @@ local function BuildFarmControls(labels, actionButton)
     }
 end
 
+local function BuildVisitControls()
+    local stealing = deps_.isStealingMode and deps_.isStealingMode()
+    local liked = deps_.hasLikedVisitGarden and deps_.hasLikedVisitGarden()
+    return UI.Panel {
+        position = "absolute",
+        left = 16, right = 16, bottom = 60,
+        flexDirection = "row",
+        justifyContent = "space-between",
+        alignItems = "flex-end",
+        pointerEvents = "box-none",
+        children = {
+            UI.Button {
+                text = "返回",
+                width = 80,
+                height = 64,
+                fontSize = 20,
+                fontWeight = "bold",
+                backgroundColor = {78, 172, 110, 255},
+                fontColor = {92, 62, 62, 255},
+                borderRadius = 20,
+                onClick = function()
+                    deps_.suppressWorldTap()
+                    if deps_.returnHome then deps_.returnHome() end
+                end,
+            },
+            UI.Panel {
+                flexDirection = "row",
+                gap = 10,
+                marginRight = 18,
+                children = {
+                    UI.Button {
+                        text = stealing and "退出" or "偷取",
+                        width = 116,
+                        height = 64,
+                        fontSize = 20,
+                        fontWeight = "bold",
+                        backgroundColor = stealing and {150, 120, 90, 255} or {224, 154, 70, 255},
+                        fontColor = {92, 62, 62, 255},
+                        borderRadius = 20,
+                        onClick = function()
+                            deps_.suppressWorldTap()
+                            if stealing then
+                                if deps_.endStealingMode then deps_.endStealingMode() end
+                            else
+                                if deps_.beginStealingMode then deps_.beginStealingMode() end
+                            end
+                        end,
+                    },
+                    UI.Button {
+                        text = liked and "已赞" or "点赞",
+                        width = 116,
+                        height = 64,
+                        fontSize = 20,
+                        fontWeight = "bold",
+                        backgroundColor = liked and {190, 170, 150, 255} or {238, 105, 105, 255},
+                        fontColor = {92, 62, 62, 255},
+                        borderRadius = 20,
+                        onClick = function()
+                            deps_.suppressWorldTap()
+                            if deps_.likeVisitGarden then deps_.likeVisitGarden() end
+                        end,
+                    },
+                },
+            },
+        },
+    }
+end
+
+local function BuildVisitStealList()
+    if not (deps_.isVisitMode and deps_.isVisitMode()) or not (deps_.isStealingMode and deps_.isStealingMode()) then
+        return UI.Panel { width = 0, height = 0 }
+    end
+    ---@type table
+    local rows = {}
+    local crops = deps_.getMatureVisitCrops and deps_.getMatureVisitCrops() or {}
+    for _, item in ipairs(crops) do
+        local crop = item.crop
+        local stolen = crop.stolen == true
+        rows[#rows + 1] = UI.Panel {
+            flexDirection = "row",
+            alignItems = "center",
+            gap = 8,
+            paddingTop = 6,
+            paddingBottom = 6,
+            borderBottomWidth = 1,
+            borderColor = {220, 205, 175, 150},
+            children = {
+                UI.Label {
+                    text = string.format("%s · 种子率%s%s", crop.name or "作物", deps_.getStealChanceText and deps_.getStealChanceText(crop) or "--", stolen and " · 已偷" or ""),
+                    flexGrow = 1,
+                    flexShrink = 1,
+                    fontSize = 13,
+                    fontColor = stolen and {150, 120, 95, 210} or {70, 55, 38, 255},
+                },
+                UI.Button {
+                    text = stolen and "已偷" or "偷",
+                    width = 58,
+                    height = 34,
+                    fontSize = 13,
+                    fontWeight = "bold",
+                    backgroundColor = stolen and {190, 180, 165, 180} or {224, 154, 70, 255},
+                    fontColor = {255, 255, 255, 255},
+                    borderRadius = 13,
+                    onClick = function()
+                        deps_.suppressWorldTap()
+                        if not stolen and deps_.stealVisitCrop then
+                            deps_.stealVisitCrop(item.index, crop.cropId)
+                        end
+                    end,
+                },
+            },
+        }
+    end
+    if #rows == 0 then
+        rows[1] = UI.Panel {
+            paddingTop = 12,
+            paddingBottom = 12,
+            children = {
+                UI.Label { text = "暂无成熟作物可偷", fontSize = 14, fontColor = {120, 96, 68, 220}, textAlign = "center" },
+            },
+        }
+    end
+    return UI.Panel {
+        position = "absolute",
+        left = 14,
+        right = 14,
+        bottom = 144,
+        maxHeight = 210,
+        paddingTop = 12,
+        paddingBottom = 12,
+        paddingLeft = 14,
+        paddingRight = 14,
+        backgroundColor = {255, 250, 240, 246},
+        borderRadius = 18,
+        borderWidth = 2,
+        borderColor = {224, 154, 70, 190},
+        children = {
+            UI.Label { text = "成熟作物", fontSize = 15, fontWeight = "bold", fontColor = {74, 55, 38, 255}, marginBottom = 6 },
+            UI.ScrollView {
+                height = 150,
+                scrollY = true,
+                showScrollbar = false,
+                children = {
+                    UI.Panel { gap = 2, children = rows },
+                },
+            },
+        },
+    }
+end
+
 local function BuildPlantShell(plantContent)
     local plantTab = deps_.getPlantTab()
     return UI.Panel {
@@ -355,7 +550,8 @@ local function BuildPlantShell(plantContent)
 end
 
 local function BuildCollapseButton()
-    if not deps_.isPlantView() then
+    local isPlant = deps_.isPlantView and deps_.isPlantView() or false
+    if (deps_.isVisitMode and deps_.isVisitMode()) or not isPlant then
         return UI.Panel { width = 0, height = 0 }
     end
     return UI.Panel {
@@ -443,6 +639,7 @@ local function BuildTalentButton(labels)
                 end,
             } or nil,
             ActivityView.BuildButton(),
+            SocialView.BuildButton(),
             UI.Button {
                 text = "图鉴",
                 width = 69,
@@ -487,11 +684,13 @@ function MainView.BuildRoot(labels, children)
         height = "100%",
         pointerEvents = "box-none",
         children = {
-            BuildTopHud(labels),
-            deps_.isFarmView() and BuildTalentButton(labels) or UI.Panel { width = 0, height = 0 },
-            deps_.isFarmView() and BuildFarmControls(labels, actionButton) or BuildPlantShell(children.plantContent),
+            (deps_.isVisitMode and deps_.isVisitMode()) and BuildVisitTopHud() or BuildTopHud(labels),
+            SocialView.BuildVisitBanner(),
+            (deps_.isFarmView() and (not deps_.isVisitMode or not deps_.isVisitMode())) and BuildTalentButton(labels) or UI.Panel { width = 0, height = 0 },
+            (deps_.isVisitMode and deps_.isVisitMode()) and BuildVisitControls(actionButton) or (deps_.isFarmView() and BuildFarmControls(labels, actionButton) or BuildPlantShell(children.plantContent)),
+            BuildVisitStealList(),
             BuildCollapseButton(),
-            deps_.isFarmView() and SettingsView.BuildPlotDisplayButtons() or UI.Panel { width = 0, height = 0 },
+            (deps_.isFarmView() and (not deps_.isVisitMode or not deps_.isVisitMode())) and SettingsView.BuildPlotDisplayButtons() or UI.Panel { width = 0, height = 0 },
             children.bagDetail,
             children.seedPackOverlay,
             children.seedPackOpeningOverlay,

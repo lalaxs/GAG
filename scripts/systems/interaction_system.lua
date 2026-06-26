@@ -47,17 +47,9 @@ local function IsWorldTapArea(x, y)
         if tab == "bag" then
             bottomReserved = 505
         elseif tab == "harvest" then
-            bottomReserved = 405
+            bottomReserved = 230
         else
-            bottomReserved = 390
-        end
-        local collapseBottom = tab == "bag" and 520 or 410
-        local collapseLeft = graphics:GetWidth() - 118
-        local collapseRight = graphics:GetWidth() - 8
-        local collapseTop = h - collapseBottom - 50
-        local collapseBottomY = h - collapseBottom + 16
-        if x >= collapseLeft and x <= collapseRight and y >= collapseTop and y <= collapseBottomY then
-            return false
+            bottomReserved = 205
         end
     end
     return y > 170 and y < h - bottomReserved
@@ -100,13 +92,12 @@ local function PlotHitFromScreen(x, y)
     end
 
     local plantableHalf = config_.PlantableHalf or 0.60
-    if bestIndex ~= nil and bestDist <= (plantableHalf * config_.PlotSize) * (plantableHalf * config_.PlotSize) then
-        if math.abs(bestLocal.x) > plantableHalf or math.abs(bestLocal.z) > plantableHalf then
-            return nil, nil, "edge"
-        end
-        return bestIndex, bestLocal, nil
-    end
     if bestIndex ~= nil then
+        -- 地块视觉是方形/圆角方形，播种位置也由 CropSystem.ClampToPlot 按 X/Z 方形范围限制。
+        -- 这里不能用圆形半径判断，否则四个角落会看起来在土地上但永远点不中。
+        if math.abs(bestLocal.x) <= plantableHalf and math.abs(bestLocal.z) <= plantableHalf then
+            return bestIndex, bestLocal, nil
+        end
         return nil, nil, "edge"
     end
     return nil, nil, nil

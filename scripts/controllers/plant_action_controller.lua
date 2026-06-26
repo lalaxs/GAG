@@ -12,6 +12,38 @@ local AudioSystem = require("systems.audio_system")
 local PlantActionController = {}
 
 local deps_ = {}
+local requestSeq_ = 0
+
+local function NextRequestId(prefix)
+    requestSeq_ = requestSeq_ + 1
+    return tostring(prefix or "req") .. "_" .. tostring(os.time()) .. "_" .. tostring(requestSeq_)
+end
+
+local function EncodeLocalPos(localPos)
+    return { x = localPos and localPos.x or 0, z = localPos and localPos.z or 0 }
+end
+
+local function DecodeLocalPos(data)
+    data = data or {}
+    return Vector3(tonumber(data.x or 0) or 0, 0, tonumber(data.z or 0) or 0)
+end
+
+local function EncodeCropForServer(crop)
+    if crop == nil then return nil end
+    return {
+        name = crop.name,
+        price = crop.price,
+        sightValue = crop.sightValue,
+        rarity = crop.config and crop.config.rarity or crop.rarity,
+        plantIndex = crop.plantIndex,
+        weight = crop.weight,
+        baseWeight = crop.baseWeight,
+        weightTier = crop.weightTier,
+        weightMultiplier = crop.weightMultiplier,
+        mutation = crop.mutation,
+        localPos = crop.localPos and { x = crop.localPos.x, z = crop.localPos.z } or { x = 0, z = 0 },
+    }
+end
 
 function PlantActionController.Init(deps)
     deps_ = deps or {}
@@ -69,16 +101,53 @@ local function GetPlots()
     return deps_.getPlots()
 end
 
-function PlantActionController.PlantSeedAt(plotIndex, plantIndex, centerLocalPos)
-    local success, reason = deps_.CropSystem.PlantSeedAt(GetPlots(), plotIndex, plantIndex, centerLocalPos)
+function PlantActionController.PlantSeedAt(plotIndex, plantIndex, centerLocalPos, options)
+    options = options or {}
+    if options.serverConfirmed ~= true and deps_.EconomyCloudSystem ~= nil and deps_.EconomyCloudSystem.PlantSeed ~= nil then
+        local requested = deps_.EconomyCloudSystem.PlantSeed({
+            requestId = NextRequestId("plant"),
+            plotIndex = plotIndex,
+            plantIndex = plantIndex,
+            localPos = EncodeLocalPos(centerLocalPos or Vector3(0, 0, 0)),
+        })
+        if requested then return true, "pending_server" end
+    end
+    local success, reason = deps_.CropSystem.PlantSeedAt(GetPlots(), plotIndex, plantIndex, centerLocalPos, {
+        skipSeedConsume = options.serverConfirmed == true,
+        seedBuff = options.seedBuff or 0,
+    })
     if success then
         RefreshTourValue()
     end
     return success, reason
 end
 
-function PlantActionController.HarvestNearestMature(plotIndex, localPos)
-    local success, harvestInfo = deps_.CropSystem.HarvestNearestMature(GetPlots(), plotIndex, localPos)
+function PlantActionController.HarvestNearestMature(plotIndex, localPos, options)
+    options = options or {}
+    if options.serverConfirmed ~= true and deps_.EconomyCloudSystem ~= nil and deps_.EconomyCloudSystem.HarvestCrop ~= nil then
+        local plot = GetPlots()[plotIndex]
+        local crop, cropIndex = nil, nil
+        if plot ~= nil and localPos ~= nil then
+            crop, cropIndex = deps_.findPlantAtLocalPosition(plot, localPos, true)
+        end
+        if crop == nil and plot ~= nil then
+            for i, item in ipairs(plot.plants or {}) do
+                if item.mature then crop = item; cropIndex = i; break end
+            end
+        end
+        if crop == nil then return false end
+        local requested = deps_.EconomyCloudSystem.HarvestCrop({
+            requestId = NextRequestId("harvest"),
+            plotIndex = plotIndex,
+            cropIndex = cropIndex,
+            cropId = crop.cropId,
+            crop = EncodeCropForServer(crop),
+        })
+        if requested then return true, { name = crop.name, exp = 0, pendingServer = true } end
+    end
+    local success, harvestInfo = deps_.CropSystem.HarvestNearestMature(GetPlots(), plotIndex, localPos, {
+        skipAddHarvested = options.serverConfirmed == true,
+    })
     if success then
         RefreshTourValue()
     end
@@ -92,6 +161,12 @@ end
 function PlantActionController.BuySelectedSeed()
     local selectedSeed = GetSelectedSeed()
     local plant = GetPlants()[selectedSeed]
+    if deps_.EconomyCloudSystem ~= nil and deps_.EconomyCloudSystem.BuySeed ~= nil then
+        if deps_.EconomyCloudSystem.BuySeed(selectedSeed, plant.seedPrice) then
+            print("请求服务器购买种子: " .. plant.name)
+            return true
+        end
+    end
     if not deps_.WalletSystem.Spend(plant.seedPrice) then
         print("金币不足，无法购买: " .. plant.name)
         return false
@@ -102,6 +177,13 @@ function PlantActionController.BuySelectedSeed()
 end
 
 function PlantActionController.SellAllHarvested()
+    if deps_.EconomyCloudSystem ~= nil and deps_.EconomyCloudSystem.SellAllHarvested ~= nil then
+        if deps_.EconomyCloudSystem.SellAllHarvested() then
+            deps_.setSelectedBagItem(nil)
+            if deps_.clearBagPreview ~= nil then deps_.clearBagPreview() end
+            return true
+        end
+    end
     local total = deps_.InventorySystem.SellAllHarvested()
     if total > 0 then
         deps_.setSelectedBagItem(nil)
@@ -114,6 +196,13 @@ function PlantActionController.SellAllHarvested()
 end
 
 function PlantActionController.SellBagItem(item)
+    if deps_.EconomyCloudSystem ~= nil and deps_.EconomyCloudSystem.SellBagItem ~= nil then
+        if deps_.EconomyCloudSystem.SellBagItem(item) then
+            deps_.setSelectedBagItem(nil)
+            if deps_.clearBagPreview ~= nil then deps_.clearBagPreview() end
+            return true
+        end
+    end
     local earned = deps_.InventorySystem.SellBagItem(item)
     if earned > 0 then
         deps_.setSelectedBagItem(nil)
@@ -126,6 +215,13 @@ function PlantActionController.SellBagItem(item)
 end
 
 function PlantActionController.SellHarvestedByFilter(filter)
+    if deps_.EconomyCloudSystem ~= nil and deps_.EconomyCloudSystem.SellHarvestedByFilter ~= nil then
+        if deps_.EconomyCloudSystem.SellHarvestedByFilter(filter) then
+            deps_.setSelectedBagItem(nil)
+            if deps_.clearBagPreview ~= nil then deps_.clearBagPreview() end
+            return true, 0
+        end
+    end
     local count, total = deps_.InventorySystem.SellHarvestedByFilter(filter)
     if count > 0 then
         deps_.setSelectedBagItem(nil)
@@ -188,6 +284,49 @@ function PlantActionController.SetSelectedSeedIndex(index)
     PlantActionController.EnsureSelectedSeedAvailable()
 end
 
+function PlantActionController.ApplyConfirmedPlantSeed(data)
+    local plotIndex = tonumber(data.plotIndex or GetSelectedPlot()) or GetSelectedPlot()
+    local plantIndex = tonumber(data.plantIndex or GetSelectedSeed()) or GetSelectedSeed()
+    local localPos = DecodeLocalPos(data.localPos)
+    local success, reason = PlantActionController.PlantSeedAt(plotIndex, plantIndex, localPos, {
+        serverConfirmed = true,
+        seedBuff = data.seedBuff or 0,
+    })
+    if success then
+        AudioSystem.PlaySFX("plant_seed")
+        ShowToast("已播种 " .. GetPlants()[plantIndex].name, true)
+        PlantActionController.SelectNextOwnedSeedIfEmpty(plantIndex)
+        if deps_.markDirty then deps_.markDirty() end
+        RebuildUI()
+        return true
+    end
+    ShowToast(reason == "occupied" and "请换个地方播种" or "播种失败")
+    return false
+end
+
+function PlantActionController.ApplyConfirmedHarvestCrop(data)
+    local plotIndex = tonumber(data.plotIndex or GetSelectedPlot()) or GetSelectedPlot()
+    local cropIndex = tonumber(data.cropIndex or 0) or 0
+    local plot = GetPlots()[plotIndex]
+    local crop = nil
+    if plot ~= nil and cropIndex > 0 then crop = plot.plants[cropIndex] end
+    local localPos = data.crop and data.crop.localPos and DecodeLocalPos(data.crop.localPos) or nil
+    local success, harvestInfo = PlantActionController.HarvestNearestMature(plotIndex, localPos, { serverConfirmed = true })
+    if success then
+        AudioSystem.PlaySFX("harvest_crop")
+        local cropName = data.crop and data.crop.name or harvestInfo and harvestInfo.name or crop and crop.name or "作物"
+        local exp = harvestInfo and harvestInfo.exp or 0
+        local text = "收获了" .. cropName .. "，获得了" .. exp .. "经验"
+        ShowToast(text, true)
+        FloatingToast.Show(text, { fontSize = 19, duration = 1.6, yRatio = 0.42, priority = 0 })
+        if deps_.markDirty then deps_.markDirty() end
+        RebuildUI()
+        return true
+    end
+    ShowToast("收获失败")
+    return false
+end
+
 function PlantActionController.PerformPlotAction(plotIndex, localPos)
     SetSelectedPlot(plotIndex)
     deps_.refreshSelection()
@@ -216,7 +355,9 @@ function PlantActionController.PerformPlotAction(plotIndex, localPos)
         else
             local plantedSeed = GetSelectedSeed()
             local success, reason = PlantActionController.PlantSeedAt(GetSelectedPlot(), plantedSeed, localPos or Vector3(0, 0, 0))
-            if success then
+            if success and reason == "pending_server" then
+                ShowToast("正在请求服务器播种...", true)
+            elseif success then
                 AudioSystem.PlaySFX("plant_seed")
                 ShowToast("已播种 " .. GetPlants()[plantedSeed].name, true)
                 PlantActionController.SelectNextOwnedSeedIfEmpty(plantedSeed)
@@ -240,22 +381,30 @@ function PlantActionController.PerformPlotAction(plotIndex, localPos)
             if crop ~= nil then
                 local success, harvestInfo = PlantActionController.HarvestNearestMature(GetSelectedPlot(), localPos)
                 if success then
-                    AudioSystem.PlaySFX("harvest_crop")
-                    local cropName = harvestInfo and harvestInfo.name or crop.name
-                    local exp = harvestInfo and harvestInfo.exp or 0
-                    local text = "收获了" .. cropName .. "，获得了" .. exp .. "经验"
-                    ShowToast(text, true)
-                    FloatingToast.Show(text, { fontSize = 19, duration = 1.6, yRatio = 0.42, priority = 0 })
+                    if harvestInfo and harvestInfo.pendingServer then
+                        ShowToast("正在请求服务器收获...", true)
+                    else
+                        AudioSystem.PlaySFX("harvest_crop")
+                        local cropName = harvestInfo and harvestInfo.name or crop.name
+                        local exp = harvestInfo and harvestInfo.exp or 0
+                        local text = "收获了" .. cropName .. "，获得了" .. exp .. "经验"
+                        ShowToast(text, true)
+                        FloatingToast.Show(text, { fontSize = 19, duration = 1.6, yRatio = 0.42, priority = 0 })
+                    end
                 end
             else
                 local success, harvestInfo = PlantActionController.HarvestNearestMature(GetSelectedPlot(), nil)
                 if success then
-                    AudioSystem.PlaySFX("harvest_crop")
-                    local cropName = harvestInfo and harvestInfo.name or "作物"
-                    local exp = harvestInfo and harvestInfo.exp or 0
-                    local text = "收获了" .. cropName .. "，获得了" .. exp .. "经验"
-                    ShowToast(text, true)
-                    FloatingToast.Show(text, { fontSize = 19, duration = 1.6, yRatio = 0.42, priority = 0 })
+                    if harvestInfo and harvestInfo.pendingServer then
+                        ShowToast("正在请求服务器收获...", true)
+                    else
+                        AudioSystem.PlaySFX("harvest_crop")
+                        local cropName = harvestInfo and harvestInfo.name or "作物"
+                        local exp = harvestInfo and harvestInfo.exp or 0
+                        local text = "收获了" .. cropName .. "，获得了" .. exp .. "经验"
+                        ShowToast(text, true)
+                        FloatingToast.Show(text, { fontSize = 19, duration = 1.6, yRatio = 0.42, priority = 0 })
+                    end
                 end
             end
         end

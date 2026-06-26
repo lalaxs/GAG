@@ -916,12 +916,12 @@ function PlantVisual.CreatePlantVisual(parent, plant, mutation, material)
         CreateBlockStem(visual, 0.8, 0.1)
         CreateLeaves(visual, 2, 0.35, 0.18)
         -- 玉米棒（大而醒目，贴着茎）
-        CreateBlockFruit(visual, "CornCob", Vector3(0, 0.6, 0.1), Vector3(0.18, 0.4, 0.18), material)
+        CreateBlockFruit(visual, "CornCob", Vector3(0, 0.68, 0.02), Vector3(0.16, 0.38, 0.16), material)
         -- 苞叶包裹下半部分
         local huskMat = PlantVisual.CreateMaterial("husk" .. tostring(math.random(100000, 999999)), Color(0.3, 0.6, 0.15, 1.0), 0.0, 0.5)
-        CreateBlockFruit(visual, "HuskL", Vector3(-0.08, 0.52, 0.1), Vector3(0.04, 0.3, 0.16), huskMat)
-        CreateBlockFruit(visual, "HuskR", Vector3(0.08, 0.52, 0.1), Vector3(0.04, 0.3, 0.16), huskMat)
-        CreateBlockFruit(visual, "HuskB", Vector3(0, 0.52, 0.18), Vector3(0.14, 0.26, 0.04), huskMat)
+        CreateBlockFruit(visual, "HuskL", Vector3(-0.12, 0.5, 0.08), Vector3(0.035, 0.24, 0.12), huskMat)
+        CreateBlockFruit(visual, "HuskR", Vector3(0.12, 0.5, 0.08), Vector3(0.035, 0.24, 0.12), huskMat)
+        CreateBlockFruit(visual, "HuskB", Vector3(0, 0.49, 0.2), Vector3(0.12, 0.22, 0.035), huskMat)
 
     elseif plant.visual == "grape" then
         -- 葡萄：藤蔓茎 + 叶子 + 一串紫色圆果（倒三角形排列）

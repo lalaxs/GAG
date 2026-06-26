@@ -23,5 +23,5 @@
     "promotional_image": ""
   },
   "entry@client": "main.lua",
-  "entry@server": "main.lua"
+  "entry@server": "server_main.lua"
 }

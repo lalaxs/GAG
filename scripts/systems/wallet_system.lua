@@ -17,6 +17,10 @@ function WalletSystem.GetBalance()
     return balance_
 end
 
+function WalletSystem.SetBalance(amount)
+    balance_ = math.max(0, tonumber(amount or 0) or 0)
+end
+
 function WalletSystem.CanAfford(cost)
     return balance_ >= (cost or 0)
 end
