@@ -19,6 +19,7 @@ local viewMode_ = CameraSystem.ViewMode.FARM
 local cameraYaw_ = 0.0
 local cameraPitch_ = 0.0
 local cameraDistance_ = 0.0
+local plantViewDistance_ = 0.0
 local cameraTarget_ = Vector3(0, 0, 0)
 
 ---@param config table
@@ -30,6 +31,7 @@ function CameraSystem.Init(config, cameraNode)
     cameraYaw_ = config.FarmViewYaw
     cameraPitch_ = config.FarmViewPitch
     cameraDistance_ = config.FarmViewDistance
+    plantViewDistance_ = config.PlantViewDistance
     cameraTarget_ = Vector3(0, 0, 0)
 end
 
@@ -62,7 +64,7 @@ function CameraSystem.EnterPlantView()
     viewMode_ = CameraSystem.ViewMode.PLANT
     cameraYaw_ = config_.PlantViewYaw
     cameraPitch_ = config_.PlantViewPitch
-    cameraDistance_ = config_.PlantViewDistance
+    cameraDistance_ = plantViewDistance_
     CameraSystem.UpdateCamera()
 end
 
@@ -95,11 +97,17 @@ end
 
 function CameraSystem.AdjustDistance(delta, minDistance, maxDistance)
     cameraDistance_ = Clamp(cameraDistance_ + delta, minDistance, maxDistance)
+    if viewMode_ == CameraSystem.ViewMode.PLANT then
+        plantViewDistance_ = cameraDistance_
+    end
     CameraSystem.UpdateCamera()
 end
 
 function CameraSystem.SetDistance(distance)
     cameraDistance_ = distance
+    if viewMode_ == CameraSystem.ViewMode.PLANT then
+        plantViewDistance_ = cameraDistance_
+    end
     CameraSystem.UpdateCamera()
 end
 

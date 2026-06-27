@@ -17,6 +17,16 @@ function TaskView.Init(deps)
     deps_ = deps or {}
 end
 
+function TaskView.IsOpen()
+    return deps_.getTaskModal ~= nil and deps_.getTaskModal() ~= nil
+end
+
+function TaskView.RefreshContent()
+    if TaskView.IsOpen() then
+        TaskView.Open()
+    end
+end
+
 local function BuildRewardIcon(rewardClaimed)
     local seedPackConfig = deps_.seedPackConfig or {}
     local packCfg = seedPackConfig.pack_common or {}
@@ -233,7 +243,6 @@ function TaskView.Open()
                                     currentModal:Close()
                                     deps_.setTaskModal(nil)
                                 end
-                                deps_.rebuildUI()
                             end
                         end,
                     },

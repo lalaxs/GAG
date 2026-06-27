@@ -6,6 +6,9 @@
 -- ============================================================================
 
 local Shared = require("network.shared")
+local EventBus = require("utils.event_bus")
+local UIEvents = require("utils.ui_events")
+local RequestStateMachine = require("client.request_state_machine")
 
 local SocialGardenSystem = {}
 
@@ -13,8 +16,12 @@ local MODE_OWN = "own"
 local MODE_VISIT = "visit"
 local DAILY_STEAL_LIMIT = 10
 local DAILY_GIFT_LIMIT = 5
+local ALLOW_DEMO_SOCIAL = false
 
 local deps_ = {}
+local requests_ = RequestStateMachine.Create("social", { timeout = 14.0 })
+local EmitSocialChanged = nil
+local EnterFallbackGarden = nil
 local state_ = {
     mode = MODE_OWN,
     visitablePlotIndex = 1,
@@ -43,6 +50,19 @@ end
 
 local function GetNow()
     return os and os.time and os.time() or 0
+end
+
+local function BeginRequest(requestType, payload)
+    local nextPayload = payload or {}
+    nextPayload = requests_:Begin(requestType, nextPayload)
+    requests_:SyncLegacyPending(state_.pending)
+    return nextPayload
+end
+
+local function FinishRequest(requestId, requestType)
+    local record = requests_:Finish(requestId, requestType)
+    requests_:SyncLegacyPending(state_.pending)
+    return record
 end
 
 local function ClampPlotIndex(index)
@@ -186,6 +206,7 @@ local function GetFallbackLeaderboardEntries()
 end
 
 local function EnsureDemoData()
+    if ALLOW_DEMO_SOCIAL ~= true then return end
     if #state_.leaderboard <= 0 then
         state_.leaderboard = GetFallbackLeaderboardEntries()
     end
@@ -279,7 +300,7 @@ function SocialGardenSystem.BindServerConnection()
     if conn ~= nil and deps_.getScene ~= nil then
         conn.scene = deps_.getScene()
         conn:SendRemoteEvent(Shared.EVENTS.CLIENT_READY, true)
-        Shared.SendToServer(Shared.EVENTS.REQUEST_SOCIAL_STATE, {})
+        SocialGardenSystem.RequestSocialState()
         state_.serverEnabled = true
         print("[社交花园] 已绑定后台服务器连接")
         return true
@@ -307,6 +328,19 @@ end
 
 function SocialGardenSystem.GetState()
     return state_
+end
+
+function SocialGardenSystem.Update(_dt)
+    requests_:Update(function(record)
+        requests_:SyncLegacyPending(state_.pending)
+        state_.lastSyncText = "请求超时"
+        if record.type == "visit" and record.payload ~= nil and record.payload.targetUserId ~= nil then
+            EnterFallbackGarden(record.payload.targetUserId)
+        elseif deps_.showToast then
+            deps_.showToast("社交请求超时，请稍后重试")
+        end
+        print("[社交花园] 请求超时: " .. tostring(record.type) .. " " .. tostring(record.id))
+    end)
 end
 
 function SocialGardenSystem.IsVisitMode()
@@ -347,7 +381,7 @@ function SocialGardenSystem.SetVisitablePlotIndex(plotIndex)
     if deps_.showToast then deps_.showToast("已将第 " .. plotIndex .. " 块地设为可参观地块") end
     SocialGardenSystem.UploadSnapshot()
     if deps_.markDirty then deps_.markDirty() end
-    if deps_.rebuildUI then deps_.rebuildUI() end
+    EmitSocialChanged("updated")
     return true
 end
 
@@ -358,9 +392,11 @@ end
 function SocialGardenSystem.UploadSnapshot()
     local snapshot = BuildSnapshot()
     state_.lastSyncText = "同步中..."
-    if SendRequest(Shared.EVENTS.SAVE_GARDEN, { snapshot = snapshot }) then
+    local payload = BeginRequest("saveGarden", { snapshot = snapshot })
+    if SendRequest(Shared.EVENTS.SAVE_GARDEN, payload) then
         return true
     end
+    FinishRequest(payload.requestId, "saveGarden")
     state_.lastSyncText = "本地预览"
     if clientCloud ~= nil then
         clientCloud:BatchSet()
@@ -381,14 +417,16 @@ function SocialGardenSystem.UploadSnapshot()
 end
 
 function SocialGardenSystem.RequestLeaderboard()
-    state_.pending.rank = true
-    if SendRequest(Shared.EVENTS.REQUEST_RANK, { count = 20 }) then return true end
-    EnsureDemoData()
-    state_.pending.rank = false
+    local payload = BeginRequest("rank", { count = 20 })
+    if SendRequest(Shared.EVENTS.REQUEST_RANK, payload) then return true end
+    FinishRequest(payload.requestId, "rank")
+    if ALLOW_DEMO_SOCIAL then EnsureDemoData() end
+    if deps_.showToast then deps_.showToast("网络异常，排行榜暂时无法读取") end
     return false
 end
 
 local function MergeLeaderboardWithFallback(list)
+    if ALLOW_DEMO_SOCIAL ~= true then return list or {} end
     EnsureDemoData()
     local merged = {}
     local seen = {}
@@ -415,12 +453,12 @@ local function MergeLeaderboardWithFallback(list)
 end
 
 function SocialGardenSystem.GetLeaderboard()
-    EnsureDemoData()
+    if ALLOW_DEMO_SOCIAL then EnsureDemoData() end
     return state_.leaderboard
 end
 
 function SocialGardenSystem.GetFriends()
-    EnsureDemoData()
+    if ALLOW_DEMO_SOCIAL then EnsureDemoData() end
     local rows = {}
     local seen = {}
     for _, entry in ipairs(state_.recommendedPlayers or {}) do
@@ -447,7 +485,9 @@ function SocialGardenSystem.GetStealLogs()
 end
 
 function SocialGardenSystem.RequestSocialState()
-    if SendRequest(Shared.EVENTS.REQUEST_SOCIAL_STATE, {}) then return true end
+    local payload = BeginRequest("socialState", {})
+    if SendRequest(Shared.EVENTS.REQUEST_SOCIAL_STATE, payload) then return true end
+    FinishRequest(payload.requestId, "socialState")
     return false
 end
 
@@ -456,28 +496,33 @@ local function EnterDemoGarden(userId)
     if entry == nil then return false end
     local garden = BuildDemoGarden(entry.userId, entry.nickname, entry.score, tonumber(entry.userId) or 0, true)
     EnterVisitMode(garden)
-    state_.pending.visit = false
+    FinishRequest(nil, "visit")
     if deps_.showToast then deps_.showToast("正在拜访 " .. entry.nickname .. " 的花园") end
     return true
 end
 
-local function EnterFallbackGarden(userId)
+EnterFallbackGarden = function(userId)
+    if ALLOW_DEMO_SOCIAL ~= true then
+        FinishRequest(nil, "visit")
+        if deps_.showToast then deps_.showToast("网络异常，无法拜访该花园") end
+        return false
+    end
     local entry = FindDemoPlayer(userId)
     if entry ~= nil then
         return EnterDemoGarden(userId)
     end
     local garden = BuildFallbackGarden(userId, "游客花园")
     EnterVisitMode(garden)
-    state_.pending.visit = false
+    FinishRequest(nil, "visit")
     if deps_.showToast then deps_.showToast("该玩家暂无花园数据，正在展示兜底花园") end
     return true
 end
 
 function SocialGardenSystem.VisitPlayer(userId)
     if userId == nil then return false end
-    state_.pending.visit = true
+    local payload = BeginRequest("visit", { targetUserId = userId })
     state_.pending.visitUserId = userId
-    if SendRequest(Shared.EVENTS.REQUEST_GARDEN, { targetUserId = userId }) then return true end
+    if SendRequest(Shared.EVENTS.REQUEST_GARDEN, payload) then return true end
     return EnterFallbackGarden(userId)
 end
 
@@ -554,8 +599,14 @@ function SocialGardenSystem.RequestSteal(cropIndex, cropId)
     if garden.isFallback == true and ResolveLocalSteal ~= nil then
         return ResolveLocalSteal(cropIndex, cropId)
     end
-    if SendRequest(Shared.EVENTS.REQUEST_STEAL, { targetUserId = garden.userId, cropIndex = cropIndex, cropId = cropId }) then
+    local payload = BeginRequest("steal", { targetUserId = garden.userId, cropIndex = cropIndex, cropId = cropId })
+    if SendRequest(Shared.EVENTS.REQUEST_STEAL, payload) then
         return true
+    end
+    FinishRequest(payload.requestId, "steal")
+    if ALLOW_DEMO_SOCIAL ~= true then
+        if deps_.showToast then deps_.showToast("网络异常，偷菜失败") end
+        return false
     end
     if (state_.daily.stealCount or 0) >= DAILY_STEAL_LIMIT then
         if deps_.showToast then deps_.showToast("今日偷菜次数已用完") end
@@ -580,7 +631,7 @@ function SocialGardenSystem.RequestSteal(cropIndex, cropId)
         end
     end
     if deps_.markDirty then deps_.markDirty() end
-    if deps_.rebuildUI then deps_.rebuildUI() end
+    EmitSocialChanged("updated")
     return true
 end
 
@@ -591,8 +642,14 @@ function SocialGardenSystem.SendSeedGift(targetUserId, seedId)
         if deps_.showToast then deps_.showToast("请输入好友玩家 ID") end
         return false
     end
-    if SendRequest(Shared.EVENTS.SEND_SEED_GIFT, { targetUserId = targetUserId, seedId = seedId, count = 1 }) then
+    local payload = BeginRequest("gift", { targetUserId = targetUserId, seedId = seedId, count = 1 })
+    if SendRequest(Shared.EVENTS.SEND_SEED_GIFT, payload) then
         return true
+    end
+    FinishRequest(payload.requestId, "gift")
+    if ALLOW_DEMO_SOCIAL ~= true then
+        if deps_.showToast then deps_.showToast("网络异常，赠送失败") end
+        return false
     end
     if (state_.daily.giftSentCount or 0) >= DAILY_GIFT_LIMIT then
         if deps_.showToast then deps_.showToast("今日赠送次数已用完") end
@@ -604,7 +661,9 @@ function SocialGardenSystem.SendSeedGift(targetUserId, seedId)
 end
 
 function SocialGardenSystem.RequestGifts()
-    if SendRequest(Shared.EVENTS.REQUEST_GIFTS, {}) then return true end
+    local payload = BeginRequest("gifts", {})
+    if SendRequest(Shared.EVENTS.REQUEST_GIFTS, payload) then return true end
+    FinishRequest(payload.requestId, "gifts")
     return false
 end
 
@@ -614,8 +673,14 @@ end
 
 function SocialGardenSystem.ClaimGift(gift)
     if gift == nil then return false end
-    if SendRequest(Shared.EVENTS.CLAIM_GIFT, { giftId = gift.giftId, seedId = gift.seedId, count = gift.count }) then
+    local payload = BeginRequest("claimGift", { giftId = gift.giftId })
+    if SendRequest(Shared.EVENTS.CLAIM_GIFT, payload) then
         return true
+    end
+    FinishRequest(payload.requestId, "claimGift")
+    if ALLOW_DEMO_SOCIAL ~= true then
+        if deps_.showToast then deps_.showToast("网络异常，领取失败") end
+        return false
     end
     local ok = ApplyGiftReward(gift)
     if ok then
@@ -645,6 +710,10 @@ local function ShowStealResult(message)
 end
 
 ResolveLocalSteal = function(cropIndex, cropId)
+    if ALLOW_DEMO_SOCIAL ~= true then
+        ShowStealResult("网络异常，偷菜失败")
+        return false
+    end
     local garden = state_.visitGarden
     local crop = garden and garden.plot and garden.plot.plants and garden.plot.plants[cropIndex]
     if crop == nil then
@@ -670,7 +739,7 @@ ResolveLocalSteal = function(cropIndex, cropId)
         ShowStealResult("偷取成功，但没有获得种子")
     end
     if deps_.markDirty then deps_.markDirty() end
-    if deps_.rebuildUI then deps_.rebuildUI() end
+    EmitSocialChanged("updated")
     return true
 end
 
@@ -687,11 +756,15 @@ end
 function SocialGardenSystem.HasLikedVisitGarden()
     local garden = state_.visitGarden
     if garden == nil then return false end
-    if garden.isFallback ~= true then return false end
+    if garden.likedByMe == true then return true end
     return state_.likedGardens[tostring(garden.userId or "fallback")] == true
 end
 
 function SocialGardenSystem.ApplyLocalLike(garden)
+    if ALLOW_DEMO_SOCIAL ~= true then
+        if deps_.showToast then deps_.showToast("网络异常，点赞失败") end
+        return false
+    end
     if garden == nil then return false end
     local key = tostring(garden.userId or "fallback")
     state_.likedGardens[key] = true
@@ -701,7 +774,7 @@ function SocialGardenSystem.ApplyLocalLike(garden)
     end
     garden.likeCount = garden.baseLikeCount + (tonumber(state_.likeDeltas[key] or 0) or 0)
     if deps_.showToast then deps_.showToast("已点赞这个花园") end
-    if deps_.rebuildUI then deps_.rebuildUI() end
+    EmitSocialChanged("updated")
     if deps_.markDirty then deps_.markDirty() end
     return true
 end
@@ -711,9 +784,11 @@ function SocialGardenSystem.LikeVisitGarden()
     if garden == nil then return false end
     local key = tostring(garden.userId or "fallback")
     if garden.isFallback ~= true then
-        if SendRequest(Shared.EVENTS.LIKE_GARDEN, { targetUserId = garden.userId }) then
+        local payload = BeginRequest("like", { targetUserId = garden.userId })
+        if SendRequest(Shared.EVENTS.LIKE_GARDEN, payload) then
             return true
         end
+        FinishRequest(payload.requestId, "like")
     end
     if state_.likedGardens[key] == true then
         if deps_.showToast then deps_.showToast("已经点赞过这个花园了") end
@@ -763,14 +838,19 @@ function SocialGardenSystem.GetDailyText()
     return string.format("偷菜 %d/%d · 赠送 %d/%d", state_.daily.stealCount or 0, DAILY_STEAL_LIMIT, state_.daily.giftSentCount or 0, DAILY_GIFT_LIMIT)
 end
 
+EmitSocialChanged = function(reason)
+    EventBus.Emit(UIEvents.SOCIAL_CHANGED, { reason = reason })
+end
+
 function SocialGardenSystem.HandleSaveSnapshotResult(data)
+    FinishRequest(data.requestId, "saveGarden")
     state_.lastSyncText = data.success and "已同步" or "同步失败"
     if deps_.showToast then deps_.showToast(data.message or state_.lastSyncText) end
 end
 
 function SocialGardenSystem.HandleGardenResponse(data)
-    local pendingUserId = state_.pending.visitUserId
-    state_.pending.visit = false
+    local pending = FinishRequest(data.requestId, "visit")
+    local pendingUserId = pending and pending.payload and pending.payload.targetUserId or state_.pending.visitUserId
     state_.pending.visitUserId = nil
     if not data.success then
         if pendingUserId ~= nil and EnterFallbackGarden(pendingUserId) then return end
@@ -778,20 +858,24 @@ function SocialGardenSystem.HandleGardenResponse(data)
         return
     end
     EnterVisitMode(data.garden)
+    if data.garden ~= nil and data.garden.likedByMe == true then
+        state_.likedGardens[tostring(data.garden.userId or "fallback")] = true
+    end
     if deps_.showToast then deps_.showToast("正在拜访 " .. (data.garden.nickname or "好友") .. " 的花园") end
 end
 
 function SocialGardenSystem.HandleRankResponse(data)
-    state_.pending.rank = false
+    FinishRequest(data.requestId, "rank")
     if data.success and type(data.list) == "table" then
         state_.leaderboard = MergeLeaderboardWithFallback(data.list)
-        if deps_.rebuildUI then deps_.rebuildUI() end
+        EmitSocialChanged("updated")
     elseif deps_.showToast then
         deps_.showToast(data.message or "排行榜读取失败")
     end
 end
 
 function SocialGardenSystem.HandleStealResponse(data)
+    FinishRequest(data.requestId, "steal")
     if data.success then
         SocialGardenSystem.MarkVisitCropStolen(data.cropId, data.cropIndex)
         if data.reward ~= nil then ApplyStealReward(data.reward) end
@@ -799,24 +883,26 @@ function SocialGardenSystem.HandleStealResponse(data)
         SocialGardenSystem.RequestSocialState()
         if deps_.showToast then deps_.showToast(data.message or "偷菜成功") end
         if deps_.markDirty then deps_.markDirty() end
-        if deps_.rebuildUI then deps_.rebuildUI() end
+        EmitSocialChanged("updated")
     elseif deps_.showToast then
         deps_.showToast(data.message or "偷菜失败")
     end
 end
 
 function SocialGardenSystem.HandleSocialStateResponse(data)
+    FinishRequest(data.requestId, "socialState")
     if data.success then
         if type(data.recommendedPlayers) == "table" then state_.recommendedPlayers = data.recommendedPlayers end
         if type(data.recentVisitors) == "table" then state_.recentVisitors = data.recentVisitors end
         if type(data.stealLogs) == "table" then state_.stealLogs = data.stealLogs end
-        if deps_.rebuildUI then deps_.rebuildUI() end
+        EmitSocialChanged("updated")
     elseif deps_.showToast then
         deps_.showToast(data.message or "社交数据读取失败")
     end
 end
 
 function SocialGardenSystem.HandleSendSeedGiftResponse(data)
+    FinishRequest(data.requestId, "gift")
     if data.success then
         if data.daily ~= nil then state_.daily.giftSentCount = data.daily.giftSentCount or state_.daily.giftSentCount end
         if deps_.showToast then deps_.showToast(data.message or "种子已送出") end
@@ -826,6 +912,7 @@ function SocialGardenSystem.HandleSendSeedGiftResponse(data)
 end
 
 function SocialGardenSystem.HandleLikeGardenResponse(data)
+    FinishRequest(data.requestId, "like")
     local garden = state_.visitGarden
     if data.success then
         if garden ~= nil then
@@ -836,7 +923,7 @@ function SocialGardenSystem.HandleLikeGardenResponse(data)
             garden.likeCount = garden.baseLikeCount
         end
         if deps_.showToast then deps_.showToast(data.message or "已点赞这个花园") end
-        if deps_.rebuildUI then deps_.rebuildUI() end
+        EmitSocialChanged("updated")
         if deps_.markDirty then deps_.markDirty() end
     else
         if data.alreadyLiked == true and garden ~= nil then
@@ -846,7 +933,7 @@ function SocialGardenSystem.HandleLikeGardenResponse(data)
                 garden.baseLikeCount = tonumber(data.likeCount) or tonumber(garden.likeCount or 0) or 0
                 garden.likeCount = garden.baseLikeCount
             end
-            if deps_.rebuildUI then deps_.rebuildUI() end
+            EmitSocialChanged("updated")
             if deps_.markDirty then deps_.markDirty() end
         end
         if deps_.showToast then deps_.showToast(data.message or "点赞失败") end
@@ -854,6 +941,7 @@ function SocialGardenSystem.HandleLikeGardenResponse(data)
 end
 
 function SocialGardenSystem.HandleGiftsResponse(data)
+    FinishRequest(data.requestId, "gifts")
     if data.success and type(data.gifts) == "table" then
         state_.gifts = data.gifts
     elseif deps_.showToast then
@@ -862,8 +950,13 @@ function SocialGardenSystem.HandleGiftsResponse(data)
 end
 
 function SocialGardenSystem.HandleClaimGiftResponse(data)
+    FinishRequest(data.requestId, "claimGift")
     if data.success then
-        ApplyGiftReward(data.gift or data.reward)
+        if data.state ~= nil and deps_.applyEconomyState ~= nil then
+            deps_.applyEconomyState(data.state)
+        else
+            ApplyGiftReward(data.gift or data.reward)
+        end
         if deps_.showToast then deps_.showToast(data.message or "礼物已领取") end
         SocialGardenSystem.RequestGifts()
         if deps_.markDirty then deps_.markDirty() end

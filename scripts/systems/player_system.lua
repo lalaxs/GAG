@@ -7,7 +7,10 @@
 
 local PlayerSystem = {}
 
+local EventBus = require("utils.event_bus")
+local UIEvents = require("utils.ui_events")
 local GameConfig = require("config.game_config")
+local Shared = require("network.shared")
 
 local SAVE_PATH = "player_profile.json"
 local NICKNAME_MIN_LENGTH = 2
@@ -67,8 +70,13 @@ local state_ = {
 }
 
 local callbacks_ = {}
+local subscribedProfileEvent_ = false
+local nicknameFetchAttempts_ = 0
+local nicknameRetryTimer_ = 0
+local MAX_NICKNAME_FETCH_ATTEMPTS = 5
 
 local function NotifyChanged()
+    EventBus.Emit(UIEvents.PLAYER_CHANGED, { reason = "profile_changed" })
     if callbacks_.onChanged then
         callbacks_.onChanged()
     end
@@ -178,16 +186,19 @@ function PlayerSystem.ValidateNickname(name)
 end
 
 local function GetCurrentUserId()
-    if common ~= nil and common.get_user_id ~= nil then
-        local ok, userId = pcall(common.get_user_id)
-        if ok and userId ~= nil and userId ~= 0 then
-            return userId
-        end
+    if clientCloud ~= nil and clientCloud.userId ~= nil and clientCloud.userId ~= 0 and clientCloud.userId ~= "" then
+        return clientCloud.userId
     end
     local lobbyService = rawget(_G, "lobby")
     if lobbyService ~= nil and lobbyService.GetMyUserId ~= nil then
         local ok, userId = pcall(function() return lobbyService:GetMyUserId() end)
-        if ok and userId ~= nil and userId ~= 0 then
+        if ok and userId ~= nil and userId ~= 0 and userId ~= "" then
+            return userId
+        end
+    end
+    if common ~= nil and common.get_user_id ~= nil then
+        local ok, userId = pcall(common.get_user_id)
+        if ok and userId ~= nil and userId ~= 0 and userId ~= "" then
             return userId
         end
     end
@@ -233,16 +244,19 @@ end
 local function FetchTapNickname()
     local userId = GetCurrentUserId()
     state_.userId = userId
+    nicknameFetchAttempts_ = nicknameFetchAttempts_ + 1
     if userId == nil then
-        print("[玩家资料] 当前无法获取 Tap 用户 ID，使用默认昵称")
-        NotifyChanged()
-        return
+        if nicknameFetchAttempts_ >= MAX_NICKNAME_FETCH_ATTEMPTS then
+            print("[玩家资料] 客户端暂未获得 Tap 用户 ID，等待服务器认证资料")
+        end
+        return false
     end
 
     if GetUserNickname == nil then
-        print("[玩家资料] 当前环境不支持昵称查询，使用默认昵称")
-        NotifyChanged()
-        return
+        if nicknameFetchAttempts_ >= MAX_NICKNAME_FETCH_ATTEMPTS then
+            print("[玩家资料] 当前环境不支持客户端昵称查询，等待服务器认证资料")
+        end
+        return false
     end
 
     GetUserNickname({
@@ -250,26 +264,51 @@ local function FetchTapNickname()
         onSuccess = function(nicknames)
             if type(nicknames) == "table" then
                 for _, info in ipairs(nicknames) do
-                    if info.userId == userId and info.nickname ~= nil and info.nickname ~= "" then
+                    if tostring(info.userId) == tostring(userId) and info.nickname ~= nil and info.nickname ~= "" then
                         state_.tapNickname = TrimName(info.nickname)
-                        print("[玩家资料] 已读取 Tap 昵称: " .. state_.tapNickname)
+                        print("[玩家资料] 已读取 Tap 账号: " .. tostring(userId) .. " / " .. state_.tapNickname)
                         NotifyChanged()
                         return
                     end
                 end
             end
-            print("[玩家资料] 未查询到 Tap 昵称，使用默认昵称")
+            print("[玩家资料] 未查询到 Tap 昵称，使用默认昵称，userId=" .. tostring(userId))
             NotifyChanged()
         end,
         onError = function(errorCode)
-            print("[玩家资料] 查询 Tap 昵称失败: " .. tostring(errorCode))
+            print("[玩家资料] 查询 Tap 昵称失败: " .. tostring(errorCode) .. ", userId=" .. tostring(userId))
             NotifyChanged()
         end,
     })
+    return true
+end
+
+local function ApplyServerProfile(data)
+    if type(data) ~= "table" or data.success == false then return false end
+    local userId = data.userId
+    if userId == nil or userId == 0 or userId == "" then return false end
+    local nickname = state_.tapNickname
+    if data.nickname ~= nil and data.nickname ~= "" then
+        nickname = TrimName(data.nickname)
+    end
+    if tostring(state_.userId) == tostring(userId) and state_.tapNickname == nickname then
+        return true
+    end
+    state_.userId = userId
+    state_.tapNickname = nickname
+    print("[玩家资料] 已从服务器认证资料读取 Tap 账号: " .. tostring(state_.userId) .. " / " .. tostring(state_.tapNickname))
+    NotifyChanged()
+    return true
+end
+
+function HandlePlayerProfileResponse(eventType, eventData)
+    ApplyServerProfile(Shared.ReadEventData(eventData))
 end
 
 function PlayerSystem.Init(callbacks)
     callbacks_ = callbacks or {}
+    nicknameFetchAttempts_ = 0
+    nicknameRetryTimer_ = 0
     state_ = {
         userId = nil,
         tapNickname = "Tap玩家",
@@ -278,7 +317,25 @@ function PlayerSystem.Init(callbacks)
         unlockedAvatars = BuildDefaultUnlockedAvatars(),
     }
     LoadLocalProfile()
+    if subscribedProfileEvent_ ~= true and network ~= nil and IsClientMode ~= nil and IsClientMode() then
+        network:RegisterRemoteEvent(Shared.EVENTS.PLAYER_PROFILE)
+        SubscribeToEvent(Shared.EVENTS.PLAYER_PROFILE, "HandlePlayerProfileResponse")
+        subscribedProfileEvent_ = true
+    end
     FetchTapNickname()
+end
+
+function PlayerSystem.Update(dt)
+    if (state_.userId ~= nil and state_.tapNickname ~= "Tap玩家") or nicknameFetchAttempts_ >= MAX_NICKNAME_FETCH_ATTEMPTS then return end
+    nicknameRetryTimer_ = nicknameRetryTimer_ + (dt or 0)
+    if nicknameRetryTimer_ < 1.0 then return end
+    nicknameRetryTimer_ = 0
+    FetchTapNickname()
+end
+
+function PlayerSystem.RetryFetchTapProfile()
+    if state_.userId ~= nil and state_.tapNickname ~= "Tap玩家" then return true end
+    return FetchTapNickname()
 end
 
 function PlayerSystem.GetUserId()

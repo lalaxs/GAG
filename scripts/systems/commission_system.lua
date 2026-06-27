@@ -7,6 +7,8 @@
 -- ============================================================================
 
 local AudioSystem = require("systems.audio_system")
+local EventBus = require("utils.event_bus")
+local UIEvents = require("utils.ui_events")
 
 local CommissionSystem = {}
 
@@ -23,6 +25,10 @@ local state_ = {
     timer = 0,
     lastRefreshRealTime = 0,
 }
+
+local function EmitCommissionChanged(reason)
+    EventBus.Emit(UIEvents.COMMISSION_CHANGED, { reason = reason })
+end
 
 local CUSTOMER_NAMES = {
     "露露", "阿麦", "青木", "莓莓", "小枫", "云朵商人", "花园旅人", "星屑收藏家",
@@ -268,6 +274,7 @@ local function RefreshCommissions()
     if callbacks_.onRefresh then
         callbacks_.onRefresh()
     end
+    EmitCommissionChanged("refreshed")
     print(string.format("[委托] 已刷新 %d 个委托，下次刷新 %s", #state_.commissions, FormatTimer(state_.timer)))
 end
 
@@ -373,6 +380,9 @@ function CommissionSystem.CompleteCommission(commission, item)
     if callbacks_.showToast then
         callbacks_.showToast(text)
     end
+    EmitCommissionChanged("completed")
+    EventBus.Emit(UIEvents.INVENTORY_CHANGED, { reason = "commission_completed" })
+    EventBus.Emit(UIEvents.SEEDPACK_CHANGED, { reason = "commission_completed" })
     print("[委托] " .. text)
     return true, text
 end

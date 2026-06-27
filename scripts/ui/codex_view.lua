@@ -120,7 +120,7 @@ local function ShowPlantDetail(plantIndex)
     detailModal_ = UI.Modal {
         title = title,
         size = "md",
-        closeOnOverlay = false,
+        closeOnOverlay = true,
         showCloseButton = true,
         contentPadding = {12, 16, 16, 16},
         onClose = function()
@@ -395,7 +395,7 @@ function CodexView.Show()
     codexModal_ = UI.Modal {
         title = "作物图鉴",
         size = "lg",
-        closeOnOverlay = false,
+        closeOnOverlay = true,
         showCloseButton = true,
         contentPadding = {12, 14, 16, 14},
         onClose = function()

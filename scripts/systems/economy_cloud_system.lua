@@ -6,13 +6,18 @@
 -- ============================================================================
 
 local Shared = require("network.shared")
+local EventBus = require("utils.event_bus")
+local UIEvents = require("utils.ui_events")
+local RequestStateMachine = require("client.request_state_machine")
 
 local EconomyCloudSystem = {}
 
 local deps_ = {}
+local requests_ = RequestStateMachine.Create("economy", { timeout = 14.0 })
 local state_ = {
     serverEnabled = false,
     ready = false,
+    authFarmReady = false,
     pending = {},
     lastSyncText = "未同步",
 }
@@ -21,11 +26,38 @@ local function IsClientNetworkAvailable()
     return network ~= nil and IsClientMode ~= nil and IsClientMode() and network:GetServerConnection() ~= nil
 end
 
+local function IsAuthoritativeClient()
+    return IsClientMode ~= nil and IsClientMode()
+end
+
+local function BlockIfAuthoritativeNotReady(requireFarm)
+    if not IsAuthoritativeClient() then return false end
+    local ready = state_.ready == true and (requireFarm ~= true or state_.authFarmReady == true)
+    if IsClientNetworkAvailable() and ready then return false end
+    state_.lastSyncText = "同步中..."
+    if deps_.showToast then deps_.showToast("正在同步服务器数据，请稍后") end
+    return true
+end
+
 local function SendRequest(eventName, payload)
     if IsClientNetworkAvailable() then
         return Shared.SendToServer(eventName, payload)
     end
     return false
+end
+
+local function BeginRequest(requestType, payload)
+    local nextPayload = payload or {}
+    local record
+    nextPayload, record = requests_:Begin(requestType, nextPayload)
+    requests_:SyncLegacyPending(state_.pending)
+    return nextPayload, record
+end
+
+local function FinishRequest(requestId, requestType)
+    local record = requests_:Finish(requestId, requestType)
+    requests_:SyncLegacyPending(state_.pending)
+    return record
 end
 
 local function ReplaceTable(target, source)
@@ -69,8 +101,10 @@ local function ApplyState(cloudState)
     end
     if deps_.syncInventoryRefs then deps_.syncInventoryRefs() end
     if deps_.markDirty then deps_.markDirty() end
-    if deps_.rebuildUI then deps_.rebuildUI() end
-    if deps_.refreshUI then deps_.refreshUI(true) end
+    EventBus.Emit(UIEvents.WALLET_CHANGED, { reason = "economy_state_applied" })
+    EventBus.Emit(UIEvents.INVENTORY_CHANGED, { reason = "economy_state_applied" })
+    EventBus.Emit(UIEvents.SEEDPACK_CHANGED, { reason = "economy_state_applied" })
+    EventBus.Emit(UIEvents.FARM_CHANGED, { reason = "economy_state_applied" })
     return true
 end
 
@@ -80,91 +114,154 @@ function EconomyCloudSystem.Init(deps)
     Shared.RegisterClientEvents()
     if network ~= nil and IsClientMode ~= nil and IsClientMode() then
         SubscribeToEvent(Shared.EVENTS.ECONOMY_STATE_RESPONSE, "HandleGardenEconomyStateResponse")
+        SubscribeToEvent(Shared.EVENTS.AUTH_FARM_RESPONSE, "HandleGardenAuthFarmResponse")
         SubscribeToEvent(Shared.EVENTS.SAVE_ECONOMY_STATE_RESULT, "HandleGardenSaveEconomyStateResult")
         SubscribeToEvent(Shared.EVENTS.BUY_SEED_RESPONSE, "HandleGardenBuySeedResponse")
+        SubscribeToEvent(Shared.EVENTS.CLEAR_SAVE_RESPONSE, "HandleGardenClearSaveResponse")
         SubscribeToEvent(Shared.EVENTS.PLANT_SEED_RESPONSE, "HandleGardenPlantSeedResponse")
         SubscribeToEvent(Shared.EVENTS.HARVEST_CROP_RESPONSE, "HandleGardenHarvestCropResponse")
+        SubscribeToEvent(Shared.EVENTS.OPEN_SEED_PACK_RESPONSE, "HandleGardenOpenSeedPackResponse")
         SubscribeToEvent(Shared.EVENTS.SELL_HARVESTED_RESPONSE, "HandleGardenSellHarvestedResponse")
         SubscribeToEvent("ServerReady", "HandleGardenEconomyServerReady")
     end
+end
+
+function EconomyCloudSystem.IsAuthoritativeClient()
+    return IsAuthoritativeClient()
+end
+
+function EconomyCloudSystem.IsReady(requireFarm)
+    if not IsAuthoritativeClient() then return true end
+    return IsClientNetworkAvailable() and state_.ready == true and (requireFarm ~= true or state_.authFarmReady == true)
+end
+
+function EconomyCloudSystem.IsBlocked(requireFarm)
+    return BlockIfAuthoritativeNotReady(requireFarm)
 end
 
 function EconomyCloudSystem.GetState()
     return state_
 end
 
+function EconomyCloudSystem.Update(_dt)
+    requests_:Update(function(record)
+        requests_:SyncLegacyPending(state_.pending)
+        state_.lastSyncText = "请求超时"
+        if deps_.showToast then deps_.showToast("服务器请求超时，请稍后重试") end
+        print("[经济同步] 请求超时: " .. tostring(record.type) .. " " .. tostring(record.id))
+    end)
+end
+
 function EconomyCloudSystem.RequestState()
-    state_.pending.load = true
-    if SendRequest(Shared.EVENTS.REQUEST_ECONOMY_STATE, {}) then return true end
-    state_.pending.load = false
+    local payload = BeginRequest("load", {})
+    if SendRequest(Shared.EVENTS.REQUEST_ECONOMY_STATE, payload) then return true end
+    FinishRequest(payload.requestId, "load")
+    return false
+end
+
+function EconomyCloudSystem.RequestAuthFarm()
+    local payload = BeginRequest("authFarm", {})
+    if SendRequest(Shared.EVENTS.REQUEST_AUTH_FARM, payload) then return true end
+    FinishRequest(payload.requestId, "authFarm")
     return false
 end
 
 function EconomyCloudSystem.UploadState()
-    local payload = { state = BuildState() }
-    state_.lastSyncText = "同步中..."
-    if SendRequest(Shared.EVENTS.SAVE_ECONOMY_STATE, payload) then return true end
-    state_.lastSyncText = "本地预览"
+    state_.lastSyncText = IsClientNetworkAvailable() and "服务器权威" or "本地预览"
     return false
 end
 
-function EconomyCloudSystem.BuySeed(plantIndex, price)
-    state_.pending.buy = true
-    if SendRequest(Shared.EVENTS.BUY_SEED, { plantIndex = plantIndex, price = price }) then return true end
-    state_.pending.buy = false
+function EconomyCloudSystem.BuySeed(plantIndex, price, count)
+    if BlockIfAuthoritativeNotReady(false) then return false end
+    local payload = BeginRequest("buy", { plantIndex = plantIndex, price = price, count = count or 1 })
+    if SendRequest(Shared.EVENTS.BUY_SEED, payload) then return true end
+    FinishRequest(payload.requestId, "buy")
+    return false
+end
+
+function EconomyCloudSystem.ClearSave()
+    if BlockIfAuthoritativeNotReady(false) then return false end
+    local payload = BeginRequest("clearSave", {})
+    if SendRequest(Shared.EVENTS.CLEAR_SAVE, payload) then return true end
+    FinishRequest(payload.requestId, "clearSave")
     return false
 end
 
 function EconomyCloudSystem.PlantSeed(payload)
-    payload = payload or {}
-    state_.pending.plant = payload
+    if BlockIfAuthoritativeNotReady(true) then return false end
+    payload = BeginRequest("plant", payload or {})
     if SendRequest(Shared.EVENTS.PLANT_SEED, payload) then return true end
-    state_.pending.plant = nil
+    FinishRequest(payload.requestId, "plant")
     return false
 end
 
 function EconomyCloudSystem.HarvestCrop(payload)
-    payload = payload or {}
-    state_.pending.harvest = payload
+    if BlockIfAuthoritativeNotReady(true) then return false end
+    payload = BeginRequest("harvest", payload or {})
     if SendRequest(Shared.EVENTS.HARVEST_CROP, payload) then return true end
-    state_.pending.harvest = nil
+    FinishRequest(payload.requestId, "harvest")
+    return false
+end
+
+function EconomyCloudSystem.OpenSeedPack(packId, count, openAll)
+    if BlockIfAuthoritativeNotReady(false) then return false end
+    local payload = BeginRequest("openPack", {
+        packId = packId,
+        count = count or 1,
+        openAll = openAll == true,
+    })
+    if SendRequest(Shared.EVENTS.OPEN_SEED_PACK, payload) then return true end
+    FinishRequest(payload.requestId, "openPack")
     return false
 end
 
 function EconomyCloudSystem.SellAllHarvested()
-    state_.pending.sell = true
-    if SendRequest(Shared.EVENTS.SELL_HARVESTED, { mode = "all" }) then return true end
-    state_.pending.sell = false
+    if BlockIfAuthoritativeNotReady(false) then return false end
+    local payload = BeginRequest("sell", { mode = "all" })
+    if SendRequest(Shared.EVENTS.SELL_HARVESTED, payload) then return true end
+    FinishRequest(payload.requestId, "sell")
     return false
 end
 
 function EconomyCloudSystem.SellBagItem(item)
+    if BlockIfAuthoritativeNotReady(false) then return false end
     local harvested = deps_.InventorySystem and deps_.InventorySystem.GetHarvested and deps_.InventorySystem.GetHarvested() or {}
     local targetIndex = 0
     for index, row in ipairs(harvested) do
         if row == item then targetIndex = index; break end
     end
     if targetIndex <= 0 then return false end
-    state_.pending.sell = true
-    if SendRequest(Shared.EVENTS.SELL_HARVESTED, { mode = "index", index = targetIndex }) then return true end
-    state_.pending.sell = false
+    local payload = BeginRequest("sell", { mode = "index", index = targetIndex })
+    if SendRequest(Shared.EVENTS.SELL_HARVESTED, payload) then return true end
+    FinishRequest(payload.requestId, "sell")
     return false
 end
 
 function EconomyCloudSystem.SellHarvestedByFilter(filter)
-    state_.pending.sell = true
-    if SendRequest(Shared.EVENTS.SELL_HARVESTED, { mode = "filter", filter = filter or {} }) then return true end
-    state_.pending.sell = false
+    if BlockIfAuthoritativeNotReady(false) then return false end
+    local payload = BeginRequest("sell", { mode = "filter", filter = filter or {} })
+    if SendRequest(Shared.EVENTS.SELL_HARVESTED, payload) then return true end
+    FinishRequest(payload.requestId, "sell")
     return false
 end
 
 function EconomyCloudSystem.HandleEconomyStateResponse(data)
-    state_.pending.load = false
+    FinishRequest(data.requestId, "load")
     if data.success and ApplyState(data.state) then
         state_.ready = true
         state_.lastSyncText = "已同步"
     elseif deps_.showToast then
         deps_.showToast(data.message or "经济数据读取失败")
+    end
+end
+
+function EconomyCloudSystem.HandleAuthFarmResponse(data)
+    FinishRequest(data.requestId, "authFarm")
+    if data.success then
+        state_.authFarmReady = true
+        if deps_.onAuthFarmReceived then deps_.onAuthFarmReceived(data.farm) end
+    elseif deps_.showToast then
+        deps_.showToast(data.message or "权威农场读取失败")
     end
 end
 
@@ -178,18 +275,34 @@ function EconomyCloudSystem.HandleSaveEconomyStateResult(data)
 end
 
 function EconomyCloudSystem.HandleBuySeedResponse(data)
-    state_.pending.buy = false
+    FinishRequest(data.requestId, "buy")
     if data.success then
         ApplyState(data.state)
-        if deps_.showToast then deps_.showToast(data.message or "购买成功") end
+        local text = data.message or "购买成功"
+        if deps_.showToast then deps_.showToast(text) end
+        if deps_.showFloatingToast then deps_.showFloatingToast(text) end
     elseif deps_.showToast then
         if data.state ~= nil then ApplyState(data.state) end
         deps_.showToast(data.message or "购买失败")
     end
 end
 
+function EconomyCloudSystem.HandleClearSaveResponse(data)
+    FinishRequest(data.requestId, "clearSave")
+    if data.success then
+        state_.ready = true
+        state_.authFarmReady = true
+        ApplyState(data.state)
+        if deps_.onAuthFarmReceived then deps_.onAuthFarmReceived(data.farm) end
+        if deps_.showToast then deps_.showToast(data.message or "游戏存档已清除") end
+    else
+        if data.state ~= nil then ApplyState(data.state) end
+        if deps_.showToast then deps_.showToast(data.message or "清除存档失败") end
+    end
+end
+
 function EconomyCloudSystem.HandlePlantSeedResponse(data)
-    state_.pending.plant = nil
+    FinishRequest(data.requestId, "plant")
     if data.success then
         ApplyState(data.state)
         if deps_.onPlantSeedConfirmed then deps_.onPlantSeedConfirmed(data) end
@@ -200,7 +313,7 @@ function EconomyCloudSystem.HandlePlantSeedResponse(data)
 end
 
 function EconomyCloudSystem.HandleHarvestCropResponse(data)
-    state_.pending.harvest = nil
+    FinishRequest(data.requestId, "harvest")
     if data.success then
         ApplyState(data.state)
         if deps_.onHarvestCropConfirmed then deps_.onHarvestCropConfirmed(data) end
@@ -210,8 +323,19 @@ function EconomyCloudSystem.HandleHarvestCropResponse(data)
     end
 end
 
+function EconomyCloudSystem.HandleOpenSeedPackResponse(data)
+    FinishRequest(data.requestId, "openPack")
+    if data.success then
+        ApplyState(data.state)
+        if deps_.onSeedPackOpened then deps_.onSeedPackOpened(data) end
+    else
+        if data.state ~= nil then ApplyState(data.state) end
+        if deps_.showToast then deps_.showToast(data.message or "开包失败") end
+    end
+end
+
 function EconomyCloudSystem.HandleSellHarvestedResponse(data)
-    state_.pending.sell = false
+    FinishRequest(data.requestId, "sell")
     if data.success then
         ApplyState(data.state)
         if deps_.showToast then deps_.showToast(data.message or "出售成功") end
@@ -221,8 +345,16 @@ function EconomyCloudSystem.HandleSellHarvestedResponse(data)
     end
 end
 
+function EconomyCloudSystem.ApplyAuthoritativeState(cloudState)
+    return ApplyState(cloudState)
+end
+
 function HandleGardenEconomyStateResponse(eventType, eventData)
     EconomyCloudSystem.HandleEconomyStateResponse(Shared.ReadEventData(eventData))
+end
+
+function HandleGardenAuthFarmResponse(eventType, eventData)
+    EconomyCloudSystem.HandleAuthFarmResponse(Shared.ReadEventData(eventData))
 end
 
 function HandleGardenSaveEconomyStateResult(eventType, eventData)
@@ -233,6 +365,10 @@ function HandleGardenBuySeedResponse(eventType, eventData)
     EconomyCloudSystem.HandleBuySeedResponse(Shared.ReadEventData(eventData))
 end
 
+function HandleGardenClearSaveResponse(eventType, eventData)
+    EconomyCloudSystem.HandleClearSaveResponse(Shared.ReadEventData(eventData))
+end
+
 function HandleGardenPlantSeedResponse(eventType, eventData)
     EconomyCloudSystem.HandlePlantSeedResponse(Shared.ReadEventData(eventData))
 end
@@ -241,12 +377,17 @@ function HandleGardenHarvestCropResponse(eventType, eventData)
     EconomyCloudSystem.HandleHarvestCropResponse(Shared.ReadEventData(eventData))
 end
 
+function HandleGardenOpenSeedPackResponse(eventType, eventData)
+    EconomyCloudSystem.HandleOpenSeedPackResponse(Shared.ReadEventData(eventData))
+end
+
 function HandleGardenSellHarvestedResponse(eventType, eventData)
     EconomyCloudSystem.HandleSellHarvestedResponse(Shared.ReadEventData(eventData))
 end
 
 function HandleGardenEconomyServerReady(eventType, eventData)
     EconomyCloudSystem.RequestState()
+    EconomyCloudSystem.RequestAuthFarm()
 end
 
 return EconomyCloudSystem

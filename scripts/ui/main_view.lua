@@ -544,7 +544,11 @@ local function BuildPlantShell(plantContent)
                     },
                 },
             },
-            plantContent,
+            UI.Panel {
+                id = "plantContentHost",
+                width = "100%",
+                children = { plantContent },
+            },
         },
     }
 end
@@ -638,7 +642,6 @@ local function BuildTalentButton(labels)
                     end
                 end,
             } or nil,
-            ActivityView.BuildButton(),
             SocialView.BuildButton(),
             UI.Button {
                 text = "图鉴",
@@ -660,6 +663,29 @@ local function BuildTalentButton(labels)
                 end,
             },
             labels.talentBadge,
+        },
+    }
+end
+
+local function BuildActivityTopEntry()
+    if not deps_.isFarmView or not deps_.isFarmView() then
+        return UI.Panel { width = 0, height = 0 }
+    end
+    if deps_.isVisitMode and deps_.isVisitMode() then
+        return UI.Panel { width = 0, height = 0 }
+    end
+
+    return UI.Panel {
+        position = "absolute",
+        top = 152,
+        left = 0,
+        right = 0,
+        height = 66,
+        justifyContent = "center",
+        alignItems = "center",
+        pointerEvents = "box-none",
+        children = {
+            ActivityView.BuildButton({ width = 300, height = 66 }),
         },
     }
 end
@@ -686,12 +712,13 @@ function MainView.BuildRoot(labels, children)
         children = {
             (deps_.isVisitMode and deps_.isVisitMode()) and BuildVisitTopHud() or BuildTopHud(labels),
             SocialView.BuildVisitBanner(),
+            BuildActivityTopEntry(),
             (deps_.isFarmView() and (not deps_.isVisitMode or not deps_.isVisitMode())) and BuildTalentButton(labels) or UI.Panel { width = 0, height = 0 },
             (deps_.isVisitMode and deps_.isVisitMode()) and BuildVisitControls(actionButton) or (deps_.isFarmView() and BuildFarmControls(labels, actionButton) or BuildPlantShell(children.plantContent)),
             BuildVisitStealList(),
             BuildCollapseButton(),
-            (deps_.isFarmView() and (not deps_.isVisitMode or not deps_.isVisitMode())) and SettingsView.BuildPlotDisplayButtons() or UI.Panel { width = 0, height = 0 },
-            children.bagDetail,
+            (deps_.isFarmView() or deps_.isPlantView()) and (not deps_.isVisitMode or not deps_.isVisitMode()) and SettingsView.BuildPlotDisplayButtons() or UI.Panel { width = 0, height = 0 },
+            UI.Panel { id = "bagDetailHost", position = "absolute", left = 0, right = 0, top = 0, bottom = 0, pointerEvents = "box-none", children = { children.bagDetail } },
             children.seedPackOverlay,
             children.seedPackOpeningOverlay,
             ModelPreviewView.BuildOverlay(),

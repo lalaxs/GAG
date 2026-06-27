@@ -258,7 +258,7 @@ local function BuildAvatarCard(index, avatar)
                         children = {
                             UI.Label {
                                 text = "锁",
-                                fontSize = 18,
+                                fontSize = 16,
                                 fontWeight = "bold",
                                 fontColor = {255, 250, 230, 255},
                                 textAlign = "center",
@@ -433,7 +433,6 @@ function ProfileView.OpenProfile()
         contentGap = 10,
         onClose = function()
             profileModal_ = nil
-            if deps_.rebuildUI then deps_.rebuildUI() end
         end,
     }
 

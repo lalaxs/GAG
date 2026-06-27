@@ -275,7 +275,11 @@ function BagDetailView.Build(item, isPlantView)
                                 deps_.showToast(text)
                                 FloatingToast.Show(text, { fontSize = 20, duration = 1.5, yRatio = 0.36, priority = 6 })
                             end
-                            deps_.rebuildUI()
+                            if deps_.refreshInventoryPanels then
+                                deps_.refreshInventoryPanels()
+                            else
+                                deps_.rebuildUI()
+                            end
                         end,
                     },
                 },

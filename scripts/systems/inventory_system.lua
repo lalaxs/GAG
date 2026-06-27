@@ -7,11 +7,17 @@
 -- ============================================================================
 
 local InventoryRules = require("systems.inventory_rules")
+local EventBus = require("utils.event_bus")
+local UIEvents = require("utils.ui_events")
 
 local InventorySystem = {}
 
 local cfg_ = nil
 local callbacks_ = {}
+
+local function EmitTaskChanged(reason)
+    EventBus.Emit(UIEvents.TASK_CHANGED, { reason = reason })
+end
 
 local SYNTHESIS_MAP = InventoryRules.SYNTHESIS_MAP
 local PITY_THRESHOLDS = InventoryRules.PITY_THRESHOLDS
@@ -287,7 +293,11 @@ end
 function InventorySystem.AddDailyProgress(key, amount)
     if state_.dailyTaskState.progress[key] == nil then return end
     amount = amount or 1
-    state_.dailyTaskState.progress[key] = math.min(99, state_.dailyTaskState.progress[key] + amount)
+    local before = state_.dailyTaskState.progress[key]
+    state_.dailyTaskState.progress[key] = math.min(99, before + amount)
+    if state_.dailyTaskState.progress[key] ~= before then
+        EmitTaskChanged("progress")
+    end
 end
 
 function InventorySystem.CheckSilverPackRewards()
@@ -573,6 +583,9 @@ function InventorySystem.ClaimDailyReward()
         table.insert(rewards, picked.packId)
     end
     print(string.format("[每日] 领取每日奖励：%s, %s, %s", rewards[1], rewards[2], rewards[3]))
+    EmitTaskChanged("daily_reward_claimed")
+    EventBus.Emit(UIEvents.SEEDPACK_CHANGED, { reason = "daily_reward_claimed" })
+    EventBus.Emit(UIEvents.INVENTORY_CHANGED, { reason = "daily_reward_claimed" })
     return true, rewards
 end
 

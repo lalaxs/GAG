@@ -1157,7 +1157,12 @@ function ActivityView.Init(deps)
 end
 
 function ActivityView.IsOpen()
-    return modal_ ~= nil
+    return modal_ ~= nil or submitModal_ ~= nil or alienResultModal_ ~= nil
+end
+
+function ActivityView.RefreshContent()
+    RefreshMainModalContent()
+    RefreshSubmitModalContent()
 end
 
 function ActivityView.Open()
@@ -1187,24 +1192,113 @@ function ActivityView.Open()
     modal_:Open()
 end
 
-function ActivityView.BuildButton()
-    return UI.Button {
-        text = "活动",
-        width = 69,
-        height = 66,
-        paddingTop = 0,
-        paddingRight = 16,
-        paddingBottom = 5,
+local function GetActivityButtonText()
+    local _, activity = GetActiveActivity()
+    return (activity and activity.name) or "活动"
+end
+
+local function GetActivityButtonTheme()
+    local activityId = nil
+    activityId = GetActiveActivity()
+    local theme = GetTheme(activityId)
+    return {
+        backgroundColor = theme.accent,
+        titleColor = {255, 255, 255, 255},
+        subtitleColor = {255, 255, 255, 230},
+        tagBackgroundColor = theme.accentDark,
+        tagTextColor = {255, 255, 255, 255},
+        borderColor = theme.accentDark,
+    }
+end
+
+local function GetActivityTimeLeftText()
+    local activityConfig = deps_.activityConfig or {}
+    local cycleDays = activityConfig.cycleDays or 3
+    local duration = cycleDays * 24 * 60 * 60
+    local now = os and os.time and os.time() or 0
+    local left = duration - (now % duration)
+    local hours = math.floor(left / 3600)
+    local minutes = math.floor((left % 3600) / 60)
+    if hours <= 0 and minutes <= 0 then
+        minutes = 1
+    end
+    return string.format("%d小时%d分钟", hours, minutes)
+end
+
+function ActivityView.GetButtonText()
+    return GetActivityButtonText()
+end
+
+function ActivityView.BuildButton(options)
+    options = options or {}
+    local width = options.width or 69
+    local height = options.height or 66
+    local theme = GetActivityButtonTheme()
+    return UI.Panel {
+        width = width,
+        height = height,
+        paddingTop = 7,
+        paddingBottom = 7,
         paddingLeft = 16,
-        fontSize = 15,
-        fontWeight = "bold",
-        backgroundColor = {255, 244, 218, 245},
-        fontColor = {190, 92, 72, 255},
-        borderRadius = 14,
-        onClick = function()
+        paddingRight = 16,
+        borderRadius = options.borderRadius or 16,
+        borderWidth = options.borderWidth or 2,
+        borderColor = options.borderColor or theme.borderColor,
+        backgroundColor = options.backgroundColor or theme.backgroundColor,
+        overflow = "visible",
+        justifyContent = "center",
+        alignItems = "center",
+        onTapStart = function(event, widget)
+            widget:SetStyle({ scale = 0.97 })
+        end,
+        onTapEnd = function(event, widget)
+            widget:SetStyle({ scale = 1.0 })
+        end,
+        onTap = function()
             if deps_.suppressWorldTap then deps_.suppressWorldTap() end
             ActivityView.Open()
         end,
+        children = {
+            UI.Label {
+                text = options.text or GetActivityButtonText(),
+                fontSize = options.fontSize or 19,
+                fontWeight = "bold",
+                fontColor = options.titleColor or theme.titleColor,
+                textAlign = "center",
+                maxLines = 1,
+            },
+            UI.Label {
+                text = "活动进行中",
+                fontSize = 11,
+                fontWeight = "bold",
+                fontColor = options.subtitleColor or theme.subtitleColor,
+                textAlign = "center",
+                maxLines = 1,
+                marginTop = 1,
+            },
+            UI.Panel {
+                position = "absolute",
+                right = -5,
+                bottom = -8,
+                paddingTop = 3,
+                paddingBottom = 3,
+                paddingLeft = 8,
+                paddingRight = 8,
+                borderRadius = 10,
+                borderWidth = 2,
+                borderColor = {255, 255, 255, 255},
+                backgroundColor = options.tagBackgroundColor or theme.tagBackgroundColor,
+                children = {
+                    UI.Label {
+                        text = GetActivityTimeLeftText(),
+                        fontSize = 10,
+                        fontWeight = "bold",
+                        fontColor = options.tagTextColor or theme.tagTextColor,
+                        maxLines = 1,
+                    },
+                },
+            },
+        },
     }
 end
 

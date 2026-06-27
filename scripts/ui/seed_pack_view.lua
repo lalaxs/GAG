@@ -6,6 +6,7 @@
 -- ============================================================================
 
 local UI = require("urhox-libs/UI")
+local ModalRegistry = require("ui.modal_registry")
 local ModalAnim = require("ui.modal_anim")
 local FloatingToast = require("ui.floating_toast")
 
@@ -63,9 +64,22 @@ local SeedPackView = {}
 local selectedPackId_ = nil
 local packModal_ = nil
 local batchResultModal_ = nil
+local synthesisModal_ = nil
 
 function SeedPackView.Init(deps)
     deps_ = deps or {}
+end
+
+function SeedPackView.IsOpen()
+    return packModal_ ~= nil or batchResultModal_ ~= nil or synthesisModal_ ~= nil
+end
+
+local function NotifySeedPackChanged()
+    if deps_.emitSeedPackChanged ~= nil then
+        deps_.emitSeedPackChanged()
+    elseif deps_.rebuildUI ~= nil then
+        deps_.rebuildUI()
+    end
 end
 
 -- Modal 函数前向声明（实现在文件末尾，因为依赖后面定义的 BuildPackCardGrid 等）
@@ -278,7 +292,7 @@ local function BuildPackCardGrid()
                         if packModal_ then
                             SeedPackView.RebuildModalContent()
                         else
-                            deps_.rebuildUI()
+                            NotifySeedPackChanged()
                         end
                     end,
                 },
@@ -741,7 +755,6 @@ end
 -- 合成种子包弹窗
 -- ============================================================================
 
-local synthesisModal_ = nil
 local synthSelectedSource_ = nil  -- 选中的源包 ID
 local synthQuantity_ = 1          -- 合成数量
 local BuildSynthesisModalContent   -- 前向声明
@@ -1020,7 +1033,7 @@ function SeedPackView.ShowBatchResultModal(title, results, openedCount)
             batchResultModal_ = nil
             selectedPackId_ = nil
             if deps_.closePackPanel then deps_.closePackPanel() end
-            if deps_.rebuildUI then deps_.rebuildUI() end
+            NotifySeedPackChanged()
         end,
     }
 
@@ -1104,7 +1117,7 @@ function SeedPackView.OpenPackModal()
             packModal_ = nil
             selectedPackId_ = nil
             deps_.closePackPanel()
-            deps_.rebuildUI()
+            NotifySeedPackChanged()
         end,
     }
 

@@ -98,6 +98,29 @@ function UIController.Refresh(force)
     end
 end
 
+function UIController.RefreshPlantContent()
+    local host = UI.FindById("plantContentHost")
+    if host == nil then return false end
+    host:ClearChildren()
+    host:AddChild(BuildPlantTabContent())
+    UIController.Refresh(true)
+    return true
+end
+
+function UIController.RefreshBagDetail()
+    local host = UI.FindById("bagDetailHost")
+    if host == nil then return false end
+    host:ClearChildren()
+    host:AddChild(BagDetailView.Build(deps_.getSelectedBagItem(), deps_.isPlantView()))
+    return true
+end
+
+function UIController.RefreshInventoryPanels()
+    local plantOk = UIController.RefreshPlantContent()
+    local bagOk = UIController.RefreshBagDetail()
+    return plantOk or bagOk
+end
+
 function UIController.Rebuild()
     local previewItem = deps_.getSelectedBagItem()
 

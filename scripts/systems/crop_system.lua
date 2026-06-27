@@ -247,6 +247,12 @@ local function CreateCropFromSave(plot, data)
     local material = deps_.PlantVisual.ResolvePlantMaterial(plant, mutation)
     local crop = {
         config = plant,
+        cropId = data.cropId,
+        serverCropId = data.serverCropId or data.cropId,
+        plantedAt = data.plantedAt,
+        matureAt = data.matureAt,
+        stolen = data.stolen == true,
+        harvested = data.harvested == true,
         plantIndex = plantIndex,
         root = root,
         seedVisual = nil,
@@ -319,6 +325,18 @@ SetVisualScaleByProgress = function(plantData)
     end
 end
 
+function CropSystem.ClearPlots(plots)
+    if plots == nil then return end
+    for _, plot in ipairs(plots) do
+        if plot.plants ~= nil then
+            for _, crop in ipairs(plot.plants) do
+                if crop.root ~= nil then crop.root:Remove() end
+            end
+        end
+        plot.plants = {}
+    end
+end
+
 function CropSystem.RestorePlotsFromSave(plots, data)
     if plots == nil or type(data) ~= "table" then return end
     for plotKey, plotData in pairs(data) do
@@ -342,6 +360,18 @@ function CropSystem.RestorePlotsFromSave(plots, data)
     end
 end
 
+function CropSystem.PlantCropFromServer(plots, plotIndex, cropData)
+    local plot = plots[plotIndex]
+    if plot == nil or not plot.unlocked then return false end
+    if plot.plants == nil then plot.plants = {} end
+    if #plot.plants >= cfg_.CONFIG.MaxCropsPerPlot then return false end
+    local crop = CreateCropFromSave(plot, cropData)
+    if crop == nil then return false end
+    table.insert(plot.plants, crop)
+    print(string.format("服务端播种: 田地%d %s cropId=%s", plotIndex, tostring(crop.name), tostring(crop.cropId)))
+    return true
+end
+
 function CropSystem.GetPlotsSaveData(plots)
     local result = {}
     if plots == nil then return result end
@@ -350,6 +380,12 @@ function CropSystem.GetPlotsSaveData(plots)
         for _, crop in ipairs(plot.plants or {}) do
             table.insert(savedPlants, {
                 plantIndex = crop.plantIndex,
+                cropId = crop.cropId,
+                serverCropId = crop.serverCropId,
+                plantedAt = crop.plantedAt,
+                matureAt = crop.matureAt,
+                stolen = crop.stolen,
+                harvested = crop.harvested,
                 name = crop.name,
                 price = crop.price,
                 sightValue = crop.sightValue,
@@ -727,35 +763,33 @@ function CropSystem.HarvestNearestMature(plots, plotIndex, localPos, options)
     print("收获: " .. crop.name .. " 价值 " .. crop.price)
 
     local gainedExp = 0
-    if options.skipAddHarvested == true then
-        return true, {
-            name = crop.name,
-            exp = gainedExp,
-        }
-    end
+    local rarity = (crop.config and crop.config.rarity) or crop.rarity or "普通"
     -- 天赋系统：收获获得经验值
     if deps_.TalentSystem and deps_.TalentSystem.AddHarvestExp then
-        local rarity = crop.config.rarity or "普通"
         local priceMult = crop.mutation and crop.mutation.priceMultiplier or 1.0
         gainedExp = deps_.TalentSystem.AddHarvestExp(rarity, priceMult) or 0
     end
 
-    -- 天赋系统：收获掉落种子包
-    local dropRateBonus = GetTalentBonus("dropRate")
-    local packQuality = GetTalentBonus("packQuality")
-    local droppedPack = deps_.InventorySystem.RollHarvestDrop(crop.config.rarity or "普通", dropRateBonus, packQuality)
-    if droppedPack ~= nil and deps_.showToast then
-        local packCfg = cfg_.SEED_PACK_CONFIG[droppedPack]
-        local packName = packCfg and packCfg.packName or droppedPack
-        deps_.showToast("掉落: " .. packName)
+    if options.skipAddHarvested ~= true then
+        -- 天赋系统：收获掉落种子包
+        local dropRateBonus = GetTalentBonus("dropRate")
+        local packQuality = GetTalentBonus("packQuality")
+        local droppedPack = deps_.InventorySystem.RollHarvestDrop(rarity, dropRateBonus, packQuality)
+        if droppedPack ~= nil and deps_.showToast then
+            local packCfg = cfg_.SEED_PACK_CONFIG[droppedPack]
+            local packName = packCfg and packCfg.packName or droppedPack
+            deps_.showToast("掉落: " .. packName)
+        end
     end
 
     if deps_.ActivitySystem and deps_.ActivitySystem.OnCropHarvested then
         deps_.ActivitySystem.OnCropHarvested(crop)
     end
 
-    -- 收藏成就检查（只发放种子包奖励）
-    deps_.InventorySystem.CheckSilverPackRewardsEnhanced()
+    if options.skipAddHarvested ~= true then
+        -- 收藏成就检查（只发放种子包奖励）
+        deps_.InventorySystem.CheckSilverPackRewardsEnhanced()
+    end
 
     return true, {
         name = crop.name,

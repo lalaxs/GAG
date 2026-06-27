@@ -35,6 +35,14 @@ function PlantPanelView.Init(deps)
     deps_ = deps or {}
 end
 
+local function RefreshPanel()
+    if deps_.refreshPanel ~= nil then
+        deps_.refreshPanel()
+    elseif deps_.rebuildUI ~= nil then
+        deps_.rebuildUI()
+    end
+end
+
 local function GetOwnedSeedIndices()
     local list = {}
     local plants = deps_.plants
@@ -113,7 +121,7 @@ function PlantPanelView.BuildContent()
                 onClick = function()
                     deps_.suppressWorldTap()
                     deps_.setSelectedSeed(plantIndex)
-                    deps_.rebuildUI()
+                    RefreshPanel()
                 end,
                 children = {
                     UI.Panel {
@@ -148,7 +156,7 @@ function PlantPanelView.BuildContent()
             if newIdx < 1 then newIdx = #ownedList end
             if newIdx > #ownedList then newIdx = 1 end
             deps_.setSelectedSeed(ownedList[newIdx])
-            deps_.rebuildUI()
+            RefreshPanel()
         end
 
         return UI.Panel {
@@ -226,7 +234,6 @@ function PlantPanelView.BuildContent()
                                 onClick = function()
                                     deps_.suppressWorldTap()
                                     deps_.harvestNearestMature(deps_.getSelectedPlotIndex(), crop.localPos)
-                                    deps_.rebuildUI()
                                 end,
                             },
                         },

@@ -98,6 +98,9 @@ local function PlotHitFromScreen(x, y)
         if math.abs(bestLocal.x) <= plantableHalf and math.abs(bestLocal.z) <= plantableHalf then
             return bestIndex, bestLocal, nil
         end
+        if cameraSystem_.GetViewMode() == cameraSystem_.ViewMode.PLANT and deps_.getPlantTab ~= nil and deps_.getPlantTab() == "harvest" then
+            return bestIndex, bestLocal, "edge"
+        end
         return nil, nil, "edge"
     end
     return nil, nil, nil
@@ -122,7 +125,24 @@ local function HandleWorldTap(x, y)
     if cameraSystem_.GetViewMode() == cameraSystem_.ViewMode.FARM then
         deps_.setSelectedPlot(plotIndex)
         deps_.refreshSelection()
-        deps_.showToast("已选中田地，可查看状态；点击下方开始种植后操作")
+        local plots = deps_.getPlots and deps_.getPlots() or nil
+        local plot = plots and plots[plotIndex] or nil
+        local matureCrop = nil
+        if plot ~= nil and deps_.findPlantAtLocalPosition ~= nil then
+            matureCrop = deps_.findPlantAtLocalPosition(plot, localPos, true)
+        end
+        if matureCrop ~= nil and deps_.harvestNearestMature ~= nil then
+            local success, harvestInfo = deps_.harvestNearestMature(plotIndex, localPos)
+            if success and harvestInfo and harvestInfo.pendingServer then
+                deps_.showToast("正在请求服务器收获...", true)
+            elseif success then
+                deps_.showToast("收获成功", true)
+            else
+                deps_.showToast("收获失败，请稍后重试")
+            end
+        else
+            deps_.showToast("已选中田地，可查看状态；点击下方开始种植后操作")
+        end
         deps_.refreshUI(true)
     else
         deps_.performPlotAction(plotIndex, localPos)

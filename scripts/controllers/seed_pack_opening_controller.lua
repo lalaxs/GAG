@@ -16,6 +16,7 @@ local opening_ = nil
 local openingTimer_ = 0
 local openingStage_ = "closed"
 local revealIndex_ = 0
+local pendingOpenAll_ = false
 
 local function RebuildUI()
     if deps_.rebuildUI ~= nil then
@@ -59,15 +60,16 @@ function SeedPackOpeningController.Init(deps)
     openingTimer_ = 0
     openingStage_ = "closed"
     revealIndex_ = 0
+    pendingOpenAll_ = false
 end
 
 function SeedPackOpeningController.ClosePanel()
     panelOpen_ = false
 end
 
-function SeedPackOpeningController.StartOpening(title, results)
+function SeedPackOpeningController.StartOpening(title, results, serverAuthoritative)
     panelOpen_ = false
-    opening_ = { title = title, results = results }
+    opening_ = { title = title, results = results, serverAuthoritative = serverAuthoritative == true }
     openingStage_ = "unseal"
     openingTimer_ = 0
     revealIndex_ = 1
@@ -77,7 +79,9 @@ end
 function SeedPackOpeningController.FinishOpening()
     if opening_ == nil then return end
     local opening = opening_
-    SeedPackSystem.ConfirmResults(opening.results)
+    if opening.serverAuthoritative ~= true then
+        SeedPackSystem.ConfirmResults(opening.results)
+    end
     opening_ = nil
     openingStage_ = "closed"
     openingTimer_ = 0
@@ -92,6 +96,12 @@ function SeedPackOpeningController.SkipOpening()
 end
 
 function SeedPackOpeningController.OpenPack(packId)
+    if deps_.EconomyCloudSystem ~= nil and deps_.EconomyCloudSystem.OpenSeedPack ~= nil then
+        if deps_.EconomyCloudSystem.OpenSeedPack(packId, 1, false) then
+            ShowToast("正在请求服务器开启种子包...")
+            return
+        end
+    end
     local results, err, title = SeedPackSystem.PreviewPack(packId, 1)
     if results == nil then
         if err ~= nil then ShowToast(err) end
@@ -103,6 +113,12 @@ function SeedPackOpeningController.OpenPack(packId)
 end
 
 function SeedPackOpeningController.OpenAllPacks(packId)
+    if deps_.EconomyCloudSystem ~= nil and deps_.EconomyCloudSystem.OpenSeedPack ~= nil then
+        if deps_.EconomyCloudSystem.OpenSeedPack(packId, 1, true) then
+            ShowToast("正在请求服务器批量开启种子包...")
+            return
+        end
+    end
     local results, err, title, openedCount = SeedPackSystem.OpenAllPacks(packId)
     if results == nil then
         if err ~= nil then ShowToast(err) end
@@ -111,6 +127,18 @@ function SeedPackOpeningController.OpenAllPacks(packId)
     local rarity = GetHighestResultRarity(results)
     SeedPackView.ShowBatchResultModal(title, results, openedCount)
     RefreshUI(true)
+end
+
+function SeedPackOpeningController.ApplyServerOpenResult(data)
+    if data == nil or data.results == nil then return false end
+    SeedPackView.ClosePackModal()
+    if data.openAll == true or (tonumber(data.openedCount or 1) or 1) > 1 then
+        SeedPackView.ShowBatchResultModal(data.title or "种子包", data.results, data.openedCount or 1)
+    else
+        SeedPackOpeningController.StartOpening(data.title or "种子包", data.results, true)
+    end
+    RefreshUI(true)
+    return true
 end
 
 function SeedPackOpeningController.OpenHub()

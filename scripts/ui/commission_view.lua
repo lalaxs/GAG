@@ -160,7 +160,6 @@ local function SubmitCommission(commission, item)
         })
         CloseDetailModal()
         CloseMainModal()
-        if deps_.rebuildUI then deps_.rebuildUI() end
     end
 end
 
@@ -489,6 +488,13 @@ local function BuildContent()
             },
         },
     }
+end
+
+function CommissionView.RefreshContent()
+    if commissionModal_ ~= nil then
+        commissionModal_:ClearContent()
+        commissionModal_:AddContent(BuildContent())
+    end
 end
 
 function CommissionView.Show()

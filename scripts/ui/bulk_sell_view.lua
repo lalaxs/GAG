@@ -184,13 +184,14 @@ RefreshContent = function()
                     if deps_.suppressWorldTap then deps_.suppressWorldTap() end
                     if not canSell then return end
                     local soldCount, earned = deps_.sellHarvestedByFilter(filter_)
-                    if soldCount > 0 then
-                        local text = string.format("卖出%d个作物，获得%s金币", soldCount, Format.Gold(earned))
+                    if soldCount == true then
+                        if deps_.showToast then deps_.showToast("正在请求服务器出售作物...") end
+                    elseif (soldCount or 0) > 0 then
+                        local text = string.format("卖出%d个作物，获得%s金币", soldCount, Format.Gold(earned or 0))
                         if deps_.showToast then deps_.showToast(text) end
                         FloatingToast.Show(text, { fontSize = 20, duration = 1.8, yRatio = 0.36, priority = 6 })
                     end
                     if modal_ ~= nil then modal_:Close() end
-                    if deps_.rebuildUI then deps_.rebuildUI() end
                 end,
             },
         },

@@ -7,6 +7,9 @@
 
 local ActivitySystem = {}
 
+local EventBus = require("utils.event_bus")
+local UIEvents = require("utils.ui_events")
+
 local cfg_ = nil
 local inventory_ = nil
 local callbacks_ = {}
@@ -29,6 +32,10 @@ local state_ = {
         darkSeedDrops = 0,
     },
 }
+
+local function EmitActivityChanged(reason)
+    EventBus.Emit(UIEvents.ACTIVITY_CHANGED, { reason = reason })
+end
 
 local function RollWeighted(pool)
     if pool == nil or #pool == 0 then return nil end
@@ -199,6 +206,7 @@ function ActivitySystem.OnCropHarvested(crop)
             local text = "获得外星基因 x" .. amount
             if callbacks_.showToast then callbacks_.showToast(text) end
             if callbacks_.showFloatingToast then callbacks_.showFloatingToast(text) end
+            EmitActivityChanged("alien_gene")
             return { type = "alien_gene", amount = amount }
         end
     elseif id == "dark" and (HasSpecial(crop.mutation, "devour") or HasSpecial(crop.mutation, "void")) then
@@ -211,6 +219,8 @@ function ActivitySystem.OnCropHarvested(crop)
             state_.dark.darkSeedDrops = state_.dark.darkSeedDrops + 1
             local plant = cfg_.PLANTS[plantIndex]
             if callbacks_.showToast then callbacks_.showToast("黑暗来临掉落: " .. (plant and plant.name or "限定种子")) end
+            EmitActivityChanged("dark_seed_drop")
+            EventBus.Emit(UIEvents.INVENTORY_CHANGED, { reason = "activity_dark_seed_drop" })
             return { type = "dark_seed", plantIndex = plantIndex }
         end
     end
@@ -248,6 +258,8 @@ function ActivitySystem.SubmitSweetCrop(item)
     state_.sweet.value = state_.sweet.value + value
     state_.sweet.submitted = state_.sweet.submitted + value
     if callbacks_.showToast then callbacks_.showToast("上交成功，甜蜜值 +" .. value) end
+    EmitActivityChanged("sweet_submitted")
+    EventBus.Emit(UIEvents.INVENTORY_CHANGED, { reason = "activity_sweet_submitted" })
     return true, value
 end
 
@@ -271,6 +283,11 @@ function ActivitySystem.ExchangeSweetReward(rewardId)
         inventory_.AddSeedPack(reward.packId, reward.count or 1)
     end
     if callbacks_.showToast then callbacks_.showToast("兑换成功: " .. reward.name) end
+    EmitActivityChanged("sweet_reward_exchanged")
+    EventBus.Emit(UIEvents.INVENTORY_CHANGED, { reason = "activity_reward_exchanged" })
+    if reward.type == "pack" then
+        EventBus.Emit(UIEvents.SEEDPACK_CHANGED, { reason = "activity_reward_exchanged" })
+    end
     return true
 end
 
@@ -314,6 +331,9 @@ function ActivitySystem.DrawAlienPack(count)
         table.insert(names, reward.name)
     end
     if callbacks_.showToast then callbacks_.showToast("基因抽取完成: " .. table.concat(names, "、")) end
+    EmitActivityChanged("alien_draw")
+    EventBus.Emit(UIEvents.INVENTORY_CHANGED, { reason = "activity_alien_draw" })
+    EventBus.Emit(UIEvents.SEEDPACK_CHANGED, { reason = "activity_alien_draw" })
     return true, rewards
 end
 

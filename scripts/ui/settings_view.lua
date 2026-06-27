@@ -316,36 +316,72 @@ function SettingsView.BuildButton()
 end
 
 function SettingsView.BuildPlotDisplayButtons()
+    local isPlantView = deps_.isPlantView and deps_.isPlantView() or false
+    local children = {
+        BuildModeButton("全部", GetPlotDisplayMode() ~= "single", function()
+            if deps_.suppressWorldTap then deps_.suppressWorldTap() end
+            if deps_.setPlotDisplayMode then deps_.setPlotDisplayMode("all") end
+        end),
+        BuildModeButton("单个", GetPlotDisplayMode() == "single", function()
+            if deps_.suppressWorldTap then deps_.suppressWorldTap() end
+            if deps_.setPlotDisplayMode then deps_.setPlotDisplayMode("single") end
+        end),
+        GetPlotDisplayMode() == "single" and UI.Button {
+            text = "下一块",
+            height = 40,
+            fontSize = 14,
+            fontWeight = "bold",
+            backgroundColor = {255, 210, 110, 255},
+            fontColor = {92, 62, 32, 255},
+            borderRadius = 14,
+            onClick = function()
+                if deps_.suppressWorldTap then deps_.suppressWorldTap() end
+                if deps_.switchNextPlot then deps_.switchNextPlot() end
+            end,
+        } or UI.Panel { width = 0, height = 0 },
+    }
+
+    if isPlantView then
+        table.insert(children, UI.Button {
+            text = "放大",
+            height = 40,
+            fontSize = 14,
+            fontWeight = "bold",
+            backgroundColor = {255, 250, 240, 245},
+            fontColor = {78, 155, 100, 255},
+            borderRadius = 14,
+            borderWidth = 2,
+            borderColor = {185, 165, 130, 180},
+            onClick = function()
+                if deps_.suppressWorldTap then deps_.suppressWorldTap() end
+                if deps_.zoomPlantView then deps_.zoomPlantView(-1) end
+            end,
+        })
+        table.insert(children, UI.Button {
+            text = "缩小",
+            height = 40,
+            fontSize = 14,
+            fontWeight = "bold",
+            backgroundColor = {255, 250, 240, 245},
+            fontColor = {78, 155, 100, 255},
+            borderRadius = 14,
+            borderWidth = 2,
+            borderColor = {185, 165, 130, 180},
+            onClick = function()
+                if deps_.suppressWorldTap then deps_.suppressWorldTap() end
+                if deps_.zoomPlantView then deps_.zoomPlantView(1) end
+            end,
+        })
+    end
+
     return UI.Panel {
         position = "absolute",
-        top = 132,
+        top = 152,
         right = 14,
         width = 56,
         gap = 8,
         alignItems = "flex-end",
-        children = {
-            BuildModeButton("全部", GetPlotDisplayMode() ~= "single", function()
-                if deps_.suppressWorldTap then deps_.suppressWorldTap() end
-                if deps_.setPlotDisplayMode then deps_.setPlotDisplayMode("all") end
-            end),
-            BuildModeButton("单个", GetPlotDisplayMode() == "single", function()
-                if deps_.suppressWorldTap then deps_.suppressWorldTap() end
-                if deps_.setPlotDisplayMode then deps_.setPlotDisplayMode("single") end
-            end),
-            GetPlotDisplayMode() == "single" and UI.Button {
-                text = "下一块",
-                height = 40,
-                fontSize = 14,
-                fontWeight = "bold",
-                backgroundColor = {255, 210, 110, 255},
-                fontColor = {92, 62, 32, 255},
-                borderRadius = 14,
-                onClick = function()
-                    if deps_.suppressWorldTap then deps_.suppressWorldTap() end
-                    if deps_.switchNextPlot then deps_.switchNextPlot() end
-                end,
-            } or UI.Panel { width = 0, height = 0 },
-        },
+        children = children,
     }
 end
 

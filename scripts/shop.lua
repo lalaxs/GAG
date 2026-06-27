@@ -333,33 +333,35 @@ local function GetCurrentSeedShopItems()
 end
 
 --- 购买种子
-local function BuySeed(seedName)
+local function BuySeed(seedName, count)
+    count = math.max(1, math.floor(tonumber(count or 1) or 1))
     local stock = state_.seed.stock[seedName] or 0
     if stock <= 0 then
         if gameRef_.showToast then gameRef_.showToast("该种子已售罄") end
-        return false
+        return 0
     end
 
     local plantIdx = FindPlantIndex(seedName)
-    if plantIdx == nil then return false end
+    if plantIdx == nil then return 0 end
 
     local plant = gameRef_.PLANTS[plantIdx]
     local currentMoney = gameRef_.money and gameRef_.money() or 0
+    local buyCount = math.min(count, stock, math.floor(currentMoney / plant.seedPrice))
 
-    if currentMoney < plant.seedPrice then
+    if buyCount <= 0 then
         if gameRef_.showToast then gameRef_.showToast("金币不足") end
-        return false
+        return 0
     end
 
-    -- 扣钱
-    if gameRef_.onBuy then
-        gameRef_.onBuy(plant.seedPrice, plantIdx)
+    local totalCost = plant.seedPrice * buyCount
+    if gameRef_.onBuy and gameRef_.onBuy(totalCost, plantIdx, buyCount) == false then
+        return 0
     end
 
     -- 扣库存
-    state_.seed.stock[seedName] = stock - 1
-    print(string.format("[Shop] 购买种子: %s, 花费 %d, 剩余库存 %d", seedName, plant.seedPrice, stock - 1))
-    return true
+    state_.seed.stock[seedName] = stock - buyCount
+    print(string.format("[Shop] 购买种子: %s x%d, 花费 %d, 剩余库存 %d", seedName, buyCount, totalCost, stock - buyCount))
+    return buyCount
 end
 
 --- 购买工具（预留）
@@ -452,7 +454,8 @@ local function ShowBuyConfirm(seedData)
                         variant = "primary", borderRadius = 10,
                         disabled = stock < 1 or currentMoney < price,
                         onClick = function()
-                            if BuySeed(seedData.name) then
+                            local bought = BuySeed(seedData.name, 1)
+                            if bought > 0 then
                                 if gameRef_.showToast then gameRef_.showToast("已购买!") end
                             end
                             if buyConfirmModal_ then buyConfirmModal_:Close() end
@@ -464,14 +467,7 @@ local function ShowBuyConfirm(seedData)
                         variant = "primary", borderRadius = 10,
                         disabled = stock < 1 or currentMoney < price,
                         onClick = function()
-                            local bought = 0
-                            for _ = 1, 10 do
-                                if BuySeed(seedData.name) then
-                                    bought = bought + 1
-                                else
-                                    break
-                                end
-                            end
+                            local bought = BuySeed(seedData.name, 10)
                             if bought > 0 then
                                 if gameRef_.showToast then gameRef_.showToast("已购买 x" .. bought .. "!") end
                             end

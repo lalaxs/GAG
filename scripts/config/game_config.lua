@@ -27,6 +27,8 @@ GameConfig.CONFIG = {
     FarmViewYaw = -28.0,
     FarmViewPitch = 38.0,
     PlantViewDistance = 7.8,
+    PlantViewMinDistance = 4.8,
+    PlantViewMaxDistance = 11.5,
     PlantViewYaw = 0.0,
     PlantViewPitch = 55.0,
 }
