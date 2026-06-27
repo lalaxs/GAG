@@ -1013,7 +1013,7 @@ local function OpenSynthesisModal()
 end
 
 function SeedPackView.ShowBatchResultModal(title, results, openedCount)
-    if results == nil then return end
+    if results == nil or #results == 0 then return end
 
     if packModal_ then
         packModal_:Close()

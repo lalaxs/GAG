@@ -237,7 +237,7 @@ function TaskView.Open()
                         onClick = function()
                             deps_.suppressWorldTap()
                             if canClaim and deps_.claimDailyReward() then
-                                FloatingToast.Show("领取成功! 获得随机种子包 x3")
+                                FloatingToast.Show("领取请求已发送")
                                 local currentModal = deps_.getTaskModal()
                                 if currentModal ~= nil then
                                     currentModal:Close()

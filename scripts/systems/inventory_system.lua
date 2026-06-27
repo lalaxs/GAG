@@ -14,6 +14,20 @@ local InventorySystem = {}
 
 local cfg_ = nil
 local callbacks_ = {}
+local localMutationsEnabled_ = true
+
+local function IsClientRuntime()
+    return IsClientMode ~= nil and IsClientMode()
+end
+
+local function CanMutateLocalState(actionName)
+    if localMutationsEnabled_ == true then return true end
+    if IsClientRuntime() then
+        print("[背包] 已阻止客户端本地权威写入: " .. tostring(actionName or "unknown"))
+        return false
+    end
+    return true
+end
 
 local function EmitTaskChanged(reason)
     EventBus.Emit(UIEvents.TASK_CHANGED, { reason = reason })
@@ -135,6 +149,15 @@ end
 function InventorySystem.Init(config, callbacks)
     cfg_ = config
     callbacks_ = callbacks or {}
+    localMutationsEnabled_ = callbacks_.allowLocalMutations ~= false
+end
+
+function InventorySystem.SetLocalMutationsEnabled(enabled)
+    localMutationsEnabled_ = enabled == true
+end
+
+function InventorySystem.AreLocalMutationsEnabled()
+    return localMutationsEnabled_ == true
 end
 
 function InventorySystem.GetState()
@@ -232,6 +255,7 @@ function InventorySystem.GetSilverRewardClaimed()
 end
 
 function InventorySystem.AddSeedToBag(plantIndex, count, buff)
+    if not CanMutateLocalState("AddSeedToBag") then return 0 end
     if plantIndex == nil or cfg_.PLANTS[plantIndex] == nil then return 0 end
     count = count or 1
     buff = buff or 0
@@ -246,6 +270,7 @@ function InventorySystem.AddSeedToBag(plantIndex, count, buff)
 end
 
 function InventorySystem.RemoveSeedFromBag(plantIndex)
+    if not CanMutateLocalState("RemoveSeedFromBag") then return 0 end
     local owned = state_.seedBag[plantIndex] or 0
     if owned <= 0 then return 0 end
     state_.seedBag[plantIndex] = owned - 1
@@ -268,6 +293,7 @@ function InventorySystem.CountSeedPacks()
 end
 
 function InventorySystem.AddSeedPack(packId, count)
+    if not CanMutateLocalState("AddSeedPack") then return false end
     local packCfg = cfg_.SEED_PACK_CONFIG[packId]
     if packCfg == nil then return false end
     count = count or 1
@@ -291,6 +317,7 @@ function InventorySystem.AreAllDailyTasksCompleted()
 end
 
 function InventorySystem.AddDailyProgress(key, amount)
+    if not CanMutateLocalState("AddDailyProgress") then return end
     if state_.dailyTaskState.progress[key] == nil then return end
     amount = amount or 1
     local before = state_.dailyTaskState.progress[key]
@@ -301,6 +328,7 @@ function InventorySystem.AddDailyProgress(key, amount)
 end
 
 function InventorySystem.CheckSilverPackRewards()
+    if not CanMutateLocalState("CheckSilverPackRewards") then return end
     for rarity, packId in pairs(cfg_.SEED_PACK_BY_RARITY) do
         if not state_.silverRewardClaimed[rarity] and IsRarityCollected(rarity) then
             state_.silverRewardClaimed[rarity] = true
@@ -329,6 +357,7 @@ function InventorySystem.GetHarvestBagMaxCapacity()
 end
 
 function InventorySystem.AddHarvestedCrop(crop)
+    if not CanMutateLocalState("AddHarvestedCrop") then return false end
     if crop == nil then return false end
     if InventorySystem.IsHarvestBagFull() then
         print(string.format("背包已满: %d/%d", #state_.harvested, InventorySystem.GetHarvestBagCapacity()))
@@ -379,6 +408,7 @@ function InventorySystem.CountHarvestedValue()
 end
 
 function InventorySystem.SellAllHarvested()
+    if not CanMutateLocalState("SellAllHarvested") then return 0 end
     if #state_.harvested == 0 then
         print("背包没有可出售作物")
         return 0
@@ -393,6 +423,7 @@ function InventorySystem.SellAllHarvested()
 end
 
 function InventorySystem.SellBagItem(item)
+    if not CanMutateLocalState("SellBagItem") then return 0 end
     if item == nil then return 0 end
     for i = 1, #state_.harvested do
         if state_.harvested[i] == item then
@@ -407,6 +438,7 @@ function InventorySystem.SellBagItem(item)
 end
 
 function InventorySystem.ConsumeHarvestedItem(item)
+    if not CanMutateLocalState("ConsumeHarvestedItem") then return false end
     if item == nil then return false end
     for i = 1, #state_.harvested do
         if state_.harvested[i] == item then
@@ -462,6 +494,7 @@ function InventorySystem.PreviewSellHarvestedByFilter(filter)
 end
 
 function InventorySystem.SellHarvestedByFilter(filter)
+    if not CanMutateLocalState("SellHarvestedByFilter") then return 0, 0 end
     local count, total = InventorySystem.PreviewSellHarvestedByFilter(filter)
     if count <= 0 then
         return 0, 0
@@ -513,6 +546,7 @@ function InventorySystem.BuildSeedPackResults(packCfg, packCount)
 end
 
 function InventorySystem.ApplyPackResults(results)
+    if not CanMutateLocalState("ApplyPackResults") then return false end
     for _, result in ipairs(results) do
         InventorySystem.AddSeedToBag(result.seedId, 1, result.seedBuff)
     end
@@ -535,6 +569,7 @@ function InventorySystem.GetFirstAvailablePackId()
 end
 
 function InventorySystem.OpenSeedPack(packId, packCount)
+    if not CanMutateLocalState("OpenSeedPack") then return nil, "服务器确认后才能开启种子包" end
     local packCfg = cfg_.SEED_PACK_CONFIG[packId]
     local owned = state_.seedPacks[packId] or 0
     packCount = math.min(packCount or 1, owned)
@@ -550,6 +585,7 @@ function InventorySystem.OpenSeedPack(packId, packCount)
 end
 
 function InventorySystem.PreviewSeedPack(packId, packCount)
+    if not CanMutateLocalState("PreviewSeedPack") then return nil, "服务器确认后才能预览种子包" end
     local packCfg = cfg_.SEED_PACK_CONFIG[packId]
     local owned = state_.seedPacks[packId] or 0
     packCount = math.min(packCount or 1, owned)
@@ -564,12 +600,14 @@ function InventorySystem.PreviewSeedPack(packId, packCount)
 end
 
 function InventorySystem.ConfirmSeedPackResults(results)
+    if not CanMutateLocalState("ConfirmSeedPackResults") then return false end
     if results == nil then return false end
     InventorySystem.ApplyPackResults(results)
     return true
 end
 
 function InventorySystem.ClaimDailyReward()
+    if not CanMutateLocalState("ClaimDailyReward") then return false, nil end
     if not InventorySystem.AreAllDailyTasksCompleted() or state_.dailyTaskState.rewardClaimed then
         return false, nil
     end
@@ -603,6 +641,7 @@ end
 
 --- 执行三合一合成：消耗 3 个同品级包，获得 1 个高品级包
 function InventorySystem.SynthesizePack(packId)
+    if not CanMutateLocalState("SynthesizePack") then return false, nil end
     if not InventorySystem.CanSynthesizePack(packId) then return false, nil end
     local targetId = SYNTHESIS_MAP[packId]
     state_.seedPacks[packId] = (state_.seedPacks[packId] or 0) - 3
@@ -628,6 +667,7 @@ end
 --- @param packQualityBonus number 品质提升等级（预留）
 --- @return string|nil 掉落的种子包 ID，nil 表示未掉落
 function InventorySystem.RollHarvestDrop(rarity, dropRateBonus, packQualityBonus)
+    if not CanMutateLocalState("RollHarvestDrop") then return nil end
     rarity = rarity or "普通"
     dropRateBonus = dropRateBonus or 0
     packQualityBonus = packQualityBonus or 0
@@ -673,6 +713,7 @@ end
 -- ============================================================================
 
 function InventorySystem.CheckSilverPackRewardsEnhanced()
+    if not CanMutateLocalState("CheckSilverPackRewardsEnhanced") then return end
     for rarity, packId in pairs(cfg_.SEED_PACK_BY_RARITY) do
         if not state_.silverRewardClaimed[rarity] and IsRarityCollected(rarity) then
             state_.silverRewardClaimed[rarity] = true

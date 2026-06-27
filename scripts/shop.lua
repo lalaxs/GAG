@@ -131,6 +131,7 @@ local REFRESH_CONFIG = {
 ---@field lastRefreshRealTime number   上次刷新的 os.time()
 
 local state_ = {
+    serverAuthoritative = false,
     seed = {
         stock = {},         -- { [seedName] = quantity }
         items = {},         -- 当前轮上架种子名数组
@@ -358,14 +359,17 @@ local function BuySeed(seedName, count)
         return 0
     end
 
-    -- 扣库存
-    state_.seed.stock[seedName] = stock - buyCount
-    print(string.format("[Shop] 购买种子: %s x%d, 花费 %d, 剩余库存 %d", seedName, buyCount, totalCost, stock - buyCount))
+    -- 纯服务器游戏：购买结果以服务端返回为准，本地商店库存不作为权威库存扣减。
+    print(string.format("[Shop] 已请求服务器购买种子: %s x%d, 预计花费 %d", seedName, buyCount, totalCost))
     return buyCount
 end
 
 --- 购买工具（预留）
 local function BuyTool(toolName)
+    if state_.serverAuthoritative then
+        if gameRef_.showToast then gameRef_.showToast("工具商店需要服务端开放后才能购买") end
+        return false
+    end
     local stock = state_.tool.stock[toolName] or 0
     if stock <= 0 then
         if gameRef_.showToast then gameRef_.showToast("该工具暂无库存") end
@@ -397,6 +401,10 @@ end
 
 --- 手动刷新商店（广告券或看广告）
 local function ManualRefresh(shopType)
+    if state_.serverAuthoritative then
+        if gameRef_.showToast then gameRef_.showToast("商店刷新由服务器控制") end
+        return false
+    end
     if state_.adTickets > 0 then
         state_.adTickets = state_.adTickets - 1
         print(string.format("[Shop] 使用广告券刷新%s商店，剩余券 %d", shopType, state_.adTickets))
@@ -457,9 +465,9 @@ local function ShowBuyConfirm(seedData)
                             local bought = BuySeed(seedData.name, 1)
                             if bought > 0 then
                                 if gameRef_.showToast then gameRef_.showToast("已购买!") end
+                                if buyConfirmModal_ then buyConfirmModal_:Close() end
+                                Shop.RebuildShopContent()
                             end
-                            if buyConfirmModal_ then buyConfirmModal_:Close() end
-                            Shop.RebuildShopContent()
                         end,
                     },
                     UI.Button {
@@ -470,9 +478,9 @@ local function ShowBuyConfirm(seedData)
                             local bought = BuySeed(seedData.name, 10)
                             if bought > 0 then
                                 if gameRef_.showToast then gameRef_.showToast("已购买 x" .. bought .. "!") end
+                                if buyConfirmModal_ then buyConfirmModal_:Close() end
+                                Shop.RebuildShopContent()
                             end
-                            if buyConfirmModal_ then buyConfirmModal_:Close() end
-                            Shop.RebuildShopContent()
                         end,
                     },
                 },
@@ -922,6 +930,7 @@ function Shop.Init(opts)
     gameRef_.gardenLevel = opts.getGardenLevel
     gameRef_.onBuy = opts.onBuy
     gameRef_.showToast = opts.showToast
+    state_.serverAuthoritative = opts.serverAuthoritative == true
 
     -- 初始化商店状态（第一次刷新）
     RefreshSeedStock()

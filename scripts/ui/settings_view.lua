@@ -8,6 +8,7 @@
 local UI = require("urhox-libs/UI")
 local ModalAnim = require("ui.modal_anim")
 local AudioSystem = require("systems.audio_system")
+local FloatingToast = require("ui.floating_toast")
 
 local SettingsView = {}
 
@@ -252,9 +253,17 @@ function SettingsView.OpenClearSaveConfirm()
                                 clearSaveModal_:Close()
                                 clearSaveModal_ = nil
                             end
+                            local text = ok and "存档已清除并验证，重新进入后生效" or "清除存档失败，请稍后重试"
                             if deps_.showToast then
-                                deps_.showToast(ok and "游戏存档已清除，重新进入后生效" or "清除存档失败")
+                                deps_.showToast(text)
                             end
+                            FloatingToast.Show(text, {
+                                fontSize = 20,
+                                duration = ok and 1.8 or 1.6,
+                                yRatio = 0.38,
+                                priority = ok and 9 or 10,
+                                stackable = false,
+                            })
                             if deps_.rebuildUI then deps_.rebuildUI() end
                         end,
                     },

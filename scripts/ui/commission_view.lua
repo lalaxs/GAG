@@ -151,8 +151,7 @@ local function SubmitCommission(commission, item)
         return
     end
     if deps_.completeCommission and deps_.completeCommission(commission, item) then
-        local rewardName = commission.rewardPackName or "种子包"
-        FloatingToast.Show("提交成功! 获得" .. rewardName, {
+        FloatingToast.Show("委托提交请求已发送", {
             fontSize = 19,
             duration = 1.7,
             yRatio = 0.38,

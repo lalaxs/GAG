@@ -291,12 +291,12 @@ GameConfig.SPECIAL_MUTATIONS = {
     { key = "chocolate", name = "巧克力变异", multiplier = 3.5, sightMultiplier = 3.2, timeMultiplier = 1.12, prefixes = { "可可", "熔浆", "糖壳", "丝滑" } },
     { key = "pollen", name = "花粉变异", multiplier = 4.0, sightMultiplier = 3.8, timeMultiplier = 1.15, prefixes = { "粉雾", "授粉", "蜜腺", "蝶吻" } },
     { key = "candy", name = "糖果变异", multiplier = 4.5, sightMultiplier = 4.0, timeMultiplier = 1.16, prefixes = { "糖晶", "蜜糖", "霜甜", "软糖" } },
-    { key = "honey", name = "蜂蜜变异", multiplier = 5.5, sightMultiplier = 4.8, timeMultiplier = 1.18, prefixes = { "流蜜", "蜂巢", "金蜜", "蜜蜡" } },
+    { key = "honey", name = "蜂蜜变异", exclusiveActivity = "sweet", multiplier = 5.5, sightMultiplier = 4.8, timeMultiplier = 1.18, prefixes = { "流蜜", "蜂巢", "金蜜", "蜜蜡" } },
     { key = "glow", name = "荧光变异", multiplier = 5.0, sightMultiplier = 4.2, timeMultiplier = 1.20, prefixes = { "磷光", "夜辉", "萤火", "鬼火", "邪光" } },
     { key = "stardust", name = "星尘变异", multiplier = 6.0, sightMultiplier = 10.0, timeMultiplier = 1.25, prefixes = { "星屑", "彗尾", "银河", "星轨", "天坠" } },
     { key = "ceramic", name = "陶瓷变异", multiplier = 7.0, sightMultiplier = 5.0, timeMultiplier = 1.30, prefixes = { "青瓷", "素烧", "裂纹", "珐琅" } },
     { key = "rainbow", name = "彩虹变异", multiplier = 10.0, sightMultiplier = 6.0, timeMultiplier = 1.40, prefixes = { "虹霓", "幻光", "棱镜", "虹彩", "神谕" } },
-    { key = "devour", name = "吞噬变异", multiplier = 9.0, sightMultiplier = 9.0, timeMultiplier = 1.38, prefixes = { "噬光", "裂口", "深渊", "饥夜" } },
+    { key = "devour", name = "吞噬变异", exclusiveActivity = "dark", multiplier = 9.0, sightMultiplier = 9.0, timeMultiplier = 1.38, prefixes = { "噬光", "裂口", "深渊", "饥夜" } },
     { key = "void", name = "虚空变异", multiplier = 12.0, sightMultiplier = 12.0, timeMultiplier = 1.45, prefixes = { "裂隙", "以太", "吞噬", "低语" } },
     { key = "gold", name = "黄金变异", multiplier = 15.0, sightMultiplier = 8.0, timeMultiplier = 1.50, prefixes = { "镀金", "钱袋", "耀金", "神铸", "王权" } },
 }
@@ -310,21 +310,21 @@ GameConfig.ACTIVITY_CONFIG = {
             name = "甜蜜蜜",
             badge = "甜蜜循环",
             desc = "活动期间播种作物可能出现糖果变异和蜂蜜变异，上交这两类变异作物获得甜蜜值，并兑换限定奇异作物种子。",
-            candyChance = 1.0,
-            honeyChance = 1.0,
+            candyChance = 0.08,
+            honeyChance = 0.055,
             limitedSeeds = { 30, 31, 32, 33, 34, 35 },
             leaderboardBase = 180,
             backgroundColor = {255, 244, 228, 248},
             badgeColor = {255, 206, 158, 255},
             chipColor = {255, 224, 238, 255},
             exchangeRewards = {
-                { id = "sweet_crystal", name = "糖晶铃兰种子 x1", type = "seed", plantIndex = 30, count = 1, cost = 1, limit = 8 },
-                { id = "hive_mandra", name = "蜂巢曼德拉种子 x1", type = "seed", plantIndex = 31, count = 1, cost = 1, limit = 4 },
-                { id = "dream_nightshade", name = "梦糖龙葵种子 x1", type = "seed", plantIndex = 32, count = 1, cost = 1, limit = 2 },
-                { id = "cotton_berry", name = "棉云莓塔种子 x1", type = "seed", plantIndex = 33, count = 1, cost = 1, limit = 6 },
-                { id = "caramel_star", name = "焦糖星果种子 x1", type = "seed", plantIndex = 34, count = 1, cost = 1, limit = 3 },
-                { id = "sundae_hydrangea", name = "圣代绣球种子 x1", type = "seed", plantIndex = 35, count = 1, cost = 1, limit = 1 },
-                { id = "sweet_pack", name = "稀有种子包 x1", type = "pack", packId = "pack_rare", count = 1, cost = 1, limit = 5 },
+                { id = "sweet_crystal", name = "糖晶铃兰种子 x1", type = "seed", plantIndex = 30, count = 1, cost = 65, limit = 8 },
+                { id = "hive_mandra", name = "蜂巢曼德拉种子 x1", type = "seed", plantIndex = 31, count = 1, cost = 160, limit = 4 },
+                { id = "dream_nightshade", name = "梦糖龙葵种子 x1", type = "seed", plantIndex = 32, count = 1, cost = 360, limit = 2 },
+                { id = "cotton_berry", name = "棉云莓塔种子 x1", type = "seed", plantIndex = 33, count = 1, cost = 65, limit = 6 },
+                { id = "caramel_star", name = "焦糖星果种子 x1", type = "seed", plantIndex = 34, count = 1, cost = 160, limit = 3 },
+                { id = "sundae_hydrangea", name = "圣代绣球种子 x1", type = "seed", plantIndex = 35, count = 1, cost = 360, limit = 1 },
+                { id = "sweet_pack", name = "稀有种子包 x1", type = "pack", packId = "pack_rare", count = 1, cost = 90, limit = 5 },
             },
         },
         alien = {
@@ -369,5 +369,38 @@ GameConfig.ACTIVITY_CONFIG = {
         },
     },
 }
+
+local SECONDS_PER_DAY = 86400
+
+function GameConfig.GetActivityCycleInfo(now)
+    local config = GameConfig.ACTIVITY_CONFIG or {}
+    local sequence = config.sequence or { "sweet", "alien", "dark" }
+    local cycleDays = math.max(1, math.floor(tonumber(config.cycleDays or 3) or 3))
+    local duration = cycleDays * SECONDS_PER_DAY
+    local currentTime = math.max(0, math.floor(tonumber(now or (os and os.time and os.time()) or 0) or 0))
+    local cycleIndex = math.floor(currentTime / duration)
+    local activityIndex = (cycleIndex % math.max(1, #sequence)) + 1
+    local activityId = sequence[activityIndex] or sequence[1] or "sweet"
+    local cycleStart = cycleIndex * duration
+    local cycleEnd = cycleStart + duration
+    return {
+        activityId = activityId,
+        cycleId = tostring(activityId) .. "_" .. tostring(cycleIndex),
+        cycleIndex = cycleIndex,
+        activityIndex = activityIndex,
+        cycleStart = cycleStart,
+        cycleEnd = cycleEnd,
+        duration = duration,
+        timeLeft = math.max(0, cycleEnd - currentTime),
+    }
+end
+
+function GameConfig.GetActiveActivityId(now)
+    return GameConfig.GetActivityCycleInfo(now).activityId
+end
+
+function GameConfig.GetActivityTimeLeftSeconds(now)
+    return GameConfig.GetActivityCycleInfo(now).timeLeft
+end
 
 return GameConfig

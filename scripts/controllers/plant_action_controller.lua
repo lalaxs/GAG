@@ -109,7 +109,12 @@ local function GetPlots()
 end
 
 local function IsAuthoritativeClient()
-    return IsClientMode ~= nil and IsClientMode()
+    return network ~= nil and IsClientMode ~= nil and IsClientMode() and network:GetServerConnection() ~= nil
+end
+
+local function RequireServerUnavailable(reason)
+    ShowToast(reason or "正在连接服务器，请稍后")
+    return false, "server_unavailable"
 end
 
 function PlantActionController.PlantSeedAt(plotIndex, plantIndex, centerLocalPos, options)
@@ -122,7 +127,10 @@ function PlantActionController.PlantSeedAt(plotIndex, plantIndex, centerLocalPos
             localPos = EncodeLocalPos(centerLocalPos or Vector3(0, 0, 0)),
         })
         if requested then return true, "pending_server" end
-        if IsAuthoritativeClient() then return false, "server_unavailable" end
+        return RequireServerUnavailable("服务器尚未就绪，无法播种")
+    end
+    if options.serverConfirmed ~= true then
+        return RequireServerUnavailable("服务器尚未就绪，无法播种")
     end
     local success, reason = deps_.CropSystem.PlantSeedAt(GetPlots(), plotIndex, plantIndex, centerLocalPos, {
         skipSeedConsume = options.serverConfirmed == true,
@@ -130,6 +138,11 @@ function PlantActionController.PlantSeedAt(plotIndex, plantIndex, centerLocalPos
     })
     if success then
         RefreshTourValue()
+        if options.serverConfirmed ~= true then
+            if deps_.markDirty then deps_.markDirty() end
+            EmitInventoryAndWalletChanged("plant_seed")
+            EventBus.Emit(UIEvents.FARM_CHANGED, { reason = "plant_seed" })
+        end
     end
     return success, reason
 end
@@ -157,13 +170,21 @@ function PlantActionController.HarvestNearestMature(plotIndex, localPos, options
             crop = EncodeCropForServer(crop),
         })
         if requested then return true, { name = crop.name, exp = 0, pendingServer = true } end
-        if IsAuthoritativeClient() then return false, "server_unavailable" end
+        return RequireServerUnavailable("服务器尚未就绪，无法收获")
+    end
+    if options.serverConfirmed ~= true then
+        return RequireServerUnavailable("服务器尚未就绪，无法收获")
     end
     local success, harvestInfo = deps_.CropSystem.HarvestNearestMature(GetPlots(), plotIndex, localPos, {
         skipAddHarvested = options.serverConfirmed == true,
     })
     if success then
         RefreshTourValue()
+        if options.serverConfirmed ~= true then
+            if deps_.markDirty then deps_.markDirty() end
+            EmitInventoryAndWalletChanged("harvest_crop")
+            EventBus.Emit(UIEvents.FARM_CHANGED, { reason = "harvest_crop" })
+        end
     end
     return success, harvestInfo
 end
@@ -180,15 +201,9 @@ function PlantActionController.BuySelectedSeed()
             print("请求服务器购买种子: " .. plant.name)
             return true
         end
-        if IsAuthoritativeClient() then return false end
     end
-    if not deps_.WalletSystem.Spend(plant.seedPrice) then
-        print("金币不足，无法购买: " .. plant.name)
-        return false
-    end
-    deps_.addSeedToBag(selectedSeed, 1, 0)
-    print("购买种子: " .. plant.name .. "，剩余金币 " .. deps_.WalletSystem.GetBalance())
-    return true
+    ShowToast("服务器尚未就绪，无法购买")
+    return false
 end
 
 function PlantActionController.SellAllHarvested()
@@ -198,18 +213,9 @@ function PlantActionController.SellAllHarvested()
             if deps_.clearBagPreview ~= nil then deps_.clearBagPreview() end
             return true
         end
-        if IsAuthoritativeClient() then return 0 end
     end
-    local total = deps_.InventorySystem.SellAllHarvested()
-    if total > 0 then
-        deps_.setSelectedBagItem(nil)
-        if deps_.clearBagPreview ~= nil then
-            deps_.clearBagPreview()
-        end
-        deps_.WalletSystem.Add(total)
-        EmitInventoryAndWalletChanged("sell_all_harvested")
-    end
-    return total
+    ShowToast("服务器尚未就绪，无法出售")
+    return 0
 end
 
 function PlantActionController.SellBagItem(item)
@@ -219,18 +225,9 @@ function PlantActionController.SellBagItem(item)
             if deps_.clearBagPreview ~= nil then deps_.clearBagPreview() end
             return true
         end
-        if IsAuthoritativeClient() then return 0 end
     end
-    local earned = deps_.InventorySystem.SellBagItem(item)
-    if earned > 0 then
-        deps_.setSelectedBagItem(nil)
-        if deps_.clearBagPreview ~= nil then
-            deps_.clearBagPreview()
-        end
-        deps_.WalletSystem.Add(earned)
-        EmitInventoryAndWalletChanged("sell_bag_item")
-    end
-    return earned
+    ShowToast("服务器尚未就绪，无法出售")
+    return 0
 end
 
 function PlantActionController.SellHarvestedByFilter(filter)
@@ -240,18 +237,9 @@ function PlantActionController.SellHarvestedByFilter(filter)
             if deps_.clearBagPreview ~= nil then deps_.clearBagPreview() end
             return true, 0
         end
-        if IsAuthoritativeClient() then return 0, 0 end
     end
-    local count, total = deps_.InventorySystem.SellHarvestedByFilter(filter)
-    if count > 0 then
-        deps_.setSelectedBagItem(nil)
-        if deps_.clearBagPreview ~= nil then
-            deps_.clearBagPreview()
-        end
-        deps_.WalletSystem.Add(total)
-        EmitInventoryAndWalletChanged("sell_harvested_by_filter")
-    end
-    return count, total
+    ShowToast("服务器尚未就绪，无法出售")
+    return 0, 0
 end
 
 function PlantActionController.FindNextOwnedSeedIndex(startIndex)
@@ -360,15 +348,8 @@ function PlantActionController.ApplyConfirmedHarvestCrop(data)
     end
 
     if crop ~= nil and removeIndex ~= nil then
-        local rarity = (crop.config and crop.config.rarity) or crop.rarity or (data.crop and data.crop.rarity) or "普通"
-        local priceMultiplier = crop.mutation and crop.mutation.priceMultiplier or data.crop and data.crop.mutation and data.crop.mutation.priceMultiplier or 1.0
         local exp = tonumber(data.exp or 0) or 0
-        if exp <= 0 and deps_.TalentSystem ~= nil and deps_.TalentSystem.AddHarvestExp ~= nil then
-            exp = deps_.TalentSystem.AddHarvestExp(rarity, priceMultiplier) or 0
-        end
-        if deps_.ActivitySystem ~= nil and deps_.ActivitySystem.OnCropHarvested ~= nil then
-            deps_.ActivitySystem.OnCropHarvested(crop)
-        end
+        -- 纯服务器游戏：经验、活动奖励等权威进度必须来自服务端响应，不在客户端本地结算。
         if crop.root ~= nil then crop.root:Remove() end
         table.remove(plot.plants, removeIndex)
         RefreshTourValue()
@@ -381,6 +362,23 @@ function PlantActionController.ApplyConfirmedHarvestCrop(data)
             local dropText = "掉落: " .. tostring(data.droppedPackName)
             ShowToast(dropText, true)
             FloatingToast.Show(dropText, { fontSize = 18, duration = 1.5, yRatio = 0.36, priority = 1 })
+        end
+        if data.activityReward ~= nil then
+            local rewardText = data.activityReward.toastText or data.activityReward.message
+            if rewardText == nil and data.activityReward.type == "alien_gene" then
+                rewardText = "获得外星基因 x" .. tostring(data.activityReward.amount or 0)
+            elseif rewardText == nil and (data.activityReward.type == "dark_seed" or data.activityReward.type == "dark_seed_full") then
+                local plant = deps_.plants and deps_.plants[data.activityReward.plantIndex]
+                if data.activityReward.type == "dark_seed_full" then
+                    rewardText = "种子背包已满，未获得" .. (plant and (plant.name .. "种子") or "黑暗限定种子")
+                else
+                    rewardText = "黑暗来临掉落: " .. (plant and (plant.name .. "种子") or "限定种子")
+                end
+            end
+            if rewardText ~= nil then
+                ShowToast(rewardText, true)
+                FloatingToast.Show(rewardText, { fontSize = 18, duration = 1.5, yRatio = 0.32, priority = 2 })
+            end
         end
         if deps_.markDirty then deps_.markDirty() end
         RebuildUI()

@@ -40,19 +40,21 @@ function InteractionSystem.SuppressNextWorldTap()
 end
 
 local function IsWorldTapArea(x, y)
-    local h = graphics:GetHeight()
+    local dpr = graphics:GetDPR()
+    local h = graphics:GetHeight() / dpr
+    local logicalY = y / dpr
     local bottomReserved = 86
     if cameraSystem_.GetViewMode() == cameraSystem_.ViewMode.PLANT then
         local tab = deps_.getPlantTab and deps_.getPlantTab() or "seed"
         if tab == "bag" then
-            bottomReserved = 505
+            bottomReserved = 520
         elseif tab == "harvest" then
-            bottomReserved = 230
+            bottomReserved = 420
         else
-            bottomReserved = 205
+            bottomReserved = 245
         end
     end
-    return y > 170 and y < h - bottomReserved
+    return logicalY > 170 and logicalY < h - bottomReserved
 end
 
 local function PlotHitFromScreen(x, y)
@@ -125,24 +127,7 @@ local function HandleWorldTap(x, y)
     if cameraSystem_.GetViewMode() == cameraSystem_.ViewMode.FARM then
         deps_.setSelectedPlot(plotIndex)
         deps_.refreshSelection()
-        local plots = deps_.getPlots and deps_.getPlots() or nil
-        local plot = plots and plots[plotIndex] or nil
-        local matureCrop = nil
-        if plot ~= nil and deps_.findPlantAtLocalPosition ~= nil then
-            matureCrop = deps_.findPlantAtLocalPosition(plot, localPos, true)
-        end
-        if matureCrop ~= nil and deps_.harvestNearestMature ~= nil then
-            local success, harvestInfo = deps_.harvestNearestMature(plotIndex, localPos)
-            if success and harvestInfo and harvestInfo.pendingServer then
-                deps_.showToast("正在请求服务器收获...", true)
-            elseif success then
-                deps_.showToast("收获成功", true)
-            else
-                deps_.showToast("收获失败，请稍后重试")
-            end
-        else
-            deps_.showToast("已选中田地，可查看状态；点击下方开始种植后操作")
-        end
+        deps_.showToast("已选中田地，可查看状态；点击下方开始种植后操作")
         deps_.refreshUI(true)
     else
         deps_.performPlotAction(plotIndex, localPos)

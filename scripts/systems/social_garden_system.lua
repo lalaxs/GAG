@@ -17,6 +17,7 @@ local MODE_VISIT = "visit"
 local DAILY_STEAL_LIMIT = 10
 local DAILY_GIFT_LIMIT = 5
 local ALLOW_DEMO_SOCIAL = false
+local ALLOW_DEMO_ECONOMY_REWARDS = false
 
 local deps_ = {}
 local requests_ = RequestStateMachine.Create("social", { timeout = 14.0 })
@@ -236,6 +237,7 @@ local function SendRequest(eventName, payload)
 end
 
 local function ApplyGiftReward(gift)
+    if ALLOW_DEMO_ECONOMY_REWARDS ~= true then return false end
     if gift == nil then return false end
     local seedId = tonumber(gift.seedId or gift.plantIndex or 1) or 1
     local count = tonumber(gift.count or 1) or 1
@@ -247,6 +249,7 @@ local function ApplyGiftReward(gift)
 end
 
 local function ApplyStealReward(reward)
+    if ALLOW_DEMO_ECONOMY_REWARDS ~= true then return false end
     if reward == nil or reward.type == "none" then return false end
     if reward.type == "seed" and deps_.addSeedToBag then
         return deps_.addSeedToBag(reward.seedId or 1, reward.count or 1, 0) > 0
@@ -878,7 +881,11 @@ function SocialGardenSystem.HandleStealResponse(data)
     FinishRequest(data.requestId, "steal")
     if data.success then
         SocialGardenSystem.MarkVisitCropStolen(data.cropId, data.cropIndex)
-        if data.reward ~= nil then ApplyStealReward(data.reward) end
+        if data.state ~= nil and deps_.applyEconomyState ~= nil then
+            deps_.applyEconomyState(data.state)
+        elseif data.reward ~= nil then
+            ApplyStealReward(data.reward)
+        end
         if data.daily ~= nil then state_.daily.stealCount = data.daily.stealCount or state_.daily.stealCount end
         SocialGardenSystem.RequestSocialState()
         if deps_.showToast then deps_.showToast(data.message or "偷菜成功") end

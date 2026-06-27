@@ -16,9 +16,26 @@ local cfg_ = nil
 local inventory_ = nil
 local callbacks_ = {}
 local getPlayerLevel_ = nil
+local localMutationsEnabled_ = true
+local serverRefreshRequested_ = false
+local serverRefreshRetryTimer_ = 0
+local lastTimerSecond_ = nil
+
+local function IsClientRuntime()
+    return IsClientMode ~= nil and IsClientMode()
+end
+
+local function CanMutateLocalState(actionName)
+    if localMutationsEnabled_ == true then return true end
+    if IsClientRuntime() then
+        print("[委托] 已阻止客户端本地权威写入: " .. tostring(actionName or "unknown"))
+        return false
+    end
+    return true
+end
 
 local REFRESH_INTERVAL = 30 * 60
-local COMMISSION_COUNT = 3
+local COMMISSION_COUNT = 4
 
 local state_ = {
     commissions = {},
@@ -318,8 +335,11 @@ function CommissionSystem.Init(config, inventorySystem, callbacks)
     cfg_ = config
     inventory_ = inventorySystem
     callbacks_ = callbacks or {}
+    localMutationsEnabled_ = callbacks_.allowLocalMutations ~= false
     getPlayerLevel_ = callbacks_.getPlayerLevel
-    RefreshCommissions()
+    if localMutationsEnabled_ then
+        RefreshCommissions()
+    end
 end
 
 function CommissionSystem.GetState()
@@ -362,6 +382,7 @@ function CommissionSystem.GetMatchingHarvestedItems(commission)
 end
 
 function CommissionSystem.CompleteCommission(commission, item)
+    if not CanMutateLocalState("CompleteCommission") then return false, "委托由服务器结算" end
     if commission == nil or item == nil then
         return false, "委托或作物无效"
     end
@@ -388,19 +409,44 @@ function CommissionSystem.CompleteCommission(commission, item)
 end
 
 function CommissionSystem.Update(dt)
-    if state_.timer > 0 then
-        state_.timer = state_.timer - dt
-        if state_.timer <= 0 then
-            RefreshCommissions()
+    if state_.timer <= 0 then
+        if localMutationsEnabled_ == false and serverRefreshRequested_ ~= true and callbacks_.requestServerRefresh ~= nil then
+            serverRefreshRetryTimer_ = math.max(0, serverRefreshRetryTimer_ - dt)
+            if serverRefreshRetryTimer_ <= 0 then
+                serverRefreshRequested_ = callbacks_.requestServerRefresh() == true
+                serverRefreshRetryTimer_ = serverRefreshRequested_ and 0 or 2.0
+            end
         end
+        return
+    end
+
+    state_.timer = math.max(0, state_.timer - dt)
+    local timerSecond = math.floor(state_.timer)
+    if timerSecond ~= lastTimerSecond_ then
+        lastTimerSecond_ = timerSecond
+        EmitCommissionChanged("timer")
+    end
+    if state_.timer > 0 then return end
+
+    if localMutationsEnabled_ then
+        RefreshCommissions()
+        return
+    end
+
+    EmitCommissionChanged("timer_expired")
+    if serverRefreshRequested_ ~= true and callbacks_.requestServerRefresh ~= nil then
+        serverRefreshRequested_ = callbacks_.requestServerRefresh() == true
+        serverRefreshRetryTimer_ = serverRefreshRequested_ and 0 or 2.0
     end
 end
 
 function CommissionSystem.RefreshNow()
+    if not CanMutateLocalState("RefreshNow") then return false end
     RefreshCommissions()
 end
 
 function CommissionSystem.HandleOffline()
+    if not CanMutateLocalState("HandleOffline") then return end
     if state_.lastRefreshRealTime <= 0 then return end
     local now = os.time()
     local elapsed = now - state_.lastRefreshRealTime
@@ -422,14 +468,18 @@ end
 
 function CommissionSystem.LoadSaveData(data)
     if data == nil then return end
+    serverRefreshRequested_ = false
+    serverRefreshRetryTimer_ = 0
     state_.commissions = data.commissions or {}
     state_.timer = data.timer or 0
+    lastTimerSecond_ = math.floor(state_.timer)
     state_.lastRefreshRealTime = data.lastRefreshRealTime or 0
     if #state_.commissions == 0 then
-        RefreshCommissions()
-    else
+        if localMutationsEnabled_ then RefreshCommissions() end
+    elseif localMutationsEnabled_ then
         CommissionSystem.HandleOffline()
     end
+    EmitCommissionChanged("loaded")
 end
 
 return CommissionSystem

@@ -1,8 +1,8 @@
 -- ============================================================================
 -- 云端权威经济同步系统
 -- ============================================================================
--- 负责将金币、种子背包、收获背包、种子包同步到服务端，并接收服务端权威结果。
--- 现阶段用于主经济闭环落云；服务端操作成功后回写本地状态，UI 继续复用原有展示。
+-- 客户端只发起具体玩法请求，并接收服务端权威结果。
+-- 不再上传整份经济状态，避免客户端覆盖服务端存档。
 -- ============================================================================
 
 local Shared = require("network.shared")
@@ -27,13 +27,13 @@ local function IsClientNetworkAvailable()
 end
 
 local function IsAuthoritativeClient()
-    return IsClientMode ~= nil and IsClientMode()
+    -- 纯服务器游戏：客户端始终以服务端为权威。
+    return true
 end
 
 local function BlockIfAuthoritativeNotReady(requireFarm)
-    if not IsAuthoritativeClient() then return false end
-    local ready = state_.ready == true and (requireFarm ~= true or state_.authFarmReady == true)
-    if IsClientNetworkAvailable() and ready then return false end
+    local ready = IsClientNetworkAvailable() and state_.ready == true and (requireFarm ~= true or state_.authFarmReady == true)
+    if ready then return false end
     state_.lastSyncText = "同步中..."
     if deps_.showToast then deps_.showToast("正在同步服务器数据，请稍后") end
     return true
@@ -74,17 +74,6 @@ local function ReplaceTable(target, source)
     end
 end
 
-local function BuildState()
-    return {
-        gold = deps_.getGold and deps_.getGold() or 0,
-        seedBag = deps_.InventorySystem and deps_.InventorySystem.GetSeedBag and deps_.InventorySystem.GetSeedBag() or {},
-        seedBagBuffs = deps_.InventorySystem and deps_.InventorySystem.GetSeedBagBuffs and deps_.InventorySystem.GetSeedBagBuffs() or {},
-        harvested = deps_.InventorySystem and deps_.InventorySystem.GetHarvested and deps_.InventorySystem.GetHarvested() or {},
-        seedPacks = deps_.InventorySystem and deps_.InventorySystem.GetSeedPacks and deps_.InventorySystem.GetSeedPacks() or {},
-        collectedPlants = deps_.InventorySystem and deps_.InventorySystem.GetCollectedPlants and deps_.InventorySystem.GetCollectedPlants() or {},
-    }
-end
-
 local function ApplyState(cloudState)
     if type(cloudState) ~= "table" then return false end
     if deps_.WalletSystem and deps_.WalletSystem.SetBalance then
@@ -98,6 +87,19 @@ local function ApplyState(cloudState)
         if deps_.InventorySystem.GetCollectedPlants ~= nil then
             ReplaceTable(deps_.InventorySystem.GetCollectedPlants(), cloudState.collectedPlants)
         end
+        if deps_.InventorySystem.GetDailyTaskState ~= nil and cloudState.dailyTaskState ~= nil then
+            ReplaceTable(deps_.InventorySystem.GetDailyTaskState(), cloudState.dailyTaskState)
+        end
+    end
+    if deps_.TalentSystem and deps_.TalentSystem.LoadSaveData and cloudState.talent ~= nil then
+        deps_.TalentSystem.LoadSaveData(cloudState.talent)
+    end
+    if deps_.ProgressionSystem and deps_.ProgressionSystem.LoadSaveData and cloudState.progression ~= nil then
+        deps_.ProgressionSystem.LoadSaveData(cloudState.progression)
+        if deps_.onProgressionApplied then deps_.onProgressionApplied(cloudState.progression) end
+    end
+    if deps_.ActivitySystem and deps_.ActivitySystem.LoadSaveData and cloudState.activity ~= nil then
+        deps_.ActivitySystem.LoadSaveData(cloudState.activity)
     end
     if deps_.syncInventoryRefs then deps_.syncInventoryRefs() end
     if deps_.markDirty then deps_.markDirty() end
@@ -115,13 +117,21 @@ function EconomyCloudSystem.Init(deps)
     if network ~= nil and IsClientMode ~= nil and IsClientMode() then
         SubscribeToEvent(Shared.EVENTS.ECONOMY_STATE_RESPONSE, "HandleGardenEconomyStateResponse")
         SubscribeToEvent(Shared.EVENTS.AUTH_FARM_RESPONSE, "HandleGardenAuthFarmResponse")
-        SubscribeToEvent(Shared.EVENTS.SAVE_ECONOMY_STATE_RESULT, "HandleGardenSaveEconomyStateResult")
         SubscribeToEvent(Shared.EVENTS.BUY_SEED_RESPONSE, "HandleGardenBuySeedResponse")
         SubscribeToEvent(Shared.EVENTS.CLEAR_SAVE_RESPONSE, "HandleGardenClearSaveResponse")
         SubscribeToEvent(Shared.EVENTS.PLANT_SEED_RESPONSE, "HandleGardenPlantSeedResponse")
         SubscribeToEvent(Shared.EVENTS.HARVEST_CROP_RESPONSE, "HandleGardenHarvestCropResponse")
         SubscribeToEvent(Shared.EVENTS.OPEN_SEED_PACK_RESPONSE, "HandleGardenOpenSeedPackResponse")
         SubscribeToEvent(Shared.EVENTS.SELL_HARVESTED_RESPONSE, "HandleGardenSellHarvestedResponse")
+        SubscribeToEvent(Shared.EVENTS.CLAIM_DAILY_REWARD_RESPONSE, "HandleGardenClaimDailyRewardResponse")
+        SubscribeToEvent(Shared.EVENTS.SYNTHESIZE_PACK_RESPONSE, "HandleGardenSynthesizePackResponse")
+        SubscribeToEvent(Shared.EVENTS.UNLOCK_TALENT_RESPONSE, "HandleGardenUnlockTalentResponse")
+        SubscribeToEvent(Shared.EVENTS.EXPAND_PLOT_RESPONSE, "HandleGardenExpandPlotResponse")
+        SubscribeToEvent(Shared.EVENTS.COMMISSIONS_RESPONSE, "HandleGardenCommissionsResponse")
+        SubscribeToEvent(Shared.EVENTS.COMPLETE_COMMISSION_RESPONSE, "HandleGardenCompleteCommissionResponse")
+        SubscribeToEvent(Shared.EVENTS.SUBMIT_ACTIVITY_CROP_RESPONSE, "HandleGardenSubmitActivityCropResponse")
+        SubscribeToEvent(Shared.EVENTS.EXCHANGE_ACTIVITY_REWARD_RESPONSE, "HandleGardenExchangeActivityRewardResponse")
+        SubscribeToEvent(Shared.EVENTS.DRAW_ACTIVITY_PACK_RESPONSE, "HandleGardenDrawActivityPackResponse")
         SubscribeToEvent("ServerReady", "HandleGardenEconomyServerReady")
     end
 end
@@ -131,7 +141,6 @@ function EconomyCloudSystem.IsAuthoritativeClient()
 end
 
 function EconomyCloudSystem.IsReady(requireFarm)
-    if not IsAuthoritativeClient() then return true end
     return IsClientNetworkAvailable() and state_.ready == true and (requireFarm ~= true or state_.authFarmReady == true)
 end
 
@@ -167,7 +176,7 @@ function EconomyCloudSystem.RequestAuthFarm()
 end
 
 function EconomyCloudSystem.UploadState()
-    state_.lastSyncText = IsClientNetworkAvailable() and "服务器权威" or "本地预览"
+    state_.lastSyncText = IsClientNetworkAvailable() and "服务器权威" or "等待服务器"
     return false
 end
 
@@ -245,6 +254,104 @@ function EconomyCloudSystem.SellHarvestedByFilter(filter)
     return false
 end
 
+function EconomyCloudSystem.ClaimDailyReward()
+    if BlockIfAuthoritativeNotReady(false) then return false end
+    local payload = BeginRequest("dailyReward", {})
+    if SendRequest(Shared.EVENTS.CLAIM_DAILY_REWARD, payload) then return true end
+    FinishRequest(payload.requestId, "dailyReward")
+    return false
+end
+
+function EconomyCloudSystem.SynthesizePack(packId)
+    if BlockIfAuthoritativeNotReady(false) then return false end
+    local payload = BeginRequest("synthesizePack", { packId = packId })
+    if SendRequest(Shared.EVENTS.SYNTHESIZE_PACK, payload) then return true end
+    FinishRequest(payload.requestId, "synthesizePack")
+    return false
+end
+
+function EconomyCloudSystem.UnlockTalent(talentId)
+    if BlockIfAuthoritativeNotReady(false) then return false end
+    local payload = BeginRequest("unlockTalent", { talentId = talentId })
+    if SendRequest(Shared.EVENTS.UNLOCK_TALENT, payload) then return true end
+    FinishRequest(payload.requestId, "unlockTalent")
+    return false
+end
+
+function EconomyCloudSystem.ExpandPlot()
+    if BlockIfAuthoritativeNotReady(true) then return false end
+    local payload = BeginRequest("expandPlot", {})
+    if SendRequest(Shared.EVENTS.EXPAND_PLOT, payload) then return true end
+    FinishRequest(payload.requestId, "expandPlot")
+    return false
+end
+
+function EconomyCloudSystem.RequestCommissions()
+    if BlockIfAuthoritativeNotReady(false) then return false end
+    local payload = BeginRequest("commissions", {})
+    if SendRequest(Shared.EVENTS.REQUEST_COMMISSIONS, payload) then return true end
+    FinishRequest(payload.requestId, "commissions")
+    return false
+end
+
+function EconomyCloudSystem.CompleteCommission(commission, item)
+    if BlockIfAuthoritativeNotReady(false) then return false end
+    local harvested = deps_.InventorySystem and deps_.InventorySystem.GetHarvested and deps_.InventorySystem.GetHarvested() or {}
+    local targetIndex = 0
+    for index, row in ipairs(harvested) do
+        if row == item then targetIndex = index; break end
+    end
+    if targetIndex <= 0 then return false end
+    local payload = BeginRequest("completeCommission", { commissionId = commission and commission.id, itemIndex = targetIndex })
+    if SendRequest(Shared.EVENTS.COMPLETE_COMMISSION, payload) then return true end
+    FinishRequest(payload.requestId, "completeCommission")
+    return false
+end
+
+function EconomyCloudSystem.SubmitActivityCrop(item)
+    if BlockIfAuthoritativeNotReady(false) then return false end
+    local harvested = deps_.InventorySystem and deps_.InventorySystem.GetHarvested and deps_.InventorySystem.GetHarvested() or {}
+    local targetIndex = 0
+    for index, row in ipairs(harvested) do
+        if row == item then targetIndex = index; break end
+    end
+    if targetIndex <= 0 then return false end
+    local payload = BeginRequest("submitActivityCrop", { itemIndex = targetIndex })
+    if SendRequest(Shared.EVENTS.SUBMIT_ACTIVITY_CROP, payload) then return true end
+    FinishRequest(payload.requestId, "submitActivityCrop")
+    return false
+end
+
+function EconomyCloudSystem.ExchangeActivityReward(rewardId)
+    if BlockIfAuthoritativeNotReady(false) then return false end
+    local payload = BeginRequest("exchangeActivityReward", { rewardId = rewardId })
+    if SendRequest(Shared.EVENTS.EXCHANGE_ACTIVITY_REWARD, payload) then return true end
+    FinishRequest(payload.requestId, "exchangeActivityReward")
+    return false
+end
+
+function EconomyCloudSystem.DrawActivityPack(count)
+    if BlockIfAuthoritativeNotReady(false) then return false end
+    local payload = BeginRequest("drawActivityPack", { count = count or 1 })
+    if SendRequest(Shared.EVENTS.DRAW_ACTIVITY_PACK, payload) then return true end
+    FinishRequest(payload.requestId, "drawActivityPack")
+    return false
+end
+
+local function HandleGenericStateResult(data, requestType, defaultSuccess, defaultFail)
+    FinishRequest(data.requestId, requestType)
+    if data.success then
+        if data.state ~= nil then ApplyState(data.state) end
+        if data.farm ~= nil and deps_.onAuthFarmReceived then deps_.onAuthFarmReceived(data.farm) end
+        if deps_.showToast then deps_.showToast(data.message or defaultSuccess) end
+        if deps_.showFloatingToast then deps_.showFloatingToast(data.message or defaultSuccess) end
+        if deps_.refreshUI then deps_.refreshUI(true) end
+    else
+        if data.state ~= nil then ApplyState(data.state) end
+        if deps_.showToast then deps_.showToast(data.message or defaultFail) end
+    end
+end
+
 function EconomyCloudSystem.HandleEconomyStateResponse(data)
     FinishRequest(data.requestId, "load")
     if data.success and ApplyState(data.state) then
@@ -262,15 +369,6 @@ function EconomyCloudSystem.HandleAuthFarmResponse(data)
         if deps_.onAuthFarmReceived then deps_.onAuthFarmReceived(data.farm) end
     elseif deps_.showToast then
         deps_.showToast(data.message or "权威农场读取失败")
-    end
-end
-
-function EconomyCloudSystem.HandleSaveEconomyStateResult(data)
-    state_.lastSyncText = data.success and "已同步" or "同步失败"
-    if data.success then
-        ApplyState(data.state)
-    elseif deps_.showToast then
-        deps_.showToast(data.message or "经济数据同步失败")
     end
 end
 
@@ -345,6 +443,70 @@ function EconomyCloudSystem.HandleSellHarvestedResponse(data)
     end
 end
 
+function EconomyCloudSystem.HandleClaimDailyRewardResponse(data)
+    HandleGenericStateResult(data, "dailyReward", "每日奖励已领取", "领取每日奖励失败")
+end
+
+function EconomyCloudSystem.HandleSynthesizePackResponse(data)
+    HandleGenericStateResult(data, "synthesizePack", "合成成功", "合成失败")
+end
+
+function EconomyCloudSystem.HandleUnlockTalentResponse(data)
+    HandleGenericStateResult(data, "unlockTalent", "天赋已解锁", "解锁天赋失败")
+end
+
+function EconomyCloudSystem.HandleExpandPlotResponse(data)
+    HandleGenericStateResult(data, "expandPlot", "扩地成功", "扩地失败")
+end
+
+function EconomyCloudSystem.HandleCommissionsResponse(data)
+    FinishRequest(data.requestId, "commissions")
+    if data.success and deps_.CommissionSystem and deps_.CommissionSystem.LoadSaveData then
+        deps_.CommissionSystem.LoadSaveData(data.commission)
+        if deps_.refreshUI then deps_.refreshUI(true) end
+    elseif deps_.showToast then
+        deps_.showToast(data.message or "委托读取失败")
+    end
+end
+
+function EconomyCloudSystem.HandleCompleteCommissionResponse(data)
+    FinishRequest(data.requestId, "completeCommission")
+    if data.success then
+        if data.state ~= nil then ApplyState(data.state) end
+        if data.commission ~= nil and deps_.CommissionSystem and deps_.CommissionSystem.LoadSaveData then
+            deps_.CommissionSystem.LoadSaveData(data.commission)
+        end
+        if deps_.showToast then deps_.showToast(data.message or "委托完成") end
+        if deps_.showFloatingToast then deps_.showFloatingToast(data.message or "委托完成") end
+        if deps_.refreshUI then deps_.refreshUI(true) end
+    else
+        if data.state ~= nil then ApplyState(data.state) end
+        if deps_.showToast then deps_.showToast(data.message or "委托提交失败") end
+    end
+end
+
+function EconomyCloudSystem.HandleSubmitActivityCropResponse(data)
+    HandleGenericStateResult(data, "submitActivityCrop", "上交成功", "上交失败")
+end
+
+function EconomyCloudSystem.HandleExchangeActivityRewardResponse(data)
+    HandleGenericStateResult(data, "exchangeActivityReward", "兑换成功", "兑换失败")
+end
+
+function EconomyCloudSystem.HandleDrawActivityPackResponse(data)
+    FinishRequest(data.requestId, "drawActivityPack")
+    if data.success then
+        if data.state ~= nil then ApplyState(data.state) end
+        local rewards = data.rewards or {}
+        if deps_.onActivityDrawResult and #rewards > 0 then deps_.onActivityDrawResult(rewards) end
+        if deps_.showToast then deps_.showToast(data.message or "抽取成功") end
+        if deps_.refreshUI then deps_.refreshUI(true) end
+    else
+        if data.state ~= nil then ApplyState(data.state) end
+        if deps_.showToast then deps_.showToast(data.message or "抽取失败") end
+    end
+end
+
 function EconomyCloudSystem.ApplyAuthoritativeState(cloudState)
     return ApplyState(cloudState)
 end
@@ -355,10 +517,6 @@ end
 
 function HandleGardenAuthFarmResponse(eventType, eventData)
     EconomyCloudSystem.HandleAuthFarmResponse(Shared.ReadEventData(eventData))
-end
-
-function HandleGardenSaveEconomyStateResult(eventType, eventData)
-    EconomyCloudSystem.HandleSaveEconomyStateResult(Shared.ReadEventData(eventData))
 end
 
 function HandleGardenBuySeedResponse(eventType, eventData)
@@ -385,9 +543,46 @@ function HandleGardenSellHarvestedResponse(eventType, eventData)
     EconomyCloudSystem.HandleSellHarvestedResponse(Shared.ReadEventData(eventData))
 end
 
+function HandleGardenClaimDailyRewardResponse(eventType, eventData)
+    EconomyCloudSystem.HandleClaimDailyRewardResponse(Shared.ReadEventData(eventData))
+end
+
+function HandleGardenSynthesizePackResponse(eventType, eventData)
+    EconomyCloudSystem.HandleSynthesizePackResponse(Shared.ReadEventData(eventData))
+end
+
+function HandleGardenUnlockTalentResponse(eventType, eventData)
+    EconomyCloudSystem.HandleUnlockTalentResponse(Shared.ReadEventData(eventData))
+end
+
+function HandleGardenExpandPlotResponse(eventType, eventData)
+    EconomyCloudSystem.HandleExpandPlotResponse(Shared.ReadEventData(eventData))
+end
+
+function HandleGardenCommissionsResponse(eventType, eventData)
+    EconomyCloudSystem.HandleCommissionsResponse(Shared.ReadEventData(eventData))
+end
+
+function HandleGardenCompleteCommissionResponse(eventType, eventData)
+    EconomyCloudSystem.HandleCompleteCommissionResponse(Shared.ReadEventData(eventData))
+end
+
+function HandleGardenSubmitActivityCropResponse(eventType, eventData)
+    EconomyCloudSystem.HandleSubmitActivityCropResponse(Shared.ReadEventData(eventData))
+end
+
+function HandleGardenExchangeActivityRewardResponse(eventType, eventData)
+    EconomyCloudSystem.HandleExchangeActivityRewardResponse(Shared.ReadEventData(eventData))
+end
+
+function HandleGardenDrawActivityPackResponse(eventType, eventData)
+    EconomyCloudSystem.HandleDrawActivityPackResponse(Shared.ReadEventData(eventData))
+end
+
 function HandleGardenEconomyServerReady(eventType, eventData)
     EconomyCloudSystem.RequestState()
     EconomyCloudSystem.RequestAuthFarm()
+    EconomyCloudSystem.RequestCommissions()
 end
 
 return EconomyCloudSystem

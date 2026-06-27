@@ -233,7 +233,10 @@ function PlantPanelView.BuildContent()
                                 backgroundColor = {94, 194, 131, 255}, fontColor = {255, 255, 255, 255}, borderRadius = 8,
                                 onClick = function()
                                     deps_.suppressWorldTap()
-                                    deps_.harvestNearestMature(deps_.getSelectedPlotIndex(), crop.localPos)
+                                    local success = deps_.harvestNearestMature(deps_.getSelectedPlotIndex(), crop.localPos)
+                                    if success then
+                                        RefreshPanel()
+                                    end
                                 end,
                             },
                         },

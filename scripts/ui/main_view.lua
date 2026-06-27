@@ -283,7 +283,7 @@ local function BuildFarmControls(labels, actionButton)
                 alignItems = "center",
                 justifyContent = "flex-end",
                 children = {
-                    deps_.countSeedPacks() > 0 and (function()
+                    (function()
                         local icon = UI.Panel {
                             width = 71,
                             height = 82,
@@ -319,7 +319,7 @@ local function BuildFarmControls(labels, actionButton)
                                 },
                             },
                         }
-                    end)() or UI.Panel { width = 0, height = 0 },
+                    end)(),
                     UI.Button {
                         text = "任务",
                         width = 90,
@@ -495,6 +495,7 @@ local function BuildPlantShell(plantContent)
     return UI.Panel {
         position = "absolute",
         left = 0, right = 0, bottom = 0,
+        pointerEvents = "auto",
         paddingTop = 12, paddingBottom = plantTab == "harvest" and 16 or 125,
         paddingLeft = 14, paddingRight = 14,
         backgroundColor = {250, 245, 235, 252},
@@ -562,6 +563,7 @@ local function BuildCollapseButton()
         position = "absolute",
         bottom = deps_.getPlantTab() == "bag" and 520 or 410,
         right = 12,
+        pointerEvents = "auto",
         children = {
             UI.Button {
                 text = "▼ 收起", width = 90, height = 34, fontSize = 12, fontWeight = "bold",

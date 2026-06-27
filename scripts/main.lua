@@ -32,7 +32,7 @@ local ModelPreviewSystem = require("systems.model_preview_system")
 local PlayerSystem = require("systems.player_system")
 local SocialGardenSystem = require("systems.social_garden_system")
 local EconomyCloudSystem = require("systems.economy_cloud_system")
-local SaveSystem = require("systems.save_system")
+-- 纯服务器游戏：主游戏进度只从服务端 serverCloud 同步，客户端不再读写本地完整存档。
 local TalentView = require("ui.talent_view")
 local ExpansionView = require("ui.expansion_view")
 local SeedPackView = require("ui.seed_pack_view")
@@ -61,13 +61,8 @@ local CONFIG = GameConfig.CONFIG
 local RARITY_COLORS = GameConfig.RARITY_COLORS
 local PLANTS = GameConfig.PLANTS
 local RARITY_ORDER = GameConfig.RARITY_ORDER
-local RARITY_PLANT_INDICES = GameConfig.RARITY_PLANT_INDICES
 local SEED_PACK_CONFIG = GameConfig.SEED_PACK_CONFIG
-local SEED_PACK_BY_RARITY = GameConfig.SEED_PACK_BY_RARITY
 local DAILY_TASK_CONFIG = GameConfig.DAILY_TASK_CONFIG
-local SEED_STACK_MAX = GameConfig.SEED_STACK_MAX
-local COLOR_MUTATIONS = GameConfig.COLOR_MUTATIONS
-local SPECIAL_MUTATIONS = GameConfig.SPECIAL_MUTATIONS
 
 local materials_ = PlantVisual.materials
 local plots_ = {}
@@ -97,12 +92,12 @@ local selectedBagItem_ = nil
 local ViewMode = CameraSystem.ViewMode
 local unlockedPlotCount_ = CONFIG.InitialUnlockedPlots
 local plantTab_ = "seed"  -- "seed" | "harvest" | "bag"
-local gameTime_ = 0
 local saveData_ = nil
 local hasSaveData_ = false
 local saveTimer_ = 0
 local saveDirty_ = false
-local saveDisabled_ = false
+local SAVE_FLUSH_INTERVAL = 1.0
+local saveDisabled_ = true
 local ownFarmPlotsSave_ = nil
 local suppressNextWorldTap_ = false
 local RefreshUI = nil
@@ -117,14 +112,9 @@ local ExpandNextPlot = nil
 local UpdateCameraTargetForPlotDisplay = nil
 local RefreshSelection = nil
 local UpdateCurrentTourValue = nil
-
-local function RandItem(list)
-    return list[math.random(1, #list)]
-end
-
-local function RandomRange(minValue, maxValue)
-    return minValue + math.random() * (maxValue - minValue)
-end
+local CreateFarm = nil
+local DisposeCurrentFarm = nil
+local ApplyUnlockedPlotCount = nil
 
 local function SyncInventoryRefs()
     inventoryState_ = InventorySystem.GetState()
@@ -139,60 +129,38 @@ local function SyncInventoryRefs()
 end
 
 local function MarkSaveDirty()
-    if not saveDisabled_ then
-        saveDirty_ = true
-    end
-end
-
-local function BuildGameSaveData()
-    return {
-        wallet = WalletSystem.GetSaveData(),
-        inventory = InventorySystem.GetSaveData(),
-        progression = ProgressionSystem.GetSaveData(),
-        social = SocialGardenSystem.GetSaveData(),
-        talent = TalentSystem.GetSaveData(),
-        shop = Shop.GetSaveData(),
-        commission = CommissionSystem.GetSaveData(),
-        activity = ActivitySystem.GetSaveData(),
-        farm = {
-            selectedPlot = selectedPlot_,
-            selectedSeed = selectedSeed_,
-            plantTab = plantTab_,
-            plots = ownFarmPlotsSave_ or CropSystem.GetPlotsSaveData(plots_),
-        },
-        view = {
-            plotDisplay = PlotDisplayController.GetSaveData(),
-        },
-    }
+    -- 纯服务器游戏：客户端不保存权威玩法进度；此函数仅保留给现有依赖调用。
+    saveDirty_ = false
+    saveTimer_ = 0
 end
 
 local function SaveGameNow()
-    if saveDisabled_ then return false end
-    return SaveSystem.Save(BuildGameSaveData())
+    -- 纯服务器游戏：权威数据由 serverCloud 保存。
+    saveDirty_ = false
+    saveTimer_ = 0
+    return true
 end
 
 local function ClearGameSave()
-    if IsClientMode ~= nil and IsClientMode() then
-        local cloudOk = EconomyCloudSystem.ClearSave()
-        if not cloudOk then return false end
-        local ok = SaveSystem.Clear()
-        if ok then
-            saveDirty_ = false
-            saveDisabled_ = true
-        end
-        return ok
+    local requested = EconomyCloudSystem.ClearSave()
+    if not requested and ShowToast ~= nil then
+        ShowToast("服务器尚未就绪，无法清除存档")
     end
-
-    local ok = SaveSystem.Clear()
-    if ok then
-        saveDirty_ = false
-        saveDisabled_ = true
-    end
-    return ok
+    saveDirty_ = false
+    saveDisabled_ = true
+    return requested
 end
 
 local function ApplyAuthoritativeFarmState(farm)
     if type(farm) ~= "table" or type(farm.plots) ~= "table" then return false end
+    local serverUnlocked = ProgressionSystem.GetUnlockedPlotCount()
+    if serverUnlocked ~= unlockedPlotCount_ then
+        ownFarmPlotsSave_ = CropSystem.GetPlotsSaveData(plots_)
+        DisposeCurrentFarm()
+        unlockedPlotCount_ = serverUnlocked
+        CreateFarm()
+        ApplyUnlockedPlotCount()
+    end
     CropSystem.ClearPlots(plots_)
     CropSystem.RestorePlotsFromSave(plots_, farm.plots)
     ownFarmPlotsSave_ = CropSystem.GetPlotsSaveData(plots_)
@@ -205,59 +173,10 @@ local function ApplyAuthoritativeFarmState(farm)
     return true
 end
 
-local function IsAuthoritativeMultiplayer()
-    return IsClientMode ~= nil and IsClientMode()
-end
-
-local function ApplyGameSaveData(data)
-    if data == nil then return end
-    local authoritative = IsAuthoritativeMultiplayer()
-    if not authoritative then
-        WalletSystem.LoadSaveData(data.wallet)
-        InventorySystem.LoadSaveData(data.inventory)
-        SyncInventoryRefs()
-        ProgressionSystem.LoadSaveData(data.progression)
-    end
-    SocialGardenSystem.LoadSaveData(data.social)
-    TalentSystem.LoadSaveData(data.talent)
-    Shop.LoadSaveData(data.shop)
-    CommissionSystem.LoadSaveData(data.commission)
-    ActivitySystem.LoadSaveData(data.activity)
-
-    local farm = data.farm or {}
-    selectedPlot_ = Clamp(tonumber(farm.selectedPlot or selectedPlot_) or selectedPlot_, 1, math.max(1, ProgressionSystem.GetUnlockedPlotCount()))
-    selectedSeed_ = Clamp(tonumber(farm.selectedSeed or selectedSeed_) or selectedSeed_, 1, #PLANTS)
-    plantTab_ = farm.plantTab or plantTab_
-    if not authoritative then
-        CropSystem.RestorePlotsFromSave(plots_, farm.plots)
-    end
-    PlotDisplayController.LoadSaveData(data.view and data.view.plotDisplay or nil)
-end
-
-local function RollCropWeightScale()
-    local r = math.random()
-    if r < 0.25 then
-        return RandomRange(0.45, 0.8), "Light"
-    elseif r < 0.80 then
-        return RandomRange(0.8, 1.25), "Normal"
-    elseif r < 0.97 then
-        return RandomRange(1.25, 2.5), "Large"
-    end
-    return RandomRange(3.0, 6.0), "Giant"
-end
-
-local function GetWeightBonusForPlot(plotIndex)
-    return 1.0
-end
-
 local function AddSeedToBag(plantIndex, count, buff)
     local added = InventorySystem.AddSeedToBag(plantIndex, count, buff)
     if added > 0 then MarkSaveDirty() end
     return added
-end
-
-local function RemoveSeedFromBag(plantIndex)
-    return InventorySystem.RemoveSeedFromBag(plantIndex)
 end
 
 local function CountSeedPacks()
@@ -300,26 +219,6 @@ end
 
 local function CheckSilverPackRewards()
     InventorySystem.CheckSilverPackRewards()
-end
-
-local function HasSpecial(mutation, key)
-    return PlantVisual.HasSpecial(mutation, key)
-end
-
-local function CreateMaterial(name, color, metallic, roughness, emissive)
-    return PlantVisual.CreateMaterial(name, color, metallic, roughness, emissive)
-end
-
-local function CreateTransparentMaterial(name, color)
-    return PlantVisual.CreateTransparentMaterial(name, color)
-end
-
-local function CreateUnlitMaterial(name, color)
-    return PlantVisual.CreateUnlitMaterial(name, color)
-end
-
-local function AddModel(parent, name, modelPath, position, scale, material)
-    return PlantVisual.AddModel(parent, name, modelPath, position, scale, material)
 end
 
 local function InitMaterials()
@@ -381,11 +280,11 @@ local function PlotWorldPosition(index)
     return FarmSystem.PlotWorldPosition(index)
 end
 
-local function CreateFarm()
+CreateFarm = function()
     plots_ = FarmSystem.CreateFarm(scene_, unlockedPlotCount_, LOCAL)
 end
 
-local function DisposeCurrentFarm()
+DisposeCurrentFarm = function()
     if plots_ ~= nil then
         ownFarmPlotsSave_ = CropSystem.GetPlotsSaveData(plots_)
         for _, plot in ipairs(plots_) do
@@ -467,7 +366,7 @@ local function ZoomPlantView(direction)
     CameraSystem.AdjustDistance(direction * 0.9, CONFIG.PlantViewMinDistance, CONFIG.PlantViewMaxDistance)
 end
 
-local function ApplyUnlockedPlotCount()
+ApplyUnlockedPlotCount = function()
     PlotDisplayController.ApplyUnlockedPlotCount()
 end
 
@@ -508,7 +407,13 @@ end
 local function HarvestNearestMature(plotIndex, localPos)
     local success, harvestInfo = PlantActionController.HarvestNearestMature(plotIndex, localPos)
     if success then
+        if harvestInfo and harvestInfo.pendingServer then
+            ShowToast("正在请求服务器收获...", true)
+            return success, harvestInfo
+        end
         MarkSaveDirty()
+        EventBus.Emit(UIEvents.FARM_CHANGED, { reason = "harvest_crop" })
+        EventBus.Emit(UIEvents.INVENTORY_CHANGED, { reason = "harvest_crop" })
         local cropName = harvestInfo and harvestInfo.name or "作物"
         local exp = harvestInfo and harvestInfo.exp or 0
         local text = "收获了" .. cropName .. "，获得了" .. exp .. "经验"
@@ -706,6 +611,9 @@ local function SubscribeUIEvents()
         unsubscribePlayerChanged_ = EventBus.On(UIEvents.PLAYER_CHANGED, function()
             if ProfileView.IsOpen() then
                 ProfileView.RebuildProfileContent()
+            end
+            if RebuildUI ~= nil then
+                RebuildUI()
             else
                 RefreshUI(true)
             end
@@ -878,11 +786,15 @@ function HandleUpdate(eventType, eventData)
     CommissionSystem.Update(dt)
     if saveDirty_ then
         saveTimer_ = saveTimer_ + dt
-        if saveTimer_ >= 5.0 then
-            SaveGameNow()
-            SocialGardenSystem.UploadSnapshot()
-            saveDirty_ = false
-            saveTimer_ = 0
+        if saveTimer_ >= SAVE_FLUSH_INTERVAL then
+            local saved = SaveGameNow()
+            if saved then
+                SocialGardenSystem.UploadSnapshot()
+                saveDirty_ = false
+                saveTimer_ = 0
+            else
+                saveTimer_ = 0
+            end
         end
     end
     FloatingToast.Update(dt)
@@ -912,7 +824,8 @@ function Start()
     RegisterModalGuards()
     graphics.windowTitle = CONFIG.Title
     math.randomseed(os.time())
-    saveData_, hasSaveData_ = SaveSystem.Load()
+    saveData_, hasSaveData_ = nil, false
+    saveDisabled_ = true
 
     InitMaterials()
     FarmSystem.Init(CONFIG, materials_)
@@ -1012,6 +925,7 @@ function Start()
 
     WalletSystem.Init(CONFIG.StartMoney)
     InventorySystem.Init(GameConfig, {
+        allowLocalMutations = false,
         showToast = ShowToast,
         showFloatingToast = function(text)
             FloatingToast.Show(text, { fontSize = 20, duration = 1.5, yRatio = 0.38, priority = 5 })
@@ -1023,15 +937,20 @@ function Start()
 
     SeedPackSystem.Init(GameConfig, InventorySystem)
     ActivitySystem.Init(GameConfig, InventorySystem, {
+        allowLocalRewards = false,
         showToast = ShowToast,
         showFloatingToast = function(text)
             FloatingToast.Show(text, { fontSize = 20, duration = 1.5, yRatio = 0.38, priority = 5 })
         end,
     })
     CommissionSystem.Init(GameConfig, InventorySystem, {
+        allowLocalMutations = false,
         showToast = ShowToast,
         getPlayerLevel = function()
             return TalentSystem.GetLevel()
+        end,
+        requestServerRefresh = function()
+            return EconomyCloudSystem.RequestCommissions()
         end,
         onRefresh = function()
             print("[委托] 新委托已刷新")
@@ -1043,6 +962,7 @@ function Start()
         rarityOrder = RARITY_ORDER,
         countSeedPacks = CountSeedPacks,
         showToast = ShowToast,
+        markDirty = MarkSaveDirty,
         refreshUI = RefreshUI,
         rebuildUI = function()
             if RebuildUI ~= nil then RebuildUI() end
@@ -1064,7 +984,11 @@ function Start()
         closePackPanel = function() SeedPackOpeningController.ClosePanel() end,
         skipOpening = function() SeedPackOpeningController.SkipOpening() end,
         getSynthesisTarget = function(packId) return InventorySystem.GetSynthesisTarget(packId) end,
-        synthesizePack = function(packId) return InventorySystem.SynthesizePack(packId) end,
+        synthesizePack = function(packId)
+            local ok = EconomyCloudSystem.SynthesizePack(packId)
+            if ok then ShowToast("正在请求服务器合成种子包...") end
+            return ok, nil
+        end,
         showToast = ShowToast,
         showFloatingToast = function(text)
             FloatingToast.Show(text, { fontSize = 20, duration = 1.5, yRatio = 0.42, priority = 8 })
@@ -1084,7 +1008,11 @@ function Start()
         getTaskModal = function() return taskModal_ end,
         setTaskModal = function(modal) taskModal_ = modal end,
         areAllDailyTasksCompleted = AreAllDailyTasksCompleted,
-        claimDailyReward = function() return InventorySystem.ClaimDailyReward() end,
+        claimDailyReward = function()
+            local ok = EconomyCloudSystem.ClaimDailyReward()
+            if ok then ShowToast("正在请求服务器发放每日奖励...") end
+            return ok, nil
+        end,
         suppressWorldTap = RequestSuppressWorldTap,
         showToast = ShowToast,
         rebuildUI = function()
@@ -1101,19 +1029,19 @@ function Start()
         getTimeLeftText = function() return ActivitySystem.GetTimeLeftText() end,
         getSweetSubmitItems = function() return ActivitySystem.GetSweetSubmitItems() end,
         submitSweetCrop = function(item)
-            local ok, err = ActivitySystem.SubmitSweetCrop(item)
-            if ok then MarkSaveDirty() end
-            return ok, err
+            local ok = EconomyCloudSystem.SubmitActivityCrop(item)
+            if ok then ShowToast("正在请求服务器上交作物...") end
+            return ok, ok and nil or "server_required"
         end,
         exchangeSweetReward = function(rewardId)
-            local ok, err = ActivitySystem.ExchangeSweetReward(rewardId)
-            if ok then MarkSaveDirty() end
-            return ok, err
+            local ok = EconomyCloudSystem.ExchangeActivityReward(rewardId)
+            if ok then ShowToast("正在请求服务器兑换奖励...") end
+            return ok, ok and nil or "server_required"
         end,
         drawAlienPack = function(count)
-            local ok, err = ActivitySystem.DrawAlienPack(count)
-            if ok then MarkSaveDirty() end
-            return ok, err
+            local ok = EconomyCloudSystem.DrawActivityPack(count)
+            if ok then ShowToast("正在请求服务器抽取奖励...") end
+            return ok, ok and nil or "server_required"
         end,
         getLeaderboard = function(activityId) return ActivitySystem.GetLeaderboard(activityId) end,
         suppressWorldTap = RequestSuppressWorldTap,
@@ -1155,8 +1083,8 @@ function Start()
         getRequirementText = function(commission) return CommissionSystem.GetRequirementText(commission) end,
         getMatchingItems = function(commission) return CommissionSystem.GetMatchingHarvestedItems(commission) end,
         completeCommission = function(commission, item)
-            local ok = CommissionSystem.CompleteCommission(commission, item)
-            if ok then MarkSaveDirty() end
+            local ok = EconomyCloudSystem.CompleteCommission(commission, item)
+            if ok then ShowToast("正在请求服务器提交委托...") end
             RefreshUI(true)
             return ok
         end,
@@ -1283,9 +1211,12 @@ function Start()
             MarkSaveDirty()
             if ProfileView.IsOpen() then
                 ProfileView.RebuildProfileContent()
-                return
             end
-            RefreshUI(true)
+            if RebuildUI ~= nil then
+                RebuildUI()
+            else
+                RefreshUI(true)
+            end
         end,
     })
 
@@ -1341,6 +1272,7 @@ function Start()
     })
 
     TalentSystem.Init({
+        allowLocalMutations = false,
         onHarvestExp = function(_exp)
             RefreshUI(true)
         end,
@@ -1357,13 +1289,18 @@ function Start()
         getGold = function()
             return WalletSystem.GetBalance()
         end,
-        spendGold = function(amount)
-            WalletSystem.Spend(amount)
+        spendGold = function(_amount)
+            ShowToast("金币消耗必须由服务器确认")
+            return false
         end,
     })
 
     TalentView.Init({
         suppressWorldTap = RequestSuppressWorldTap,
+        unlockTalent = function(talentId)
+            return EconomyCloudSystem.UnlockTalent(talentId)
+        end,
+        showToast = ShowToast,
         onTalentChanged = function()
             MarkSaveDirty()
         end,
@@ -1384,6 +1321,9 @@ function Start()
             if RebuildUI ~= nil then RebuildUI() end
         end,
         refreshUI = RefreshUI,
+        expandPlot = function()
+            return EconomyCloudSystem.ExpandPlot()
+        end,
     })
 
     ExpansionView.Init({
@@ -1398,9 +1338,9 @@ function Start()
             return ProgressionSystem.GetTourValue()
         end,
         expandNextPlot = function()
-            local ok, err = ExpandNextPlot()
-            if ok then MarkSaveDirty() end
-            return ok, err
+            local ok = EconomyCloudSystem.ExpandPlot()
+            if ok then ShowToast("正在请求服务器扩地...") end
+            return ok, ok and nil or "server_required"
         end,
     })
 
@@ -1415,46 +1355,31 @@ function Start()
 
     -- 初始化商店系统
     Shop.Init({
+        serverAuthoritative = true,
         PLANTS = PLANTS,
         getMoney = function() return WalletSystem.GetBalance() end,
         getGardenLevel = GetGardenLevel,
-        onBuy = function(cost, plantIndex, count)
+        onBuy = function(_cost, plantIndex, count)
             count = math.max(1, math.floor(tonumber(count or 1) or 1))
-            if plantIndex ~= nil and EconomyCloudSystem.BuySeed(plantIndex, cost, count) then
+            if plantIndex ~= nil and EconomyCloudSystem.BuySeed(plantIndex, nil, count) then
+                ShowToast("正在请求服务器购买...")
                 return true
             end
-            if plantIndex ~= nil and EconomyCloudSystem.IsAuthoritativeClient and EconomyCloudSystem.IsAuthoritativeClient() then
-                return false
-            end
-            if not WalletSystem.Spend(cost) then
-                return false
-            end
-            if plantIndex ~= nil then
-                AddSeedToBag(plantIndex, count, 0)
-            end
-            local text = "购买成功 x" .. tostring(count)
-            ShowToast(text)
-            FloatingToast.Show(text, { fontSize = 20, duration = 1.5, yRatio = 0.38, priority = 6 })
-            MarkSaveDirty()
-            RefreshUI(true)
-            return true
+            ShowToast("服务器尚未就绪，无法购买")
+            return false
         end,
         showToast = ShowToast,
     })
 
-    if hasSaveData_ then
-        ApplyGameSaveData(saveData_)
-        unlockedPlotCount_ = ProgressionSystem.GetUnlockedPlotCount()
-        ApplyUnlockedPlotCount()
-        UpdateCurrentTourValue()
-        saveDirty_ = false
-        saveTimer_ = 0
-        print("[存档] 游戏进度已恢复")
-    end
+    -- 纯服务器游戏：不从客户端本地存档恢复经济、背包或农场。
 
     EconomyCloudSystem.Init({
         WalletSystem = WalletSystem,
         InventorySystem = InventorySystem,
+        TalentSystem = TalentSystem,
+        ProgressionSystem = ProgressionSystem,
+        CommissionSystem = CommissionSystem,
+        ActivitySystem = ActivitySystem,
         getGold = function() return WalletSystem.GetBalance() end,
         syncInventoryRefs = SyncInventoryRefs,
         markDirty = MarkSaveDirty,
@@ -1471,8 +1396,17 @@ function Start()
         onSeedPackOpened = function(data)
             SeedPackOpeningController.ApplyServerOpenResult(data)
         end,
+        onActivityDrawResult = function(rewards)
+            ActivityView.ShowAlienDrawResult(rewards)
+        end,
         onAuthFarmReceived = function(farm)
             ApplyAuthoritativeFarmState(farm)
+        end,
+        onProgressionApplied = function(_progression)
+            unlockedPlotCount_ = ProgressionSystem.GetUnlockedPlotCount()
+            ApplyUnlockedPlotCount()
+            RefreshSelection()
+            RefreshUI(true)
         end,
         rebuildUI = function()
             if RebuildUI ~= nil then RebuildUI() end
@@ -1565,19 +1499,10 @@ function Start()
         end,
     })
 
-    if not hasSaveData_ and not IsAuthoritativeMultiplayer() then
-        AddSeedToBag(1, 6, 0)
-        AddSeedToBag(21, 4, 0)
-        AddSeedToBag(2, 2, 0)
-        AddSeedPack("pack_common", 1)
-        SaveGameNow()
-        saveDirty_ = false
-        print("已赠送胡萝卜x6、玉米x4、番茄x2，以及普通种子包x1。")
-    end
-
     SocialGardenSystem.UploadSnapshot()
     EconomyCloudSystem.RequestState()
     EconomyCloudSystem.RequestAuthFarm()
+    EconomyCloudSystem.RequestCommissions()
     RebuildUI()
     RefreshUI(true)
 

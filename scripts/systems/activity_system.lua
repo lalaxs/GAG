@@ -13,6 +13,20 @@ local UIEvents = require("utils.ui_events")
 local cfg_ = nil
 local inventory_ = nil
 local callbacks_ = {}
+local localRewardsEnabled_ = true
+
+local function IsClientRuntime()
+    return IsClientMode ~= nil and IsClientMode()
+end
+
+local function CanApplyLocalReward(actionName)
+    if localRewardsEnabled_ == true then return true end
+    if IsClientRuntime() then
+        print("[活动] 已阻止客户端本地活动结算: " .. tostring(actionName or "unknown"))
+        return false
+    end
+    return true
+end
 
 local SECONDS_PER_DAY = 86400
 
@@ -115,6 +129,7 @@ function ActivitySystem.Init(config, inventorySystem, callbacks)
     cfg_ = config
     inventory_ = inventorySystem
     callbacks_ = callbacks or {}
+    localRewardsEnabled_ = callbacks_.allowLocalRewards ~= false
 end
 
 function ActivitySystem.GetState()
@@ -139,7 +154,14 @@ function ActivitySystem.LoadSaveData(data)
 end
 
 function ActivitySystem.GetActiveActivityId()
-    return "alien"
+    return cfg_ and cfg_.GetActiveActivityId and cfg_.GetActiveActivityId() or "sweet"
+end
+
+function ActivitySystem.GetCurrentCycleInfo()
+    if cfg_ and cfg_.GetActivityCycleInfo then
+        return cfg_.GetActivityCycleInfo()
+    end
+    return { activityId = ActivitySystem.GetActiveActivityId(), cycleId = "sweet_0", timeLeft = 0 }
 end
 
 function ActivitySystem.GetActiveActivity()
@@ -148,11 +170,7 @@ function ActivitySystem.GetActiveActivity()
 end
 
 function ActivitySystem.GetTimeLeftText()
-    local activityConfig = cfg_.ACTIVITY_CONFIG or {}
-    local cycleDays = activityConfig.cycleDays or 3
-    local duration = cycleDays * SECONDS_PER_DAY
-    local now = os and os.time and os.time() or 0
-    local left = duration - (now % duration)
+    local left = cfg_ and cfg_.GetActivityTimeLeftSeconds and cfg_.GetActivityTimeLeftSeconds() or 0
     local days = math.floor(left / SECONDS_PER_DAY)
     local hours = math.floor((left % SECONDS_PER_DAY) / 3600)
     if days > 0 then
@@ -188,6 +206,7 @@ function ActivitySystem.ApplyPlantingMutation(plant, mutation)
 end
 
 function ActivitySystem.OnCropHarvested(crop)
+    if not CanApplyLocalReward("OnCropHarvested") then return nil end
     local id, activity = ActivitySystem.GetActiveActivity()
     if crop == nil or activity == nil then return nil end
 
@@ -218,7 +237,9 @@ function ActivitySystem.OnCropHarvested(crop)
             inventory_.AddSeedToBag(plantIndex, 1, 0)
             state_.dark.darkSeedDrops = state_.dark.darkSeedDrops + 1
             local plant = cfg_.PLANTS[plantIndex]
-            if callbacks_.showToast then callbacks_.showToast("黑暗来临掉落: " .. (plant and plant.name or "限定种子")) end
+            local text = "黑暗来临掉落: " .. (plant and (plant.name .. "种子") or "限定种子")
+            if callbacks_.showToast then callbacks_.showToast(text) end
+            if callbacks_.showFloatingToast then callbacks_.showFloatingToast(text) end
             EmitActivityChanged("dark_seed_drop")
             EventBus.Emit(UIEvents.INVENTORY_CHANGED, { reason = "activity_dark_seed_drop" })
             return { type = "dark_seed", plantIndex = plantIndex }
@@ -250,6 +271,7 @@ function ActivitySystem.GetSweetSubmitItems()
 end
 
 function ActivitySystem.SubmitSweetCrop(item)
+    if not CanApplyLocalReward("SubmitSweetCrop") then return false, "活动奖励由服务器结算" end
     local id = ActivitySystem.GetActiveActivityId()
     if id ~= "sweet" then return false, "当前不是甜蜜蜜活动" end
     local value = ActivitySystem.GetSweetSubmitValue(item)
@@ -264,6 +286,7 @@ function ActivitySystem.SubmitSweetCrop(item)
 end
 
 function ActivitySystem.ExchangeSweetReward(rewardId)
+    if not CanApplyLocalReward("ExchangeSweetReward") then return false, "活动奖励由服务器结算" end
     local id, activity = ActivitySystem.GetActiveActivity()
     if id ~= "sweet" or activity == nil then return false, "当前不是甜蜜蜜活动" end
     local reward = nil
@@ -292,6 +315,7 @@ function ActivitySystem.ExchangeSweetReward(rewardId)
 end
 
 function ActivitySystem.DrawAlienPack(count)
+    if not CanApplyLocalReward("DrawAlienPack") then return false, "活动奖励由服务器结算" end
     local id, activity = ActivitySystem.GetActiveActivity()
     if id ~= "alien" or activity == nil then return false, "当前不是外星基因活动" end
     count = count or 1

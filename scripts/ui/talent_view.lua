@@ -252,17 +252,14 @@ RefreshDetailPanel = function(successText)
             fontWeight = "bold",
             borderRadius = 10,
             marginTop = 8,
+            marginBottom = 4,
             onClick = function()
                 if deps_.suppressWorldTap then deps_.suppressWorldTap() end
                 local unlockedTalentId = selectedTalentId_
-                local talentName = talent.name
-                if TalentSystem.UnlockTalent(unlockedTalentId) then
-                    local successText = "解锁成功: " .. talentName
-                    FloatingToast.Show(successText)
-                    RefreshTalentState(successText)
-                    if deps_.onTalentChanged then
-                        deps_.onTalentChanged()
-                    end
+                if deps_.unlockTalent and deps_.unlockTalent(unlockedTalentId) then
+                    FloatingToast.Show("正在请求服务器解锁天赋")
+                elseif deps_.showToast then
+                    deps_.showToast("服务器尚未就绪，无法解锁天赋")
                 end
             end,
         })
@@ -385,7 +382,7 @@ function TalentView.Show()
     local isMax = TalentSystem.IsMaxLevel()
     local expProgress = isMax and 1.0 or (exp / expNeeded)
 
-    -- 底部详情面板（固定高度避免弹窗抖动）
+    -- 底部详情面板（固定高度避免可解锁按钮被裁剪）
     detailPanel_ = UI.Panel {
         width = "100%",
         padding = 12,
@@ -393,7 +390,8 @@ function TalentView.Show()
         borderRadius = 10,
         borderWidth = 1,
         borderColor = {218, 208, 182, 255},
-        minHeight = 120,
+        minHeight = 176,
+        flexShrink = 0,
     }
 
     pointsLabel_ = UI.Label { text = tostring(points), fontSize = 16, fontWeight = "bold", fontColor = {255, 255, 255, 255} }
@@ -488,12 +486,12 @@ function TalentView.Show()
 
     modal_:AddContent(UI.Panel {
         width = "100%",
-        gap = 2,
+        gap = 4,
         children = contentChildren,
     })
 
     RefreshDetailPanel()
-    ModalAnim.Apply(modal_, { fixedHeight = 680 })
+    ModalAnim.Apply(modal_, { fixedHeight = 760 })
     modal_:Open()
 end
 

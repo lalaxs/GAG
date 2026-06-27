@@ -119,6 +119,21 @@ local function GetWeightBonusForPlot(plotIndex)
     return GetPlotModifier(plotIndex).weightBonus or 1.0
 end
 
+local function IsSpecialAllowedForNormalRoll(special)
+    if special == nil then return false end
+    return special.exclusiveActivity == nil
+end
+
+local function RandNormalSpecialMutation()
+    local pool = {}
+    for _, special in ipairs(cfg_.SPECIAL_MUTATIONS or {}) do
+        if IsSpecialAllowedForNormalRoll(special) then
+            table.insert(pool, special)
+        end
+    end
+    return RandItem(pool)
+end
+
 local function RollMutation(plant, seedBuff, plotIndex)
     seedBuff = seedBuff or 0
     local modifier = GetPlotModifier(plotIndex)
@@ -145,17 +160,21 @@ local function RollMutation(plant, seedBuff, plotIndex)
     end
 
     if math.random() <= specialChance then
-        local special = RandItem(cfg_.SPECIAL_MUTATIONS)
-        table.insert(mutation.specials, special)
-        mutation.priceMultiplier = mutation.priceMultiplier * (special.multiplier or 2.0)
-        mutation.timeMultiplier = mutation.timeMultiplier * (special.timeMultiplier or 1.05)
+        local special = RandNormalSpecialMutation()
+        if special ~= nil then
+            table.insert(mutation.specials, special)
+            mutation.priceMultiplier = mutation.priceMultiplier * (special.multiplier or 2.0)
+            mutation.timeMultiplier = mutation.timeMultiplier * (special.timeMultiplier or 1.05)
+        end
     end
 
     if #mutation.specials == 1 and math.random() <= doubleChance then
-        local special = RandItem(cfg_.SPECIAL_MUTATIONS)
-        table.insert(mutation.specials, special)
-        mutation.priceMultiplier = mutation.priceMultiplier * (special.multiplier or 2.0)
-        mutation.timeMultiplier = mutation.timeMultiplier * (special.timeMultiplier or 1.05)
+        local special = RandNormalSpecialMutation()
+        if special ~= nil then
+            table.insert(mutation.specials, special)
+            mutation.priceMultiplier = mutation.priceMultiplier * (special.multiplier or 2.0)
+            mutation.timeMultiplier = mutation.timeMultiplier * (special.timeMultiplier or 1.05)
+        end
     end
 
     if deps_.ActivitySystem and deps_.ActivitySystem.ApplyPlantingMutation then

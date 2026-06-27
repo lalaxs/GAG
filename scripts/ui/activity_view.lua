@@ -528,7 +528,7 @@ local function BuildRewardCard(reward, state, canInteract)
                     if deps_.suppressWorldTap then deps_.suppressWorldTap() end
                     local ok, err = deps_.exchangeSweetReward(reward.id)
                     if ok then
-                        ShowActivityFloatingToast("兑换成功: " .. displayName)
+                        ShowActivityFloatingToast(err == nil and "兑换请求已发送" or ("兑换成功: " .. displayName))
                     else
                         ShowActivityFloatingToast(err or "兑换失败")
                     end
@@ -769,7 +769,7 @@ local function BuildAlienResultCards(rewards)
 end
 
 function ActivityView.ShowAlienDrawResult(rewards)
-    if rewards == nil then return end
+    if rewards == nil or #rewards == 0 then return end
     if alienResultModal_ ~= nil then
         alienResultModal_:Close()
         alienResultModal_ = nil
@@ -908,10 +908,18 @@ local function BuildAlienActions(activity, state, isActive)
                     textColor = {255, 255, 255, 255},
                     onClick = function()
                         if deps_.suppressWorldTap then deps_.suppressWorldTap() end
+                        if (state.genes or 0) < cost then
+                            ShowActivityFloatingToast("外星基因不足")
+                            return
+                        end
                         local ok, errOrRewards = deps_.drawAlienPack(count)
                         if ok then
-                            ShowActivityFloatingToast("抽取成功")
-                            ActivityView.ShowAlienDrawResult(errOrRewards)
+                            if errOrRewards ~= nil and #errOrRewards > 0 then
+                                ShowActivityFloatingToast("抽取成功")
+                                ActivityView.ShowAlienDrawResult(errOrRewards)
+                            else
+                                ShowActivityFloatingToast("抽取请求已发送")
+                            end
                         else
                             ShowActivityFloatingToast(errOrRewards or "抽取失败")
                         end
@@ -1085,7 +1093,11 @@ function ActivityView.OpenSubmitPicker()
                         if deps_.suppressWorldTap then deps_.suppressWorldTap() end
                         local ok, errOrValue = deps_.submitSweetCrop(item)
                         if ok then
-                            ShowActivityFloatingToast("上交成功，甜蜜值 +" .. tostring(errOrValue or entry.value))
+                            if errOrValue ~= nil then
+                                ShowActivityFloatingToast("上交成功，甜蜜值 +" .. tostring(errOrValue or entry.value))
+                            else
+                                ShowActivityFloatingToast("上交请求已发送")
+                            end
                         elseif deps_.showToast then
                             deps_.showToast(errOrValue or "上交失败")
                         end

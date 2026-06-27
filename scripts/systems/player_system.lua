@@ -147,6 +147,33 @@ local function TrimName(name)
     return name
 end
 
+local function NormalizeUserId(userId)
+    if userId == nil or userId == 0 or userId == "" then return nil end
+    local text = tostring(userId)
+    text = string.gsub(text, "^%s+", "")
+    text = string.gsub(text, "%s+$", "")
+    if text == "" or text == "0" then return nil end
+    local integerText = string.match(text, "^(%-?%d+)%.0+$")
+    if integerText ~= nil then return integerText end
+    local numericId = tonumber(text)
+    if numericId ~= nil and numericId == math.floor(numericId) and math.abs(numericId) < 9007199254740992 then
+        return string.format("%.0f", numericId)
+    end
+    return text
+end
+
+local function SameUserId(left, right)
+    local leftId = NormalizeUserId(left)
+    local rightId = NormalizeUserId(right)
+    return leftId ~= nil and rightId ~= nil and leftId == rightId
+end
+
+local function GetNicknameRows(response)
+    if type(response) ~= "table" then return {} end
+    if type(response.nicknames) == "table" then return response.nicknames end
+    return response
+end
+
 local function GetTextLength(text)
     local ok, length = pcall(utf8.len, text or "")
     if ok and length ~= nil then
@@ -243,7 +270,7 @@ end
 
 local function FetchTapNickname()
     local userId = GetCurrentUserId()
-    state_.userId = userId
+    state_.userId = NormalizeUserId(userId) or userId
     nicknameFetchAttempts_ = nicknameFetchAttempts_ + 1
     if userId == nil then
         if nicknameFetchAttempts_ >= MAX_NICKNAME_FETCH_ATTEMPTS then
@@ -261,18 +288,16 @@ local function FetchTapNickname()
 
     GetUserNickname({
         userIds = { userId },
-        onSuccess = function(nicknames)
-            if type(nicknames) == "table" then
-                for _, info in ipairs(nicknames) do
-                    if tostring(info.userId) == tostring(userId) and info.nickname ~= nil and info.nickname ~= "" then
-                        state_.tapNickname = TrimName(info.nickname)
-                        print("[玩家资料] 已读取 Tap 账号: " .. tostring(userId) .. " / " .. state_.tapNickname)
-                        NotifyChanged()
-                        return
-                    end
+        onSuccess = function(response)
+            for _, info in ipairs(GetNicknameRows(response)) do
+                if SameUserId(info.userId, userId) and info.nickname ~= nil and info.nickname ~= "" then
+                    state_.tapNickname = TrimName(info.nickname)
+                    print("[玩家资料] 已读取 Tap 账号: " .. tostring(state_.userId) .. " / " .. state_.tapNickname)
+                    NotifyChanged()
+                    return
                 end
             end
-            print("[玩家资料] 未查询到 Tap 昵称，使用默认昵称，userId=" .. tostring(userId))
+            print("[玩家资料] 未查询到 Tap 昵称，使用默认昵称，userId=" .. tostring(state_.userId))
             NotifyChanged()
         end,
         onError = function(errorCode)
@@ -291,10 +316,13 @@ local function ApplyServerProfile(data)
     if data.nickname ~= nil and data.nickname ~= "" then
         nickname = TrimName(data.nickname)
     end
-    if tostring(state_.userId) == tostring(userId) and state_.tapNickname == nickname then
+    if nickname == "Tap玩家" and state_.tapNickname ~= nil and state_.tapNickname ~= "" and state_.tapNickname ~= "Tap玩家" then
+        nickname = state_.tapNickname
+    end
+    if SameUserId(state_.userId, userId) and state_.tapNickname == nickname then
         return true
     end
-    state_.userId = userId
+    state_.userId = NormalizeUserId(userId) or userId
     state_.tapNickname = nickname
     print("[玩家资料] 已从服务器认证资料读取 Tap 账号: " .. tostring(state_.userId) .. " / " .. tostring(state_.tapNickname))
     NotifyChanged()

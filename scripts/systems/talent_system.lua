@@ -100,15 +100,38 @@ local state_ = {
 }
 
 local callbacks_ = {}
+local localMutationsEnabled_ = true
+
+local function IsClientRuntime()
+    return IsClientMode ~= nil and IsClientMode()
+end
+
+local function CanMutateLocalState(actionName)
+    if localMutationsEnabled_ == true then return true end
+    if IsClientRuntime() then
+        print("[天赋] 已阻止客户端本地权威写入: " .. tostring(actionName or "unknown"))
+        return false
+    end
+    return true
+end
 
 function TalentSystem.Init(callbacks)
     callbacks_ = callbacks or {}
+    localMutationsEnabled_ = callbacks_.allowLocalMutations ~= false
     state_ = {
         unlockedTalents = {},
         talentPoints = 1,
         level = 1,
         exp = 0,
     }
+end
+
+function TalentSystem.SetLocalMutationsEnabled(enabled)
+    localMutationsEnabled_ = enabled == true
+end
+
+function TalentSystem.AreLocalMutationsEnabled()
+    return localMutationsEnabled_ == true
 end
 
 function TalentSystem.GetLevelUpTalentPoints(level)
@@ -143,6 +166,7 @@ end
 ---@param priceMultiplier number
 ---@return number
 function TalentSystem.AddHarvestExp(rarity, priceMultiplier)
+    if not CanMutateLocalState("AddHarvestExp") then return 0 end
     if TalentSystem.IsMaxLevel() then return 0 end
 
     local baseExp = TalentSystem.RARITY_BASE_EXP[rarity] or 5
@@ -227,6 +251,7 @@ function TalentSystem.GetBonus(bonusKey)
 end
 
 function TalentSystem.UnlockTalent(talentId)
+    if not CanMutateLocalState("UnlockTalent") then return false end
     if not TalentSystem.CanUnlockTalent(talentId) then return false end
     local talent = TalentSystem.FindTalent(talentId)
     state_.talentPoints = state_.talentPoints - talent.cost
