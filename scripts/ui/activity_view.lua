@@ -8,6 +8,7 @@
 local UI = require("urhox-libs/UI")
 local ModalAnim = require("ui.modal_anim")
 local FloatingToast = require("ui.floating_toast")
+local LeaderboardView = require("ui.leaderboard_view")
 
 local ActivityView = {}
 
@@ -1056,6 +1057,23 @@ BuildMainContent = function(activityId, activity, state, isActive, activeId, con
         paddingBottom = 4,
         gap = 8,
         children = {
+            UI.Panel {
+                width = "100%",
+                flexDirection = "row",
+                justifyContent = "flex-end",
+                children = {
+                    LeaderboardView.BuildButton({
+                        text = "活动排行",
+                        width = 118,
+                        height = 42,
+                        fontSize = 14,
+                        tab = "activity",
+                        backgroundColor = GetTheme(activityId).accent,
+                        fontColor = {255, 255, 255, 255},
+                        borderRadius = 18,
+                    }),
+                },
+            },
             activityId == "sweet" and BuildSweetPrototype(activity, state, isActive)
                 or activityId == "alien" and BuildAlienPrototype(activity, state, isActive)
                 or BuildDarkPrototype(activity, state, isActive),

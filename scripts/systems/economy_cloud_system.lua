@@ -105,6 +105,10 @@ local function ApplyState(cloudState, options)
         if deps_.InventorySystem.GetDailyTaskState ~= nil and cloudState.dailyTaskState ~= nil then
             ReplaceTable(deps_.InventorySystem.GetDailyTaskState(), cloudState.dailyTaskState)
         end
+        if deps_.InventorySystem.GetTutorialState ~= nil and cloudState.tutorial ~= nil then
+            ReplaceTable(deps_.InventorySystem.GetTutorialState(), cloudState.tutorial)
+            deps_.InventorySystem.GetTutorialState().plantGuideDone = deps_.InventorySystem.GetTutorialState().plantGuideDone == true
+        end
     end
     if deps_.TalentSystem and deps_.TalentSystem.LoadSaveData and cloudState.talent ~= nil then
         deps_.TalentSystem.LoadSaveData(cloudState.talent)
@@ -150,6 +154,7 @@ function EconomyCloudSystem.Init(deps)
         SubscribeToEvent(Shared.EVENTS.SUBMIT_ACTIVITY_CROP_RESPONSE, "HandleGardenSubmitActivityCropResponse")
         SubscribeToEvent(Shared.EVENTS.EXCHANGE_ACTIVITY_REWARD_RESPONSE, "HandleGardenExchangeActivityRewardResponse")
         SubscribeToEvent(Shared.EVENTS.DRAW_ACTIVITY_PACK_RESPONSE, "HandleGardenDrawActivityPackResponse")
+        SubscribeToEvent(Shared.EVENTS.AD_REWARD_RESPONSE, "HandleGardenAdRewardResponse")
         SubscribeToEvent("ServerReady", "HandleGardenEconomyServerReady")
     end
 end
@@ -398,6 +403,16 @@ function EconomyCloudSystem.DrawActivityPack(count)
     return false
 end
 
+function EconomyCloudSystem.RequestAdReward(rewardType, extra)
+    if BlockIfAuthoritativeNotReady(rewardType == "mature_plot") then return false end
+    local payload = extra or {}
+    payload.rewardType = rewardType
+    payload = BeginRequest("adReward", payload)
+    if SendRequest(Shared.EVENTS.REQUEST_AD_REWARD, payload) then return true end
+    FinishRequest(payload.requestId, "adReward")
+    return false
+end
+
 local function HandleGenericStateResult(data, requestType, defaultSuccess, defaultFail)
     FinishRequest(data.requestId, requestType)
     if data.success then
@@ -616,6 +631,23 @@ function EconomyCloudSystem.HandleDrawActivityPackResponse(data)
     end
 end
 
+function EconomyCloudSystem.HandleAdRewardResponse(data)
+    FinishRequest(data.requestId, "adReward")
+    if data.success then
+        if data.state ~= nil then ApplyState(data.state) end
+        if data.farm ~= nil and deps_.onAuthFarmReceived then deps_.onAuthFarmReceived(data.farm) end
+        if deps_.onAdRewardGranted then deps_.onAdRewardGranted(data) end
+        if deps_.showToast then deps_.showToast(data.message or "广告奖励已发放") end
+        if deps_.showFloatingToast then deps_.showFloatingToast(data.message or "广告奖励已发放") end
+        if deps_.refreshUI then deps_.refreshUI(true) end
+    else
+        if data.state ~= nil then ApplyState(data.state) end
+        if data.farm ~= nil and deps_.onAuthFarmReceived then deps_.onAuthFarmReceived(data.farm) end
+        if deps_.onAdRewardFailed then deps_.onAdRewardFailed(data) end
+        if deps_.showToast then deps_.showToast(data.message or "广告奖励领取失败") end
+    end
+end
+
 function EconomyCloudSystem.ApplyAuthoritativeState(cloudState)
     return ApplyState(cloudState)
 end
@@ -690,6 +722,10 @@ end
 
 function HandleGardenDrawActivityPackResponse(eventType, eventData)
     EconomyCloudSystem.HandleDrawActivityPackResponse(Shared.ReadEventData(eventData))
+end
+
+function HandleGardenAdRewardResponse(eventType, eventData)
+    EconomyCloudSystem.HandleAdRewardResponse(Shared.ReadEventData(eventData))
 end
 
 function HandleGardenEconomyServerReady(eventType, eventData)

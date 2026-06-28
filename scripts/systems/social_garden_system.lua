@@ -14,7 +14,7 @@ local SocialGardenSystem = {}
 
 local MODE_OWN = "own"
 local MODE_VISIT = "visit"
-local DAILY_STEAL_LIMIT = 10
+local DAILY_STEAL_LIMIT = 5
 local DAILY_GIFT_LIMIT = 5
 local ALLOW_DEMO_SOCIAL = false
 local ALLOW_DEMO_ECONOMY_REWARDS = false
@@ -100,12 +100,16 @@ local function ShowToastMessage(message, floating)
     if floating == true and deps_.showFloatingToast then deps_.showFloatingToast(message) end
 end
 
+local function GetDailyStealLimit()
+    return math.max(DAILY_STEAL_LIMIT, math.floor(tonumber(state_.daily.stealLimit or DAILY_STEAL_LIMIT) or DAILY_STEAL_LIMIT))
+end
+
 local function GetStealCount()
     return math.max(0, math.floor(tonumber(state_.daily.stealCount or 0) or 0))
 end
 
 local function HasStealAttemptsLeft()
-    return GetStealCount() < DAILY_STEAL_LIMIT
+    return GetStealCount() < GetDailyStealLimit()
 end
 
 local function ShowStealLimitInsufficient()
@@ -1056,6 +1060,9 @@ function SocialGardenSystem.HandleStealResponse(data)
             elseif data.daily.stealCountDelta ~= nil then
                 state_.daily.stealCount = (state_.daily.stealCount or 0) + data.daily.stealCountDelta
             end
+            if data.daily.limit ~= nil then
+                state_.daily.stealLimit = data.daily.limit
+            end
         end
         SocialGardenSystem.RequestSocialState()
         local message = data.message or "偷菜成功"
@@ -1066,8 +1073,13 @@ function SocialGardenSystem.HandleStealResponse(data)
         EmitSocialChanged("updated")
     elseif deps_.showToast then
         if IsStealLimitError(data) then
-            if data.daily ~= nil and data.daily.stealCount ~= nil then
-                state_.daily.stealCount = data.daily.stealCount
+            if data.daily ~= nil then
+                if data.daily.stealCount ~= nil then
+                    state_.daily.stealCount = data.daily.stealCount
+                end
+                if data.daily.limit ~= nil then
+                    state_.daily.stealLimit = data.daily.limit
+                end
             end
             ShowStealLimitInsufficient()
         else

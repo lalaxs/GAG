@@ -1,27 +1,38 @@
 {
   "$schema": "../schemas/project.schema.json",
-  "project_id": "p_bfqc",
+  "project_id": "p_iemc",
   "author": {
     "id": "858557875"
   },
   "entry": "main.lua",
   "version": "1.0.0",
   "taptap_publish": {
-    "title": "<game title, required>",
-    "description": "<game description>",
-    "category": "<game category: rpg, casual, action, strategy, simulation, trivia, arcade, adventure, card, sports, racing, puzzle, educational, music, word, board>",
+    "title": "小花园",
+    "description": "种植作物、扩展花园、收集图鉴，经营属于你的治愈小花园。",
+    "category": "casual",
     "screen_orientation": "portrait",
     "collection_type": "sce",
-    "trial_note": "<developer's note>",
+    "trial_note": "欢迎来到小花园，体验轻松治愈的种植经营玩法。",
     "transparent": false,
     "app_platforms": "1,2",
-    "developer_id": 356804
+    "developer_id": 399464
   },
   "assets": {
-    "icon": "",
+    "icon": "./assets/image/icon.png",
     "screenshots": [],
-    "promotional_image": ""
+    "promotional_image": "./assets/image/1920.png",
+    "icon_url": "https://tapcode-sce.spark.xd.com/assets/game_material/p_iemc/icon.png",
+    "promotional_image_url": "https://tapcode-sce.spark.xd.com/assets/game_material/p_iemc/1920.png",
+    "square_promotional_image": "./assets/image/1440.png",
+    "square_promotional_image_url": "https://tapcode-sce.spark.xd.com/assets/game_material/p_iemc/1440.png",
+    "cover_horizontal": "./assets/image/460.png",
+    "cover_horizontal_url": "https://tapcode-sce.spark.xd.com/assets/game_material/p_iemc/460.png",
+    "cover_vertical": "./assets/image/600.png",
+    "cover_vertical_url": "https://tapcode-sce.spark.xd.com/assets/game_material/p_iemc/600.png"
   },
   "entry@client": "main.lua",
-  "entry@server": "server_main.lua"
+  "entry@server": "server_main.lua",
+  "metadata": {
+    "updated_at": "2026-06-28T14:33:43.712Z"
+  }
 }

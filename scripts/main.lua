@@ -32,6 +32,7 @@ local ModelPreviewSystem = require("systems.model_preview_system")
 local PlayerSystem = require("systems.player_system")
 local SocialGardenSystem = require("systems.social_garden_system")
 local EconomyCloudSystem = require("systems.economy_cloud_system")
+local LeaderboardSystem = require("systems.leaderboard_system")
 -- 纯服务器游戏：主游戏进度只从服务端 serverCloud 同步，客户端不再读写本地完整存档。
 local TalentView = require("ui.talent_view")
 local ExpansionView = require("ui.expansion_view")
@@ -46,6 +47,7 @@ local ActivityView = require("ui.activity_view")
 local ModelPreviewView = require("ui.model_preview_view")
 local ProfileView = require("ui.profile_view")
 local SocialView = require("ui.social_view")
+local LeaderboardView = require("ui.leaderboard_view")
 local SettingsView = require("ui.settings_view")
 local BulkSellView = require("ui.bulk_sell_view")
 local FloatingToast = require("ui.floating_toast")
@@ -74,6 +76,7 @@ local seedBagBuffs_ = inventoryState_.seedBagBuffs
 local harvested_ = inventoryState_.harvested
 local seedPacks_ = inventoryState_.seedPacks
 local collectedPlants_ = inventoryState_.collectedPlants
+local tutorialState_ = inventoryState_.tutorial
 local codexStats_ = inventoryState_.codexStats
 local silverRewardClaimed_ = inventoryState_.silverRewardClaimed
 local dailyTaskState_ = inventoryState_.dailyTaskState
@@ -132,6 +135,7 @@ local function SyncInventoryRefs()
     harvested_ = inventoryState_.harvested
     seedPacks_ = inventoryState_.seedPacks
     collectedPlants_ = inventoryState_.collectedPlants
+    tutorialState_ = inventoryState_.tutorial
     codexStats_ = inventoryState_.codexStats
     silverRewardClaimed_ = inventoryState_.silverRewardClaimed
     dailyTaskState_ = inventoryState_.dailyTaskState
@@ -269,8 +273,31 @@ local function GetViewMode()
     return CameraSystem.GetViewMode()
 end
 
+local function IsPlantGuideDone()
+    return tutorialState_ ~= nil and tutorialState_.plantGuideDone == true
+end
+
+local function ShouldShowPlantGuide()
+    return initialUiReady_ == true and not IsPlantGuideDone() and not SocialGardenSystem.IsVisitMode()
+end
+
+local function GetPlantGuideStep()
+    if not ShouldShowPlantGuide() then return "done" end
+    if GetViewMode() == ViewMode.FARM then return "start" end
+    if plantTab_ ~= "seed" then return "seed_tab" end
+    return "plant"
+end
+
+local function CompletePlantGuide()
+    if tutorialState_ == nil then return end
+    tutorialState_.plantGuideDone = true
+end
+
 local function EnterPlantView()
     selectedPlot_ = Clamp(selectedPlot_, 1, math.max(1, unlockedPlotCount_))
+    if ShouldShowPlantGuide() then
+        plantTab_ = "seed"
+    end
     if EconomyCloudSystem ~= nil and EconomyCloudSystem.RequestAuthFarm ~= nil then
         print(string.format("[种植模式] 进入前请求权威农场刷新 plot=%d", selectedPlot_))
         EconomyCloudSystem.RequestAuthFarm({ force = true, reason = "enter_plant_view" })
@@ -705,6 +732,7 @@ end
 
 local function RegisterModalGuards()
     ModalRegistry.Register("social", function() return SocialView.IsOpen() end)
+    ModalRegistry.Register("leaderboard", function() return LeaderboardView.IsOpen() end)
     ModalRegistry.Register("seedPack", function() return SeedPackView.IsOpen() end)
     ModalRegistry.Register("task", function() return TaskView.IsOpen() end)
     ModalRegistry.Register("modelPreview", function() return ModelPreviewSystem.IsOpen() end)
@@ -890,6 +918,7 @@ function HandleUpdate(eventType, eventData)
         PlayerSystem.Update(dt)
         EconomyCloudSystem.Update(dt)
         SocialGardenSystem.Update(dt)
+        LeaderboardSystem.Update(dt)
         EnsureInitialUiReady()
         FloatingToast.Update(dt)
         UIController.Update(dt)
@@ -909,6 +938,7 @@ function HandleUpdate(eventType, eventData)
     PlayerSystem.Update(dt)
     EconomyCloudSystem.Update(dt)
     SocialGardenSystem.Update(dt)
+    LeaderboardSystem.Update(dt)
     CommissionSystem.Update(dt)
     if saveDirty_ then
         saveTimer_ = saveTimer_ + dt
@@ -1341,6 +1371,7 @@ function Start()
         isExpansionMaxed = function()
             return not ProgressionSystem.CanUnlockNextPlot()
         end,
+        getPlantGuideStep = GetPlantGuideStep,
     })
 
     PlayerSystem.Init({
@@ -1540,6 +1571,7 @@ function Start()
             if isReady then EnsureInitialUiReady() end
         end,
         onPlantSeedConfirmed = function(data)
+            CompletePlantGuide()
             PlantActionController.ApplyConfirmedPlantSeed(data)
         end,
         onHarvestCropConfirmed = function(data)
@@ -1625,6 +1657,28 @@ function Start()
         end,
     })
 
+    LeaderboardSystem.Init({
+        showToast = ShowToast,
+        showFloatingToast = function(text)
+            FloatingToast.Show(text, { fontSize = 20, duration = 1.5, yRatio = 0.34, priority = 8 })
+        end,
+        applyEconomyState = function(state)
+            EconomyCloudSystem.ApplyAuthoritativeState(state)
+        end,
+        getUnlockedAvatarMap = function()
+            return PlayerSystem.GetUnlockedAvatarMap()
+        end,
+        unlockAvatarReward = function(avatarRef)
+            return PlayerSystem.UnlockAvatarReward(avatarRef)
+        end,
+    })
+
+    LeaderboardView.Init({
+        LeaderboardSystem = LeaderboardSystem,
+        getActiveActivityId = function() return ActivitySystem.GetActiveActivityId() end,
+        suppressWorldTap = RequestSuppressWorldTap,
+    })
+
     InteractionSystem.Init(CONFIG, CameraSystem, {
         getCamera = function() return camera_ end,
         getPlots = function() return plots_ end,
@@ -1660,7 +1714,7 @@ function Start()
         harvestNearestMature = HarvestNearestMature,
         plantSeed = PlantSeed,
         isUIBlocking = function()
-            return SocialView.IsOpen() or ModelPreviewSystem.IsOpen() or ActivityView.IsOpen() or ProfileView.IsOpen() or SettingsView.IsOpen() or Shop.IsOpen() or CommissionView.IsOpen() or ExpansionView.IsOpen() or TalentView.IsOpen() or BulkSellView.IsOpen() or CodexView.IsOpen()
+            return SocialView.IsOpen() or LeaderboardView.IsOpen() or ModelPreviewSystem.IsOpen() or ActivityView.IsOpen() or ProfileView.IsOpen() or SettingsView.IsOpen() or Shop.IsOpen() or CommissionView.IsOpen() or ExpansionView.IsOpen() or TalentView.IsOpen() or BulkSellView.IsOpen() or CodexView.IsOpen()
         end,
     })
 

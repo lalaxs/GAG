@@ -540,16 +540,44 @@ function SocialServer.RequestRank(count, connection, requesterUid)
 end
 
 local function FetchDailyQuota(uid, done)
-    local daily = { stealCount = 0, giftSentCount = 0 }
+    local daily = { stealCount = 0, giftSentCount = 0, stealAdCount = 0, stealLimit = deps_.dailyStealLimit or 5, seedPackAdCount = 0, seedPackAdLimit = deps_.dailySeedPackAdLimit or 3 }
     serverCloud.quota:Get(uid, "daily_steal", {
         ok = function(stealRows)
             local row = stealRows and stealRows[1]
             daily.stealCount = math.max(0, math.floor(tonumber(row and row.value or 0) or 0))
-            serverCloud.quota:Get(uid, "daily_seed_gift", {
-                ok = function(giftRows)
-                    local giftRow = giftRows and giftRows[1]
-                    daily.giftSentCount = math.max(0, math.floor(tonumber(giftRow and giftRow.value or 0) or 0))
-                    done(daily)
+            serverCloud.quota:Get(uid, "daily_steal_ad_bonus", {
+                ok = function(bonusRows)
+                    local bonusRow = bonusRows and bonusRows[1]
+                    local bonus = math.max(0, math.floor(tonumber(bonusRow and bonusRow.value or 0) or 0))
+                    daily.stealLimit = (deps_.dailyStealLimit or 5) + bonus
+                    serverCloud.quota:Get(uid, "daily_steal_ad", {
+                        ok = function(adRows)
+                            local adRow = adRows and adRows[1]
+                            daily.stealAdCount = math.max(0, math.floor(tonumber(adRow and adRow.value or 0) or 0))
+                            serverCloud.quota:Get(uid, "daily_seed_pack_ad", {
+                                ok = function(packRows)
+                                    local packRow = packRows and packRows[1]
+                                    daily.seedPackAdCount = math.max(0, math.floor(tonumber(packRow and packRow.value or 0) or 0))
+                                    serverCloud.quota:Get(uid, "daily_seed_gift", {
+                                        ok = function(giftRows)
+                                            local giftRow = giftRows and giftRows[1]
+                                            daily.giftSentCount = math.max(0, math.floor(tonumber(giftRow and giftRow.value or 0) or 0))
+                                            done(daily)
+                                        end,
+                                        error = function()
+                                            done(daily)
+                                        end,
+                                    })
+                                end,
+                                error = function()
+                                    done(daily)
+                                end,
+                            })
+                        end,
+                        error = function()
+                            done(daily)
+                        end,
+                    })
                 end,
                 error = function()
                     done(daily)

@@ -7,6 +7,9 @@ local Shared = {}
 Shared.KEYS = {
     GARDEN_SNAPSHOT = "garden_snapshot_v1",
     TOUR_RANK = "garden_tour_rank",
+    INCOME_RANK_PREFIX = "garden_income_rank_w",
+    ACTIVITY_RANK_PREFIX = "garden_activity_rank_",
+    ACTIVITY_RANK_REWARD_PREFIX = "garden_activity_rank_reward_",
     LIKE_COUNT = "garden_like_count",
     STEAL_LOGS = "garden_steal_logs_v1",
     RECENT_VISITORS = "garden_recent_visitors_v1",
@@ -30,6 +33,10 @@ Shared.EVENTS = {
     GARDEN_RESPONSE = "GardenSnapshotResponse",
     REQUEST_RANK = "GardenRequestRank",
     RANK_RESPONSE = "GardenRankResponse",
+    REQUEST_LEADERBOARD = "GardenRequestLeaderboard",
+    LEADERBOARD_RESPONSE = "GardenLeaderboardResponse",
+    CLAIM_ACTIVITY_RANK_REWARD = "GardenClaimActivityRankReward",
+    CLAIM_ACTIVITY_RANK_REWARD_RESPONSE = "GardenClaimActivityRankRewardResponse",
     REQUEST_STEAL = "GardenRequestSteal",
     STEAL_RESPONSE = "GardenStealResponse",
     REQUEST_SOCIAL_STATE = "GardenRequestSocialState",
@@ -86,6 +93,8 @@ Shared.EVENTS = {
     REMOVE_FRIEND_RESPONSE = "GardenRemoveFriendResponse",
     CLEAR_SOCIAL_MESSAGES = "GardenClearSocialMessages",
     CLEAR_SOCIAL_MESSAGES_RESPONSE = "GardenClearSocialMessagesResponse",
+    REQUEST_AD_REWARD = "GardenRequestAdReward",
+    AD_REWARD_RESPONSE = "GardenAdRewardResponse",
 }
 
 Shared.SERVER_EVENTS = {
@@ -93,6 +102,8 @@ Shared.SERVER_EVENTS = {
     Shared.EVENTS.SAVE_GARDEN,
     Shared.EVENTS.REQUEST_GARDEN,
     Shared.EVENTS.REQUEST_RANK,
+    Shared.EVENTS.REQUEST_LEADERBOARD,
+    Shared.EVENTS.CLAIM_ACTIVITY_RANK_REWARD,
     Shared.EVENTS.REQUEST_STEAL,
     Shared.EVENTS.REQUEST_SOCIAL_STATE,
     Shared.EVENTS.REQUEST_ECONOMY_STATE,
@@ -121,6 +132,7 @@ Shared.SERVER_EVENTS = {
     Shared.EVENTS.RESPOND_FRIEND_REQUEST,
     Shared.EVENTS.REMOVE_FRIEND,
     Shared.EVENTS.CLEAR_SOCIAL_MESSAGES,
+    Shared.EVENTS.REQUEST_AD_REWARD,
 }
 
 Shared.CLIENT_EVENTS = {
@@ -128,6 +140,8 @@ Shared.CLIENT_EVENTS = {
     Shared.EVENTS.SAVE_GARDEN_RESULT,
     Shared.EVENTS.GARDEN_RESPONSE,
     Shared.EVENTS.RANK_RESPONSE,
+    Shared.EVENTS.LEADERBOARD_RESPONSE,
+    Shared.EVENTS.CLAIM_ACTIVITY_RANK_REWARD_RESPONSE,
     Shared.EVENTS.STEAL_RESPONSE,
     Shared.EVENTS.SOCIAL_STATE_RESPONSE,
     Shared.EVENTS.ECONOMY_STATE_RESPONSE,
@@ -156,6 +170,7 @@ Shared.CLIENT_EVENTS = {
     Shared.EVENTS.RESPOND_FRIEND_REQUEST_RESPONSE,
     Shared.EVENTS.REMOVE_FRIEND_RESPONSE,
     Shared.EVENTS.CLEAR_SOCIAL_MESSAGES_RESPONSE,
+    Shared.EVENTS.AD_REWARD_RESPONSE,
 }
 
 function Shared.RegisterServerEvents()

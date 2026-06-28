@@ -52,6 +52,9 @@ local state_ = {
     codexStats = {},
     silverRewardClaimed = {},
     pityCounters = {},  -- { [packId] = number } 保底计数器
+    tutorial = {
+        plantGuideDone = false,
+    },
     dailyTaskState = {
         progress = { plant = 0, harvest = 0, sell = 0 },
         rewardClaimed = false,
@@ -204,6 +207,7 @@ function InventorySystem.GetSaveData()
         codexStats = state_.codexStats,
         silverRewardClaimed = state_.silverRewardClaimed,
         pityCounters = state_.pityCounters,
+        tutorial = state_.tutorial,
         dailyTaskState = state_.dailyTaskState,
     }
 end
@@ -218,6 +222,8 @@ function InventorySystem.LoadSaveData(data)
     ReplaceTable(state_.codexStats, CopyNumericKeyMap(data.codexStats))
     ReplaceTable(state_.silverRewardClaimed, CopyTable(data.silverRewardClaimed))
     ReplaceTable(state_.pityCounters, CopyTable(data.pityCounters))
+    ReplaceTable(state_.tutorial, CopyTable(data.tutorial, { plantGuideDone = false }))
+    state_.tutorial.plantGuideDone = state_.tutorial.plantGuideDone == true
     ReplaceTable(state_.dailyTaskState, CopyTable(data.dailyTaskState, { progress = { plant = 0, harvest = 0, sell = 0 }, rewardClaimed = false }))
     state_.dailyTaskState.progress = CopyTable(state_.dailyTaskState.progress, { plant = 0, harvest = 0, sell = 0 })
 end
@@ -240,6 +246,10 @@ end
 
 function InventorySystem.GetCollectedPlants()
     return state_.collectedPlants
+end
+
+function InventorySystem.GetTutorialState()
+    return state_.tutorial
 end
 
 function InventorySystem.GetCodexStats()

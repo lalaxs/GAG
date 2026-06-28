@@ -137,7 +137,7 @@ local function BuildVisitTopHud()
         alignItems = "center",
         justifyContent = "space-between",
         gap = 8,
-        pointerEvents = "box-none",
+        pointerEvents = "none",
         children = {
             UI.Panel {
                 flexDirection = "row",
@@ -228,7 +228,7 @@ local function BuildToast(labels)
         right = 28,
         zIndex = 999,
         alignItems = "center",
-        pointerEvents = "box-none",
+        pointerEvents = "none",
         children = {
             UI.Panel {
                 paddingTop = 12,
@@ -859,6 +859,137 @@ local function BuildActivityTopEntry()
     }
 end
 
+local function BuildGuideBubble(text, subText, style)
+    style = style or {}
+    return UI.Panel {
+        position = "absolute",
+        top = style.top,
+        bottom = style.bottom,
+        left = style.left or 18,
+        right = style.right or 18,
+        zIndex = 950,
+        pointerEvents = "none",
+        alignItems = "center",
+        children = {
+            UI.Panel {
+                width = style.width or 315,
+                maxWidth = style.maxWidth or 330,
+                paddingTop = 14,
+                paddingBottom = 14,
+                paddingLeft = 18,
+                paddingRight = 18,
+                backgroundColor = {255, 252, 240, 248},
+                borderRadius = 18,
+                borderWidth = 3,
+                borderColor = {255, 202, 82, 245},
+                boxShadow = { { x = 0, y = 6, blur = 18, spread = 0, color = {65, 46, 28, 70} } },
+                alignItems = "center",
+                gap = 6,
+                children = {
+                    UI.Label {
+                        text = text,
+                        fontSize = 18,
+                        fontWeight = "bold",
+                        fontColor = {86, 57, 31, 255},
+                        textAlign = "center",
+                        whiteSpace = "normal",
+                    },
+                    UI.Label {
+                        text = subText,
+                        fontSize = 13,
+                        fontColor = {116, 92, 58, 235},
+                        textAlign = "center",
+                        whiteSpace = "normal",
+                    },
+                },
+            },
+        },
+    }
+end
+
+local function BuildPlantGuideOverlay()
+    if deps_.getPlantGuideStep == nil then
+        return UI.Panel { width = 0, height = 0 }
+    end
+    local step = deps_.getPlantGuideStep()
+    if step == "done" then
+        return UI.Panel { width = 0, height = 0 }
+    end
+
+    if step == "start" then
+        return UI.Panel {
+            position = "absolute",
+            left = 0,
+            right = 0,
+            top = 0,
+            bottom = 0,
+            zIndex = 940,
+            pointerEvents = "none",
+            children = {
+                BuildGuideBubble("第一步：点击开始种植", "进入种植模式后，就能把种子播到土地上。", { bottom = 178 }),
+                UI.Panel {
+                    position = "absolute",
+                    left = 0,
+                    right = 0,
+                    bottom = 48,
+                    alignItems = "center",
+                    pointerEvents = "none",
+                    children = {
+                        UI.Panel {
+                            width = 250,
+                            height = 114,
+                            borderRadius = 34,
+                            borderWidth = 5,
+                            borderColor = {255, 215, 86, 245},
+                            backgroundColor = {255, 215, 86, 28},
+                        },
+                    },
+                },
+            },
+        }
+    end
+
+    if step == "seed_tab" then
+        return UI.Panel {
+            position = "absolute",
+            left = 0,
+            right = 0,
+            top = 0,
+            bottom = 0,
+            zIndex = 940,
+            pointerEvents = "none",
+            children = {
+                BuildGuideBubble("切回播种页签", "选择“播种”后，点击土地空位即可种下种子。", { bottom = 370 }),
+            },
+        }
+    end
+
+    return UI.Panel {
+        position = "absolute",
+        left = 0,
+        right = 0,
+        top = 0,
+        bottom = 0,
+        zIndex = 940,
+        pointerEvents = "none",
+        children = {
+            BuildGuideBubble("第二步：点击土地播种", "把种子点到土地空位上，播种后等待成熟即可收获。", { top = 215 }),
+            UI.Panel {
+                position = "absolute",
+                left = 42,
+                right = 42,
+                top = 300,
+                height = 210,
+                borderRadius = 28,
+                borderWidth = 4,
+                borderColor = {255, 215, 86, 210},
+                backgroundColor = {255, 215, 86, 22},
+                pointerEvents = "none",
+            },
+        },
+    }
+end
+
 function MainView.BuildRoot(labels, children)
     local actionButton = BuildActionButton()
     labels.actionButton = actionButton
@@ -888,6 +1019,7 @@ function MainView.BuildRoot(labels, children)
             BuildVisitablePlotButton(),
             BuildCollapseButton(),
             (deps_.isFarmView() or deps_.isPlantView()) and (not deps_.isVisitMode or not deps_.isVisitMode()) and SettingsView.BuildPlotDisplayButtons() or UI.Panel { width = 0, height = 0 },
+            BuildPlantGuideOverlay(),
             UI.Panel { id = "bagDetailHost", position = "absolute", left = 0, right = 0, top = 0, bottom = 0, pointerEvents = "box-none", children = { children.bagDetail } },
             children.seedPackOverlay,
             children.seedPackOpeningOverlay,
