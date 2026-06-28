@@ -6,7 +6,6 @@
 local UI = require("urhox-libs/UI")
 local TalentSystem = require("systems.talent_system")
 local ModalAnim = require("ui.modal_anim")
-local FloatingToast = require("ui.floating_toast")
 local Format = require("utils.format")
 local AudioSystem = require("systems.audio_system")
 
@@ -257,7 +256,7 @@ RefreshDetailPanel = function(successText)
                 if deps_.suppressWorldTap then deps_.suppressWorldTap() end
                 local unlockedTalentId = selectedTalentId_
                 if deps_.unlockTalent and deps_.unlockTalent(unlockedTalentId) then
-                    FloatingToast.Show("正在请求服务器解锁天赋")
+                    if deps_.onTalentUnlockRequested then deps_.onTalentUnlockRequested(unlockedTalentId) end
                 elseif deps_.showToast then
                     deps_.showToast("服务器尚未就绪，无法解锁天赋")
                 end
@@ -364,6 +363,11 @@ local function BuildChainRow(chain)
         paddingBottom = 7,
         children = rowChildren,
     }
+end
+
+function TalentView.RefreshContent(successText)
+    if modal_ == nil then return end
+    RefreshTalentState(successText)
 end
 
 function TalentView.Show()

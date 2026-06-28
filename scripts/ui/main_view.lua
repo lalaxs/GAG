@@ -13,6 +13,9 @@ local ProfileView = require("ui.profile_view")
 local SocialView = require("ui.social_view")
 local ActivityView = require("ui.activity_view")
 local ModelPreviewView = require("ui.model_preview_view")
+local ModalAnim = require("ui.modal_anim")
+
+local visitablePlotModal_ = nil
 
 local MainView = {}
 
@@ -25,13 +28,13 @@ end
 function MainView.CreateLabels()
     local labels = {}
     labels.moneyLabel = UI.Label {
-        text = "金币 0",
+        text = "0",
         fontSize = 15,
         fontWeight = "bold",
         fontColor = {95, 75, 55, 255},
     }
     labels.seedLabel = UI.Label {
-        text = "观光 0",
+        text = "0",
         fontSize = 15,
         fontWeight = "bold",
         fontColor = {95, 75, 55, 255},
@@ -100,6 +103,30 @@ local function BuildActionButton()
     }
 end
 
+local function BuildRoundIcon(text, outerColor, innerColor, textColor, size)
+    size = size or 22
+    local inner = math.max(10, math.floor(size * 0.64))
+    return UI.Panel {
+        width = size,
+        height = size,
+        justifyContent = "center",
+        alignItems = "center",
+        children = {
+            UI.Panel { width = size, height = size, borderRadius = math.floor(size / 2), backgroundColor = outerColor },
+            UI.Panel { position = "absolute", width = inner, height = inner, borderRadius = math.floor(inner / 2), backgroundColor = innerColor },
+            UI.Label { position = "absolute", text = text, fontSize = math.max(10, math.floor(size * 0.5)), fontWeight = "bold", fontColor = textColor },
+        },
+    }
+end
+
+local function BuildTourIcon(size)
+    return BuildRoundIcon("★", {190, 160, 230, 255}, {155, 120, 210, 255}, {245, 240, 255, 255}, size)
+end
+
+local function BuildLikeIcon(size)
+    return BuildRoundIcon("♥", {245, 150, 150, 255}, {220, 92, 92, 255}, {255, 240, 240, 255}, size)
+end
+
 local function BuildVisitTopHud()
     return UI.Panel {
         position = "absolute",
@@ -121,8 +148,8 @@ local function BuildVisitTopHud()
                 backgroundColor = {255, 250, 240, 240},
                 borderRadius = 14,
                 children = {
-                    UI.Label { text = "★", fontSize = 13, fontColor = {155, 120, 210, 255} },
-                    UI.Label { text = "观光 " .. tostring(deps_.getVisitTourValue and deps_.getVisitTourValue() or 0), fontSize = 15, fontWeight = "bold", fontColor = {95, 75, 55, 255} },
+                    BuildTourIcon(22),
+                    UI.Label { text = tostring(deps_.getVisitTourValue and deps_.getVisitTourValue() or 0), fontSize = 15, fontWeight = "bold", fontColor = {95, 75, 55, 255} },
                 },
             },
             UI.Panel {
@@ -134,8 +161,8 @@ local function BuildVisitTopHud()
                 backgroundColor = {255, 250, 240, 240},
                 borderRadius = 14,
                 children = {
-                    UI.Label { text = "♥", fontSize = 13, fontColor = {220, 92, 92, 255} },
-                    UI.Label { text = "点赞 " .. tostring(deps_.getVisitLikeCount and deps_.getVisitLikeCount() or 0), fontSize = 15, fontWeight = "bold", fontColor = {95, 75, 55, 255} },
+                    BuildLikeIcon(22),
+                    UI.Label { text = tostring(deps_.getVisitLikeCount and deps_.getVisitLikeCount() or 0), fontSize = 15, fontWeight = "bold", fontColor = {95, 75, 55, 255} },
                 },
             },
         },
@@ -163,16 +190,7 @@ local function BuildTopHud(labels)
                 backgroundColor = {255, 250, 240, 240},
                 borderRadius = 14,
                 children = {
-                    UI.Panel {
-                        width = 22, height = 22,
-                        justifyContent = "center",
-                        alignItems = "center",
-                        children = {
-                            UI.Panel { width = 22, height = 22, borderRadius = 11, backgroundColor = {190, 160, 230, 255} },
-                            UI.Panel { position = "absolute", width = 14, height = 14, borderRadius = 7, backgroundColor = {155, 120, 210, 255} },
-                            UI.Label { position = "absolute", text = "★", fontSize = 11, fontColor = {245, 240, 255, 255} },
-                        },
-                    },
+                    BuildTourIcon(22),
                     labels.seedLabel,
                 },
             },
@@ -554,6 +572,155 @@ local function BuildPlantShell(plantContent)
     }
 end
 
+local function ApplyVisitablePlot(plotIndex)
+    if deps_.setVisitablePlotIndex == nil then return false end
+    local ok = deps_.setVisitablePlotIndex(plotIndex)
+    if ok and deps_.rebuildUI ~= nil then deps_.rebuildUI() end
+    return ok
+end
+
+local function CloseVisitablePlotModal()
+    if visitablePlotModal_ ~= nil then
+        visitablePlotModal_:Close()
+        visitablePlotModal_ = nil
+    end
+end
+
+local function OpenVisitablePlotConfirm(currentIndex, targetIndex)
+    CloseVisitablePlotModal()
+    visitablePlotModal_ = UI.Modal {
+        title = "设置可观光地块",
+        size = "sm",
+        closeOnOverlay = true,
+        showCloseButton = true,
+        contentPadding = {16, 20, 18, 20},
+        contentGap = 14,
+        onClose = function()
+            visitablePlotModal_ = nil
+        end,
+    }
+
+    visitablePlotModal_:AddContent(UI.Panel {
+        gap = 16,
+        children = {
+            UI.Label {
+                text = string.format("当前可观光地块为第 %d 块，确认改为第 %d 块吗？", currentIndex, targetIndex),
+                fontSize = 14,
+                fontColor = {92, 70, 48, 255},
+                textAlign = "center",
+                whiteSpace = "normal",
+            },
+            UI.Panel {
+                flexDirection = "row",
+                gap = 10,
+                children = {
+                    UI.Button {
+                        text = "取消",
+                        height = 42,
+                        flexGrow = 1,
+                        fontSize = 15,
+                        fontWeight = "bold",
+                        backgroundColor = {245, 238, 220, 255},
+                        fontColor = {92, 72, 48, 255},
+                        borderRadius = 16,
+                        onClick = function()
+                            CloseVisitablePlotModal()
+                        end,
+                    },
+                    UI.Button {
+                        text = "确认设置",
+                        height = 42,
+                        flexGrow = 1,
+                        fontSize = 15,
+                        fontWeight = "bold",
+                        backgroundColor = {94, 194, 131, 255},
+                        fontColor = {255, 255, 255, 255},
+                        borderRadius = 16,
+                        onClick = function()
+                            CloseVisitablePlotModal()
+                            ApplyVisitablePlot(targetIndex)
+                        end,
+                    },
+                },
+            },
+        },
+    })
+
+    ModalAnim.Apply(visitablePlotModal_, { fixedHeight = 218 })
+    visitablePlotModal_:Open()
+end
+
+local function BuildVisitablePlotButton()
+    local isPlant = deps_.isPlantView and deps_.isPlantView() or false
+    if (deps_.isVisitMode and deps_.isVisitMode()) or not isPlant then
+        return UI.Panel { width = 0, height = 0 }
+    end
+    if deps_.getVisitablePlotIndex == nil or deps_.setVisitablePlotIndex == nil or deps_.getSelectedPlotIndex == nil then
+        return UI.Panel { width = 0, height = 0 }
+    end
+    if deps_.getUnlockedPlotCount ~= nil and deps_.getUnlockedPlotCount() <= 1 then
+        return UI.Panel { width = 0, height = 0 }
+    end
+
+    local selectedPlotIndex = deps_.getSelectedPlotIndex()
+    local currentIndex = deps_.getVisitablePlotIndex() or 1
+    local bottom = deps_.getPlantTab() == "bag" and 520 or 410
+    if selectedPlotIndex == currentIndex then
+        return UI.Panel {
+            position = "absolute",
+            bottom = bottom,
+            left = 16,
+            pointerEvents = "auto",
+            children = {
+                UI.Panel {
+                    width = 132,
+                    height = 34,
+                    justifyContent = "center",
+                    alignItems = "center",
+                    backgroundColor = {230, 248, 235, 245},
+                    borderRadius = 16,
+                    borderWidth = 2,
+                    borderColor = {94, 194, 131, 230},
+                    children = {
+                        UI.Label {
+                            text = "当前可观光",
+                            fontSize = 12,
+                            fontWeight = "bold",
+                            fontColor = {52, 135, 76, 255},
+                            textAlign = "center",
+                        },
+                    },
+                },
+            },
+        }
+    end
+
+    return UI.Panel {
+        position = "absolute",
+        bottom = bottom,
+        left = 16,
+        pointerEvents = "auto",
+        children = {
+            UI.Button {
+                text = "设为可观光地块",
+                width = 132,
+                height = 34,
+                fontSize = 12,
+                fontWeight = "bold",
+                backgroundColor = {255, 238, 190, 255},
+                fontColor = {115, 82, 45, 255},
+                borderRadius = 16,
+                borderWidth = 2,
+                borderColor = {220, 175, 90, 230},
+                onClick = function()
+                    deps_.suppressWorldTap()
+                    OpenVisitablePlotConfirm(currentIndex, selectedPlotIndex)
+                end,
+            },
+        },
+    }
+end
+
 local function BuildCollapseButton()
     local isPlant = deps_.isPlantView and deps_.isPlantView() or false
     if (deps_.isVisitMode and deps_.isVisitMode()) or not isPlant then
@@ -718,6 +885,7 @@ function MainView.BuildRoot(labels, children)
             (deps_.isFarmView() and (not deps_.isVisitMode or not deps_.isVisitMode())) and BuildTalentButton(labels) or UI.Panel { width = 0, height = 0 },
             (deps_.isVisitMode and deps_.isVisitMode()) and BuildVisitControls(actionButton) or (deps_.isFarmView() and BuildFarmControls(labels, actionButton) or BuildPlantShell(children.plantContent)),
             BuildVisitStealList(),
+            BuildVisitablePlotButton(),
             BuildCollapseButton(),
             (deps_.isFarmView() or deps_.isPlantView()) and (not deps_.isVisitMode or not deps_.isVisitMode()) and SettingsView.BuildPlotDisplayButtons() or UI.Panel { width = 0, height = 0 },
             UI.Panel { id = "bagDetailHost", position = "absolute", left = 0, right = 0, top = 0, bottom = 0, pointerEvents = "box-none", children = { children.bagDetail } },

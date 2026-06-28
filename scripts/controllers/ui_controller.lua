@@ -20,6 +20,22 @@ local uiInitialized_ = false
 local uiRefreshTimer_ = 0
 local toastTimer_ = 0
 
+local function EnsureUIInitialized()
+    if uiInitialized_ then return end
+    local ACNHTheme = require("ui_theme_acnh")
+    UI.Init({
+        theme = ACNHTheme.theme,
+        fonts = {
+            { family = "sans", weights = {
+                normal = "Fonts/ResourceHanRoundedCN-Bold.ttf",
+                bold = "Fonts/ResourceHanRoundedCN-Bold.ttf",
+            } },
+        },
+        scale = UI.Scale.DEFAULT,
+    })
+    uiInitialized_ = true
+end
+
 local function BuildPlantTabContent()
     return PlantPanelView.BuildContent()
 end
@@ -68,10 +84,10 @@ function UIController.Refresh(force)
     end
 
     if labels_.moneyLabel ~= nil then
-        labels_.moneyLabel:SetText("金币 " .. Format.Gold(deps_.getMoney()))
+        labels_.moneyLabel:SetText(Format.Gold(deps_.getMoney()))
     end
     if labels_.seedLabel ~= nil then
-        labels_.seedLabel:SetText("观光 " .. Format.Gold(deps_.getTourValue()))
+        labels_.seedLabel:SetText(Format.Gold(deps_.getTourValue()))
     end
     if labels_.plotLabel ~= nil then
         labels_.plotLabel:SetText("LV" .. deps_.getTalentLevel())
@@ -121,24 +137,61 @@ function UIController.RefreshInventoryPanels()
     return plantOk or bagOk
 end
 
+function UIController.ShowLoading(text)
+    EnsureUIInitialized()
+    labels_ = {}
+    local loadingText = text or "正在同步花园数据..."
+    UI.SetRoot(UI.Panel {
+        width = "100%",
+        height = "100%",
+        justifyContent = "center",
+        alignItems = "center",
+        backgroundColor = {232, 242, 226, 255},
+        children = {
+            UI.Panel {
+                width = 270,
+                paddingTop = 28,
+                paddingBottom = 28,
+                paddingLeft = 24,
+                paddingRight = 24,
+                borderRadius = 24,
+                backgroundColor = {255, 252, 240, 248},
+                borderWidth = 3,
+                borderColor = {224, 190, 122, 235},
+                alignItems = "center",
+                boxShadow = { { x = 0, y = 8, blur = 20, spread = 0, color = {65, 46, 28, 60} } },
+                children = {
+                    UI.Label {
+                        text = "加载中",
+                        fontSize = 30,
+                        fontWeight = "bold",
+                        fontColor = {86, 57, 31, 255},
+                        textAlign = "center",
+                        marginBottom = 12,
+                    },
+                    UI.Label {
+                        text = loadingText,
+                        fontSize = 16,
+                        fontColor = {116, 92, 58, 235},
+                        textAlign = "center",
+                    },
+                    UI.Panel {
+                        width = 96,
+                        height = 8,
+                        marginTop = 20,
+                        borderRadius = 4,
+                        backgroundColor = {118, 181, 98, 235},
+                    },
+                },
+            },
+        },
+    })
+end
+
 function UIController.Rebuild()
     local previewItem = deps_.getSelectedBagItem()
 
-    local ACNHTheme = require("ui_theme_acnh")
-
-    if not uiInitialized_ then
-        UI.Init({
-            theme = ACNHTheme.theme,
-            fonts = {
-                { family = "sans", weights = {
-                    normal = "Fonts/ResourceHanRoundedCN-Bold.ttf",
-                    bold = "Fonts/ResourceHanRoundedCN-Bold.ttf",
-                } },
-            },
-            scale = UI.Scale.DEFAULT,
-        })
-        uiInitialized_ = true
-    end
+    EnsureUIInitialized()
 
     local labels = MainView.CreateLabels()
     labels_ = labels

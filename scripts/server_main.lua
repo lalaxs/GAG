@@ -23,6 +23,32 @@ local START_GOLD = 150
 local SEED_STACK_MAX = 999
 local MAX_OPEN_PACK_COUNT = 50
 local MAX_GIFT_COUNT = 1
+local GLOBAL_SHOP_UID = 858557875
+local SEED_SHOP_REFRESH_INTERVAL = 300
+local SEED_SHOP_ITEMS = {
+    { name = "胡萝卜", rarity = "普通", guaranteed = true, stock = 50 },
+    { name = "玉米", rarity = "普通", guaranteed = true, stock = 50 },
+    { name = "番茄", rarity = "普通", chance = 0.80, minStock = 15, maxStock = 30 },
+    { name = "葡萄", rarity = "普通", chance = 0.80, minStock = 15, maxStock = 30 },
+    { name = "草莓", rarity = "罕见", chance = 0.60, minStock = 8, maxStock = 15 },
+    { name = "花椰菜", rarity = "罕见", chance = 0.60, minStock = 8, maxStock = 15 },
+    { name = "南瓜", rarity = "罕见", chance = 0.60, minStock = 8, maxStock = 15 },
+    { name = "凤梨", rarity = "罕见", chance = 0.60, minStock = 8, maxStock = 15 },
+    { name = "芒果", rarity = "罕见", chance = 0.60, minStock = 8, maxStock = 15 },
+    { name = "香蕉", rarity = "罕见", chance = 0.60, minStock = 8, maxStock = 15 },
+    { name = "郁金香", rarity = "稀有", chance = 0.25, minStock = 3, maxStock = 6 },
+    { name = "西瓜", rarity = "稀有", chance = 0.25, minStock = 3, maxStock = 6 },
+    { name = "蘑菇", rarity = "稀有", chance = 0.25, minStock = 3, maxStock = 6 },
+    { name = "仙人掌", rarity = "稀有", chance = 0.25, minStock = 3, maxStock = 6 },
+    { name = "竹子", rarity = "稀有", chance = 0.25, minStock = 3, maxStock = 6 },
+    { name = "椰子", rarity = "稀有", chance = 0.25, minStock = 3, maxStock = 6 },
+    { name = "波斯菊", rarity = "史诗", chance = 0.08, minStock = 1, maxStock = 3 },
+    { name = "向日葵", rarity = "史诗", chance = 0.08, minStock = 1, maxStock = 3 },
+    { name = "辣椒", rarity = "史诗", chance = 0.08, minStock = 1, maxStock = 3 },
+    { name = "百合", rarity = "史诗", chance = 0.08, minStock = 1, maxStock = 3 },
+    { name = "杜鹃", rarity = "史诗", chance = 0.08, minStock = 1, maxStock = 3 },
+    { name = "玉兰", rarity = "史诗", chance = 0.08, minStock = 1, maxStock = 3 },
+}
 
 local function Now()
     return os and os.time and os.time() or 0
@@ -67,8 +93,122 @@ local function GetNicknameRows(response)
     return response
 end
 
+local function SeedShopRefreshId(now)
+    now = math.max(0, math.floor(tonumber(now or Now()) or 0))
+    return math.floor(now / SEED_SHOP_REFRESH_INTERVAL)
+end
+
+local function SeedShopRefreshRemaining(now)
+    now = math.max(0, math.floor(tonumber(now or Now()) or 0))
+    local elapsed = now % SEED_SHOP_REFRESH_INTERVAL
+    local remaining = SEED_SHOP_REFRESH_INTERVAL - elapsed
+    if remaining <= 0 then remaining = SEED_SHOP_REFRESH_INTERVAL end
+    return remaining
+end
+
+local function BuildSeedShopQuotaKey(refreshId, plantIndex)
+    return string.format("seed_shop_%d_%d", math.floor(tonumber(refreshId or 0) or 0), math.floor(tonumber(plantIndex or 0) or 0))
+end
+
+local function FindPlantIndexByName(name)
+    for index, plant in ipairs(GameConfig.PLANTS or {}) do
+        if plant.name == name then return index end
+    end
+    return nil
+end
+
+local function NormalizeSeedShopState(shop)
+    shop = type(shop) == "table" and shop or {}
+    shop.refreshId = math.floor(tonumber(shop.refreshId or -1) or -1)
+    shop.stock = type(shop.stock) == "table" and shop.stock or {}
+    shop.items = type(shop.items) == "table" and shop.items or {}
+    shop.updatedAt = math.max(0, math.floor(tonumber(shop.updatedAt or 0) or 0))
+    return shop
+end
+
+local function BuildSeedShopState(now)
+    now = math.max(0, math.floor(tonumber(now or Now()) or 0))
+    local refreshId = SeedShopRefreshId(now)
+    local rngSeed = (refreshId + 73129) % 2147483647
+    local function NextRandom()
+        rngSeed = (rngSeed * 1103515245 + 12345) % 2147483647
+        return rngSeed / 2147483647
+    end
+    local function RandomInt(minValue, maxValue)
+        minValue = math.floor(tonumber(minValue or 0) or 0)
+        maxValue = math.floor(tonumber(maxValue or minValue) or minValue)
+        if maxValue < minValue then maxValue = minValue end
+        return minValue + math.floor(NextRandom() * (maxValue - minValue + 1))
+    end
+    local stock = {}
+    local items = {}
+    for _, cfg in ipairs(SEED_SHOP_ITEMS) do
+        if FindPlantIndexByName(cfg.name) ~= nil then
+            local amount = 0
+            if cfg.guaranteed == true then
+                amount = math.max(0, math.floor(tonumber(cfg.stock or 0) or 0))
+            elseif NextRandom() <= (tonumber(cfg.chance or 0) or 0) then
+                amount = RandomInt(cfg.minStock, cfg.maxStock)
+            end
+            stock[cfg.name] = amount
+            if amount > 0 then items[#items + 1] = cfg.name end
+        end
+    end
+    return {
+        version = 1,
+        refreshId = refreshId,
+        interval = SEED_SHOP_REFRESH_INTERVAL,
+        stock = stock,
+        items = items,
+        updatedAt = now,
+    }
+end
+
+local function AddSeedShopResponseFields(shop, now)
+    shop = NormalizeSeedShopState(shop)
+    now = math.max(0, math.floor(tonumber(now or Now()) or 0))
+    shop.serverTime = now
+    shop.nextRefreshAt = (shop.refreshId + 1) * SEED_SHOP_REFRESH_INTERVAL
+    shop.nextRefreshIn = math.max(0, shop.nextRefreshAt - now)
+    return shop
+end
+
+local function EnsureSeedShopState(callback)
+    local now = Now()
+    local currentRefreshId = SeedShopRefreshId(now)
+    serverCloud:Get(GLOBAL_SHOP_UID, Shared.KEYS.SHARED_SEED_SHOP, {
+        ok = function(scores)
+            local shop = NormalizeSeedShopState(scores[Shared.KEYS.SHARED_SEED_SHOP])
+            if shop.refreshId ~= currentRefreshId then
+                shop = BuildSeedShopState(now)
+                serverCloud:Set(GLOBAL_SHOP_UID, Shared.KEYS.SHARED_SEED_SHOP, shop, {
+                    ok = function()
+                        callback(AddSeedShopResponseFields(shop, now))
+                    end,
+                    error = function()
+                        callback(AddSeedShopResponseFields(shop, now))
+                    end,
+                })
+            else
+                callback(AddSeedShopResponseFields(shop, now))
+            end
+        end,
+        error = function()
+            local shop = BuildSeedShopState(now)
+            serverCloud:Set(GLOBAL_SHOP_UID, Shared.KEYS.SHARED_SEED_SHOP, shop)
+            callback(AddSeedShopResponseFields(shop, now))
+        end,
+    })
+end
+
 local function Send(connection, eventName, data)
     Shared.SendToClient(connection, eventName, data)
+end
+
+local function SendSeedShopState(connection)
+    EnsureSeedShopState(function(shop)
+        Send(connection, Shared.EVENTS.SEED_SHOP_RESPONSE, { success = true, shop = shop })
+    end)
 end
 
 local function SendError(connection, eventName, code, message, extra)
@@ -497,6 +637,7 @@ local function BuildVisitGardenFromAuthFarm(uid, nickname, farmState, snapshot)
         source = "auth_farm",
         userId = uid,
         nickname = nickname or snapshot and snapshot.nickname or "Tap玩家",
+        avatar = snapshot and snapshot.avatar or nil,
         visitablePlotIndex = plotIndex,
         unlockedPlotCount = snapshot and snapshot.unlockedPlotCount or 1,
         tourValue = tourValue,
@@ -602,6 +743,21 @@ NormalizeProgressionState = function(progression)
     progression.currentTourValue = math.max(0, math.floor(tonumber(progression.currentTourValue or 0) or 0))
     progression.bestTourValue = math.max(tonumber(progression.bestTourValue or 0) or 0, progression.currentTourValue)
     return progression
+end
+
+local function SyncProgressionTourValueFromFarm(state, farmState)
+    if type(state) ~= "table" then return 0 end
+    state.progression = NormalizeProgressionState(state.progression)
+    local tourValue = CalculateAuthFarmTourValue(farmState)
+    state.progression.currentTourValue = tourValue
+    state.progression.bestTourValue = math.max(tonumber(state.progression.bestTourValue or 0) or 0, tourValue)
+    return tourValue
+end
+
+local function AddTourRankCommit(commit, uid, state)
+    local progression = NormalizeProgressionState(state and state.progression)
+    local score = math.max(0, math.floor(tonumber(progression.bestTourValue or progression.currentTourValue or 0) or 0))
+    commit:ScoreSetInt(uid, Shared.KEYS.TOUR_RANK, score)
 end
 
 NormalizeDailyTaskState = function(daily)
@@ -829,50 +985,90 @@ local function RequestEconomyState(uid, connection)
     })
 end
 
-local function BuySeed(uid, plantIndex, _price, connection, count)
+local function BuySeed(uid, plantIndex, _price, connection, count, requestId, refreshId)
     plantIndex = NormalizePlantIndex(plantIndex)
     count = NormalizePositiveCount(count or 1, 10)
     if plantIndex == nil then
-        SendError(connection, Shared.EVENTS.BUY_SEED_RESPONSE, "INVALID_PLANT", "种子配置不存在")
+        SendError(connection, Shared.EVENTS.BUY_SEED_RESPONSE, "INVALID_PLANT", "种子配置不存在", { requestId = requestId })
         return
     end
     local plant = GameConfig.PLANTS[plantIndex]
     local price = math.max(0, math.floor(tonumber(plant.seedPrice or 0) or 0))
-    serverCloud:Get(uid, Shared.KEYS.ECONOMY_STATE, {
-        ok = function(scores)
-            local state = NormalizeEconomyState(scores[Shared.KEYS.ECONOMY_STATE] or BuildInitialEconomyState())
-            local owned = tonumber(state.seedBag[plantIndex] or 0) or 0
-            local buyCount = math.min(count, SEED_STACK_MAX - owned)
-            if buyCount <= 0 then
-                Send(connection, Shared.EVENTS.BUY_SEED_RESPONSE, { success = false, message = "种子背包已满", state = state })
-                return
-            end
-            local totalPrice = price * buyCount
-            if state.gold < totalPrice then
-                buyCount = math.min(buyCount, math.floor(state.gold / price))
-                totalPrice = price * buyCount
-            end
-            if buyCount <= 0 then
-                Send(connection, Shared.EVENTS.BUY_SEED_RESPONSE, { success = false, message = "金币不足", state = state })
-                return
-            end
-            state.gold = state.gold - totalPrice
-            state.seedBag[plantIndex] = owned + buyCount
-            state.updatedAt = Now()
-            NextRevision(state)
-            serverCloud:Set(uid, Shared.KEYS.ECONOMY_STATE, state, {
-                ok = function()
-                    Send(connection, Shared.EVENTS.BUY_SEED_RESPONSE, { success = true, message = "购买成功 x" .. tostring(buyCount), plantIndex = plantIndex, price = totalPrice, count = buyCount, state = state })
-                end,
-                error = function(_, reason)
-                    Send(connection, Shared.EVENTS.BUY_SEED_RESPONSE, { success = false, message = "购买失败: " .. tostring(reason), state = state })
-                end,
-            })
-        end,
-        error = function(_, reason)
-            Send(connection, Shared.EVENTS.BUY_SEED_RESPONSE, { success = false, message = "经济数据读取失败: " .. tostring(reason) })
-        end,
-    })
+    EnsureSeedShopState(function(shop)
+        if refreshId ~= nil and math.floor(tonumber(refreshId or 0) or 0) ~= shop.refreshId then
+            Send(connection, Shared.EVENTS.BUY_SEED_RESPONSE, { success = false, message = "商店已刷新，请重新购买", requestId = requestId, shop = shop })
+            return
+        end
+        local maxStock = math.max(0, math.floor(tonumber(shop.stock[plant.name] or 0) or 0))
+        if maxStock <= 0 then
+            Send(connection, Shared.EVENTS.BUY_SEED_RESPONSE, { success = false, message = "该种子已售罄", requestId = requestId, shop = shop })
+            return
+        end
+
+        local quotaKey = BuildSeedShopQuotaKey(shop.refreshId, plantIndex)
+        serverCloud.quota:Get(GLOBAL_SHOP_UID, quotaKey, {
+            ok = function(rows)
+                local quotaRow = rows and rows[1]
+                local soldCount = math.max(0, math.floor(tonumber(quotaRow and quotaRow.value or 0) or 0))
+                local available = math.max(0, maxStock - soldCount)
+                if available <= 0 then
+                    local responseShop = AddSeedShopResponseFields(DeepCopy(shop), Now())
+                    responseShop.stock[plant.name] = 0
+                    Send(connection, Shared.EVENTS.BUY_SEED_RESPONSE, { success = false, message = "该种子已售罄", requestId = requestId, shop = responseShop })
+                    return
+                end
+
+                serverCloud:Get(uid, Shared.KEYS.ECONOMY_STATE, {
+                    ok = function(scores)
+                        local state = NormalizeEconomyState(scores[Shared.KEYS.ECONOMY_STATE] or BuildInitialEconomyState())
+                        local owned = tonumber(state.seedBag[plantIndex] or 0) or 0
+                        local buyCount = math.min(count, available, SEED_STACK_MAX - owned)
+                        if buyCount <= 0 then
+                            Send(connection, Shared.EVENTS.BUY_SEED_RESPONSE, { success = false, message = "种子背包已满", requestId = requestId, state = state, shop = shop })
+                            return
+                        end
+                        local totalPrice = price * buyCount
+                        if state.gold < totalPrice then
+                            buyCount = math.min(buyCount, math.floor(state.gold / price))
+                            totalPrice = price * buyCount
+                        end
+                        if buyCount <= 0 then
+                            Send(connection, Shared.EVENTS.BUY_SEED_RESPONSE, { success = false, message = "金币不足", requestId = requestId, state = state, shop = shop })
+                            return
+                        end
+
+                        state.gold = state.gold - totalPrice
+                        state.seedBag[plantIndex] = owned + buyCount
+                        state.updatedAt = Now()
+                        NextRevision(state)
+
+                        local responseShop = AddSeedShopResponseFields(DeepCopy(shop), Now())
+                        responseShop.stock[plant.name] = math.max(0, available - buyCount)
+
+                        local c = serverCloud:BatchCommit("全服商店原子购买种子")
+                        c:QuotaAdd(GLOBAL_SHOP_UID, quotaKey, buyCount, maxStock)
+                        c:ScoreSet(uid, Shared.KEYS.ECONOMY_STATE, state)
+                        c:Commit({
+                            ok = function()
+                                Send(connection, Shared.EVENTS.BUY_SEED_RESPONSE, { success = true, message = "购买成功 x" .. tostring(buyCount), requestId = requestId, plantIndex = plantIndex, price = totalPrice, count = buyCount, state = state, shop = responseShop })
+                            end,
+                            error = function(_, reason)
+                                local soldOutShop = AddSeedShopResponseFields(DeepCopy(shop), Now())
+                                soldOutShop.stock[plant.name] = 0
+                                Send(connection, Shared.EVENTS.BUY_SEED_RESPONSE, { success = false, message = "该种子已售罄或购买失败: " .. tostring(reason), requestId = requestId, state = state, shop = soldOutShop })
+                            end,
+                        })
+                    end,
+                    error = function(_, reason)
+                        Send(connection, Shared.EVENTS.BUY_SEED_RESPONSE, { success = false, message = "经济数据读取失败: " .. tostring(reason), requestId = requestId, shop = shop })
+                    end,
+                })
+            end,
+            error = function(_, reason)
+                Send(connection, Shared.EVENTS.BUY_SEED_RESPONSE, { success = false, message = "库存读取失败: " .. tostring(reason), requestId = requestId, shop = shop })
+            end,
+        })
+    end)
 end
 
 local function ClearPlayerSave(uid, connection)
@@ -936,6 +1132,7 @@ local function PlantSeedAuthority(uid, payload, connection)
                     state.updatedAt = Now()
                     NextRevision(state)
                     table.insert(plot.plants, crop)
+                    SyncProgressionTourValueFromFarm(state, farmState)
                     farmState.updatedAt = Now()
                     NextRevision(farmState)
 
@@ -952,6 +1149,7 @@ local function PlantSeedAuthority(uid, payload, connection)
                     }
                     local c = serverCloud:BatchCommit("权威播种")
                     c:ScoreSet(uid, Shared.KEYS.ECONOMY_STATE, state)
+                    AddTourRankCommit(c, uid, state)
                     c:ScoreSet(uid, Shared.KEYS.AUTH_FARM_STATE, farmState)
                     RequestGuard.AddToCommit(c, uid, payload._requestRecordKey, response)
                     c:Commit({
@@ -978,6 +1176,7 @@ local function PlantSeedAuthority(uid, payload, connection)
                     state.updatedAt = Now()
                     NextRevision(state)
                     table.insert(plot.plants, crop)
+                    SyncProgressionTourValueFromFarm(state, farmState)
                     farmState.updatedAt = Now()
                     NextRevision(farmState)
                     local response = {
@@ -993,6 +1192,7 @@ local function PlantSeedAuthority(uid, payload, connection)
                     }
                     local c = serverCloud:BatchCommit("首次权威播种")
                     c:ScoreSet(uid, Shared.KEYS.ECONOMY_STATE, state)
+                    AddTourRankCommit(c, uid, state)
                     c:ScoreSet(uid, Shared.KEYS.AUTH_FARM_STATE, farmState)
                     RequestGuard.AddToCommit(c, uid, payload._requestRecordKey, response)
                     c:Commit({
@@ -1072,6 +1272,7 @@ local function HarvestCropAuthority(uid, payload, connection)
 
                     local plot = GetFarmPlot(farmState, plotIndex)
                     table.remove(plot.plants, cropIndex)
+                    SyncProgressionTourValueFromFarm(state, farmState)
                     farmState.updatedAt = Now()
                     NextRevision(farmState)
 
@@ -1091,6 +1292,7 @@ local function HarvestCropAuthority(uid, payload, connection)
                     }
                     local c = serverCloud:BatchCommit("权威收获")
                     c:ScoreSet(uid, Shared.KEYS.ECONOMY_STATE, state)
+                    AddTourRankCommit(c, uid, state)
                     c:ScoreSet(uid, Shared.KEYS.AUTH_FARM_STATE, farmState)
                     RequestGuard.AddToCommit(c, uid, payload._requestRecordKey, response)
                     c:Commit({
@@ -1728,25 +1930,28 @@ local function ExpandPlotAuthority(uid, payload, connection)
                 Send(connection, Shared.EVENTS.EXPAND_PLOT_RESPONSE, { success = false, message = "金币不足", requestId = payload.requestId, state = state })
                 return
             end
-            if (progression.bestTourValue or progression.currentTourValue or 0) < requirement.tour then
-                Send(connection, Shared.EVENTS.EXPAND_PLOT_RESPONSE, { success = false, message = "观光值不足", requestId = payload.requestId, state = state })
-                return
-            end
-            state.gold = state.gold - requirement.gold
-            progression.unlockedPlotCount = nextPlot
-            progression.gardenLevel = math.max(progression.gardenLevel or 1, nextPlot)
-            state.progression = progression
-            state.updatedAt = Now()
-            NextRevision(state)
             serverCloud:Get(uid, Shared.KEYS.AUTH_FARM_STATE, {
                 ok = function(farmScores)
                     local farmState = NormalizeFarmState(farmScores[Shared.KEYS.AUTH_FARM_STATE])
+                    SyncProgressionTourValueFromFarm(state, farmState)
+                    progression = NormalizeProgressionState(state.progression)
+                    if (progression.bestTourValue or progression.currentTourValue or 0) < requirement.tour then
+                        Send(connection, Shared.EVENTS.EXPAND_PLOT_RESPONSE, { success = false, message = "观光值不足", requestId = payload.requestId, state = state })
+                        return
+                    end
+                    state.gold = state.gold - requirement.gold
+                    progression.unlockedPlotCount = nextPlot
+                    progression.gardenLevel = math.max(progression.gardenLevel or 1, nextPlot)
+                    state.progression = progression
+                    state.updatedAt = Now()
+                    NextRevision(state)
                     GetFarmPlot(farmState, nextPlot)
                     farmState.updatedAt = Now()
                     NextRevision(farmState)
                     local response = { success = true, message = "扩地成功", requestId = payload.requestId, plotIndex = nextPlot, state = state, farm = farmState }
                     local c = serverCloud:BatchCommit("权威扩地")
                     c:ScoreSet(uid, Shared.KEYS.ECONOMY_STATE, state)
+                    AddTourRankCommit(c, uid, state)
                     c:ScoreSet(uid, Shared.KEYS.AUTH_FARM_STATE, farmState)
                     c:Commit({
                         ok = function() Send(connection, Shared.EVENTS.EXPAND_PLOT_RESPONSE, response) end,
@@ -1806,143 +2011,136 @@ local function RequestSteal(uid, targetUid, cropIndex, cropId, connection, reque
         return
     end
 
-    serverCloud.quota:Add(uid, "daily_steal", 1, DAILY_STEAL_LIMIT, "day", 1, {
-        ok = function()
-            serverCloud:Get(targetUid, Shared.KEYS.AUTH_FARM_STATE, {
-                ok = function(scores)
-                    local farmState = NormalizeFarmState(scores[Shared.KEYS.AUTH_FARM_STATE])
-                    local crop, actualPlotIndex, actualIndex = FindFarmCrop(farmState, cropId)
-                    if crop == nil and cropId == "" then
-                        local plot = GetFarmPlot(farmState, 1)
-                        crop = plot.plants[cropIndex]
-                        actualPlotIndex = 1
-                        actualIndex = cropIndex
-                    end
-                    if crop == nil then
-                        Send(connection, Shared.EVENTS.STEAL_RESPONSE, { success = false, message = "没有找到这株作物" })
-                        return
-                    end
-                    RefreshAuthCrop(crop)
-                    local actualCropId = tostring(crop.serverCropId or crop.cropId or cropId)
-                    if crop.mature ~= true then
-                        Send(connection, Shared.EVENTS.STEAL_RESPONSE, { success = false, message = "这株作物还没成熟" })
-                        return
-                    end
-                    if crop.stolen == true then
-                        Send(connection, Shared.EVENTS.STEAL_RESPONSE, { success = false, message = "这株作物已经被偷过了" })
-                        return
-                    end
+    serverCloud:Get(targetUid, Shared.KEYS.AUTH_FARM_STATE, {
+        ok = function(scores)
+            local farmState = NormalizeFarmState(scores[Shared.KEYS.AUTH_FARM_STATE])
+            local crop, actualPlotIndex, actualIndex = FindFarmCrop(farmState, cropId)
+            if crop == nil and cropId == "" then
+                local plot = GetFarmPlot(farmState, 1)
+                crop = plot.plants[cropIndex]
+                actualPlotIndex = 1
+                actualIndex = cropIndex
+            end
+            if crop == nil then
+                Send(connection, Shared.EVENTS.STEAL_RESPONSE, { success = false, message = "没有找到这株作物" })
+                return
+            end
+            RefreshAuthCrop(crop)
+            local actualCropId = tostring(crop.serverCropId or crop.cropId or cropId)
+            if crop.mature ~= true then
+                Send(connection, Shared.EVENTS.STEAL_RESPONSE, { success = false, message = "这株作物还没成熟" })
+                return
+            end
+            if crop.stolen == true then
+                Send(connection, Shared.EVENTS.STEAL_RESPONSE, { success = false, message = "这株作物已经被偷过了" })
+                return
+            end
 
-                    local recordKey = BuildStealRecordKey(targetUid, actualCropId)
-                    local cropClaimKey = BuildStealCropClaimKey(actualCropId)
-                    serverCloud.list:Get(uid, recordKey, {
-                        ok = function(records)
-                            if records ~= nil and #records > 0 then
-                                Send(connection, Shared.EVENTS.STEAL_RESPONSE, { success = false, message = "这株作物你已经偷过了", requestId = requestId })
+            local recordKey = BuildStealRecordKey(targetUid, actualCropId)
+            local cropClaimKey = BuildStealCropClaimKey(actualCropId)
+            serverCloud.list:Get(uid, recordKey, {
+                ok = function(records)
+                    if records ~= nil and #records > 0 then
+                        Send(connection, Shared.EVENTS.STEAL_RESPONSE, { success = false, message = "这株作物你已经偷过了", requestId = requestId })
+                        return
+                    end
+                    serverCloud.list:Get(targetUid, cropClaimKey, {
+                        ok = function(claimRows)
+                            if claimRows ~= nil and #claimRows > 0 then
+                                Send(connection, Shared.EVENTS.STEAL_RESPONSE, { success = false, message = "这株作物已经被偷过了", requestId = requestId })
                                 return
                             end
-                            serverCloud.list:Get(targetUid, cropClaimKey, {
-                                ok = function(claimRows)
-                                    if claimRows ~= nil and #claimRows > 0 then
-                                        Send(connection, Shared.EVENTS.STEAL_RESPONSE, { success = false, message = "这株作物已经被偷过了", requestId = requestId })
-                                        return
+
+                            local reward = RollStealReward(crop)
+                            serverCloud:Get(uid, Shared.KEYS.ECONOMY_STATE, {
+                                ok = function(economyRows)
+                                    local economy = NormalizeEconomyState(economyRows[Shared.KEYS.ECONOMY_STATE] or BuildInitialEconomyState())
+                                    if reward.type == "seed" then
+                                        local seedId = NormalizePlantIndex(reward.seedId or crop.plantIndex or 1) or 1
+                                        local current = tonumber(economy.seedBag[seedId] or 0) or 0
+                                        if current >= SEED_STACK_MAX then
+                                            reward = { type = "none", reason = "bag_full", chance = reward.chance }
+                                        else
+                                            economy.seedBag[seedId] = current + 1
+                                            economy.collectedPlants[seedId] = true
+                                            reward.seedId = seedId
+                                        end
                                     end
 
-                                    local reward = RollStealReward(crop)
-                                    serverCloud:Get(uid, Shared.KEYS.ECONOMY_STATE, {
-                                        ok = function(economyRows)
-                                            local economy = NormalizeEconomyState(economyRows[Shared.KEYS.ECONOMY_STATE] or BuildInitialEconomyState())
-                                            if reward.type == "seed" then
-                                                local seedId = NormalizePlantIndex(reward.seedId or crop.plantIndex or 1) or 1
-                                                local current = tonumber(economy.seedBag[seedId] or 0) or 0
-                                                if current >= SEED_STACK_MAX then
-                                                    reward = { type = "none", reason = "bag_full", chance = reward.chance }
-                                                else
-                                                    economy.seedBag[seedId] = current + 1
-                                                    economy.collectedPlants[seedId] = true
-                                                    reward.seedId = seedId
-                                                end
-                                            end
+                                    local now = Now()
+                                    crop.stolen = true
+                                    crop.stolenBy = uid
+                                    crop.stolenAt = now
+                                    crop.stealable = false
+                                    crop.stealReward = reward
+                                    farmState.updatedAt = now
+                                    NextRevision(farmState)
+                                    economy.updatedAt = now
+                                    NextRevision(economy)
 
-                                            local now = Now()
-                                            crop.stolen = true
-                                            crop.stolenBy = uid
-                                            crop.stolenAt = now
-                                            crop.stealable = false
-                                            crop.stealReward = reward
-                                            farmState.updatedAt = now
-                                            NextRevision(farmState)
-                                            economy.updatedAt = now
-                                            NextRevision(economy)
+                                    local log = {
+                                        thiefUserId = uid,
+                                        targetUserId = targetUid,
+                                        cropId = actualCropId,
+                                        cropIndex = actualIndex,
+                                        cropName = crop.name or "作物",
+                                        seedId = crop.plantIndex or reward.seedId or 1,
+                                        gotSeed = reward.type == "seed",
+                                        reward = reward,
+                                        stolenAt = now,
+                                        time = now,
+                                    }
 
-                                            local log = {
-                                                thiefUserId = uid,
-                                                targetUserId = targetUid,
-                                                cropId = actualCropId,
-                                                cropIndex = actualIndex,
-                                                cropName = crop.name or "作物",
-                                                seedId = crop.plantIndex or reward.seedId or 1,
-                                                gotSeed = reward.type == "seed",
-                                                reward = reward,
-                                                stolenAt = now,
-                                                time = now,
-                                            }
-
-                                            local message = "偷菜成功，但没有获得种子"
-                                            if reward.type == "seed" then
-                                                message = "偷菜成功，奖励已发放"
-                                            elseif reward.reason == "bag_full" then
-                                                message = "偷菜成功，但种子背包已满"
-                                            end
-                                            local response = {
-                                                success = true,
-                                                message = message,
-                                                requestId = requestId,
-                                                reward = reward,
-                                                cropId = actualCropId,
-                                                cropIndex = actualIndex,
-                                                daily = { limit = DAILY_STEAL_LIMIT },
-                                                state = economy,
-                                            }
-                                            local c = serverCloud:BatchCommit("权威偷菜")
-                                            c:ScoreSet(uid, Shared.KEYS.ECONOMY_STATE, economy)
-                                            c:ScoreSet(targetUid, Shared.KEYS.AUTH_FARM_STATE, farmState)
-                                            c:ListAdd(uid, recordKey, { targetUserId = targetUid, cropId = actualCropId, stolenAt = now })
-                                            c:ListAdd(targetUid, cropClaimKey, { thiefUserId = uid, cropId = actualCropId, stolenAt = now })
-                                            c:ListAdd(targetUid, Shared.KEYS.STEAL_LOGS, log)
-                                            c:ListAdd(targetUid, Shared.KEYS.RECENT_VISITORS, { userId = uid, visitedAt = now, time = now, action = "steal" })
-                                            RequestGuard.AddToCommit(c, uid, requestRecordKey, response)
-                                            c:Commit({
-                                                ok = function()
-                                                    Send(connection, Shared.EVENTS.STEAL_RESPONSE, response)
-                                                end,
-                                                error = function(_, reason)
-                                                    Send(connection, Shared.EVENTS.STEAL_RESPONSE, { success = false, message = "偷菜提交失败: " .. tostring(reason), requestId = requestId, state = economy })
-                                                end,
-                                            })
+                                    local message = "偷菜成功，但没有获得种子"
+                                    if reward.type == "seed" then
+                                        message = "偷菜成功，奖励已发放"
+                                    elseif reward.reason == "bag_full" then
+                                        message = "偷菜成功，但种子背包已满"
+                                    end
+                                    local response = {
+                                        success = true,
+                                        message = message,
+                                        requestId = requestId,
+                                        reward = reward,
+                                        cropId = actualCropId,
+                                        cropIndex = actualIndex,
+                                        daily = { stealCountDelta = 1, limit = DAILY_STEAL_LIMIT },
+                                        state = economy,
+                                    }
+                                    local c = serverCloud:BatchCommit("权威偷菜")
+                                    c:ScoreSet(uid, Shared.KEYS.ECONOMY_STATE, economy)
+                                    c:ScoreSet(targetUid, Shared.KEYS.AUTH_FARM_STATE, farmState)
+                                    c:ListAdd(uid, recordKey, { targetUserId = targetUid, cropId = actualCropId, stolenAt = now })
+                                    c:ListAdd(targetUid, cropClaimKey, { thiefUserId = uid, cropId = actualCropId, stolenAt = now })
+                                    c:ListAdd(targetUid, Shared.KEYS.STEAL_LOGS, log)
+                                    c:QuotaAdd(uid, "daily_steal", 1, DAILY_STEAL_LIMIT, "day", 1)
+                                    RequestGuard.AddToCommit(c, uid, requestRecordKey, response)
+                                    c:Commit({
+                                        ok = function()
+                                            Send(connection, Shared.EVENTS.STEAL_RESPONSE, response)
                                         end,
                                         error = function(_, reason)
-                                            Send(connection, Shared.EVENTS.STEAL_RESPONSE, { success = false, message = "经济数据读取失败: " .. tostring(reason), requestId = requestId })
+                                            Send(connection, Shared.EVENTS.STEAL_RESPONSE, { success = false, message = "偷菜失败: " .. tostring(reason), requestId = requestId, state = economy })
                                         end,
                                     })
                                 end,
                                 error = function(_, reason)
-                                    Send(connection, Shared.EVENTS.STEAL_RESPONSE, { success = false, message = "作物偷取记录读取失败: " .. tostring(reason), requestId = requestId })
+                                    Send(connection, Shared.EVENTS.STEAL_RESPONSE, { success = false, message = "经济数据读取失败: " .. tostring(reason), requestId = requestId })
                                 end,
                             })
                         end,
                         error = function(_, reason)
-                            Send(connection, Shared.EVENTS.STEAL_RESPONSE, { success = false, message = "偷菜记录读取失败: " .. tostring(reason), requestId = requestId })
+                            Send(connection, Shared.EVENTS.STEAL_RESPONSE, { success = false, message = "作物偷取记录读取失败: " .. tostring(reason), requestId = requestId })
                         end,
                     })
                 end,
                 error = function(_, reason)
-                    Send(connection, Shared.EVENTS.STEAL_RESPONSE, { success = false, message = "读取目标花园失败: " .. tostring(reason) })
+                    Send(connection, Shared.EVENTS.STEAL_RESPONSE, { success = false, message = "偷菜记录读取失败: " .. tostring(reason), requestId = requestId })
                 end,
             })
         end,
-        error = function()
-            Send(connection, Shared.EVENTS.STEAL_RESPONSE, { success = false, message = "今日偷菜次数已用完" })
+        error = function(_, reason)
+            Send(connection, Shared.EVENTS.STEAL_RESPONSE, { success = false, message = "读取目标花园失败: " .. tostring(reason) })
         end,
     })
 end
@@ -1999,6 +2197,7 @@ function HandleGardenClientReady(eventType, eventData)
     if uid ~= nil then SendPlayerProfile(uid, connection) end
     if uid ~= nil then SocialServer.RequestSocialState(uid, connection) end
     if uid ~= nil then RequestEconomyState(uid, connection) end
+    SendSeedShopState(connection)
     if uid ~= nil then RequestAuthFarmState(uid, connection) end
 end
 
@@ -2013,7 +2212,16 @@ function HandleGardenRequestSnapshot(eventType, eventData)
     local connection = eventData["Connection"]:GetPtr("Connection")
     local uid = GetConnectionUserId(connection)
     local data = ReadRequest(eventData)
-    SocialServer.RequestGardenSnapshot(uid, tonumber(data.targetUserId or 0) or 0, connection)
+    if uid ~= nil then
+        RequestGuard.Check(uid, "visit", data.requestId, function(recordKey)
+            SocialServer.RequestGardenSnapshot(uid, tonumber(data.targetUserId or 0) or 0, connection, data.requestId, recordKey)
+        end, function(record)
+            local response = record.response or record
+            Send(connection, Shared.EVENTS.GARDEN_RESPONSE, response)
+        end, function(reason)
+            Send(connection, Shared.EVENTS.GARDEN_RESPONSE, { success = false, message = "请求去重检查失败: " .. tostring(reason), requestId = data.requestId })
+        end)
+    end
 end
 
 function HandleGardenRequestRank(eventType, eventData)
@@ -2052,6 +2260,11 @@ function HandleGardenRequestEconomyState(eventType, eventData)
     if uid ~= nil then RequestEconomyState(uid, connection) end
 end
 
+function HandleGardenRequestSeedShop(eventType, eventData)
+    local connection = eventData["Connection"]:GetPtr("Connection")
+    SendSeedShopState(connection)
+end
+
 function HandleGardenRequestAuthFarm(eventType, eventData)
     local connection = eventData["Connection"]:GetPtr("Connection")
     local uid = GetConnectionUserId(connection)
@@ -2062,7 +2275,7 @@ function HandleGardenBuySeed(eventType, eventData)
     local connection = eventData["Connection"]:GetPtr("Connection")
     local uid = GetConnectionUserId(connection)
     local data = ReadRequest(eventData)
-    if uid ~= nil then BuySeed(uid, data.plantIndex, data.price, connection, data.count) end
+    if uid ~= nil then BuySeed(uid, data.plantIndex, data.price, connection, data.count, data.requestId, data.refreshId) end
 end
 
 function HandleGardenClearSave(eventType, eventData)
@@ -2265,6 +2478,70 @@ function HandleGardenLikeGarden(eventType, eventData)
     end
 end
 
+function HandleGardenSendFriendRequest(eventType, eventData)
+    local connection = eventData["Connection"]:GetPtr("Connection")
+    local uid = GetConnectionUserId(connection)
+    local data = ReadRequest(eventData)
+    if uid ~= nil then
+        RequestGuard.Check(uid, "friend_request", data.requestId, function(recordKey)
+            SocialServer.SendFriendRequest(uid, data.targetUserId, connection, data.requestId, recordKey, data.profile)
+        end, function(record)
+            local response = record.response or record
+            Send(connection, Shared.EVENTS.SEND_FRIEND_REQUEST_RESPONSE, response)
+        end, function(reason)
+            Send(connection, Shared.EVENTS.SEND_FRIEND_REQUEST_RESPONSE, { success = false, message = "请求去重检查失败: " .. tostring(reason), requestId = data.requestId })
+        end)
+    end
+end
+
+function HandleGardenRespondFriendRequest(eventType, eventData)
+    local connection = eventData["Connection"]:GetPtr("Connection")
+    local uid = GetConnectionUserId(connection)
+    local data = ReadRequest(eventData)
+    if uid ~= nil then
+        RequestGuard.Check(uid, "friend_respond", data.requestId, function(recordKey)
+            SocialServer.RespondFriendRequest(uid, data.requestIdValue, data.fromUserId, data.accepted == true, connection, data.requestId, recordKey)
+        end, function(record)
+            local response = record.response or record
+            Send(connection, Shared.EVENTS.RESPOND_FRIEND_REQUEST_RESPONSE, response)
+        end, function(reason)
+            Send(connection, Shared.EVENTS.RESPOND_FRIEND_REQUEST_RESPONSE, { success = false, message = "请求去重检查失败: " .. tostring(reason), requestId = data.requestId })
+        end)
+    end
+end
+
+function HandleGardenRemoveFriend(eventType, eventData)
+    local connection = eventData["Connection"]:GetPtr("Connection")
+    local uid = GetConnectionUserId(connection)
+    local data = ReadRequest(eventData)
+    if uid ~= nil then
+        RequestGuard.Check(uid, "remove_friend", data.requestId, function(recordKey)
+            SocialServer.RemoveFriend(uid, data.friendUserId, connection, data.requestId, recordKey)
+        end, function(record)
+            local response = record.response or record
+            Send(connection, Shared.EVENTS.REMOVE_FRIEND_RESPONSE, response)
+        end, function(reason)
+            Send(connection, Shared.EVENTS.REMOVE_FRIEND_RESPONSE, { success = false, message = "请求去重检查失败: " .. tostring(reason), requestId = data.requestId, friendUserId = data.friendUserId })
+        end)
+    end
+end
+
+function HandleGardenClearSocialMessages(eventType, eventData)
+    local connection = eventData["Connection"]:GetPtr("Connection")
+    local uid = GetConnectionUserId(connection)
+    local data = ReadRequest(eventData)
+    if uid ~= nil then
+        RequestGuard.Check(uid, "clear_social_messages", data.requestId, function(recordKey)
+            SocialServer.ClearSocialMessages(uid, connection, data.requestId, recordKey)
+        end, function(record)
+            local response = record.response or record
+            Send(connection, Shared.EVENTS.CLEAR_SOCIAL_MESSAGES_RESPONSE, response)
+        end, function(reason)
+            Send(connection, Shared.EVENTS.CLEAR_SOCIAL_MESSAGES_RESPONSE, { success = false, message = "请求去重检查失败: " .. tostring(reason), requestId = data.requestId })
+        end)
+    end
+end
+
 function HandleGardenRequestGifts(eventType, eventData)
     local connection = eventData["Connection"]:GetPtr("Connection")
     local uid = GetConnectionUserId(connection)
@@ -2319,6 +2596,7 @@ function Start()
     SubscribeToEvent(Shared.EVENTS.REQUEST_STEAL, "HandleGardenRequestSteal")
     SubscribeToEvent(Shared.EVENTS.REQUEST_SOCIAL_STATE, "HandleGardenRequestSocialState")
     SubscribeToEvent(Shared.EVENTS.REQUEST_ECONOMY_STATE, "HandleGardenRequestEconomyState")
+    SubscribeToEvent(Shared.EVENTS.REQUEST_SEED_SHOP, "HandleGardenRequestSeedShop")
     SubscribeToEvent(Shared.EVENTS.REQUEST_AUTH_FARM, "HandleGardenRequestAuthFarm")
     SubscribeToEvent(Shared.EVENTS.BUY_SEED, "HandleGardenBuySeed")
     SubscribeToEvent(Shared.EVENTS.CLEAR_SAVE, "HandleGardenClearSave")
@@ -2337,6 +2615,10 @@ function Start()
     SubscribeToEvent(Shared.EVENTS.DRAW_ACTIVITY_PACK, "HandleGardenDrawActivityPack")
     SubscribeToEvent(Shared.EVENTS.SEND_SEED_GIFT, "HandleGardenSendSeedGift")
     SubscribeToEvent(Shared.EVENTS.LIKE_GARDEN, "HandleGardenLikeGarden")
+    SubscribeToEvent(Shared.EVENTS.SEND_FRIEND_REQUEST, "HandleGardenSendFriendRequest")
+    SubscribeToEvent(Shared.EVENTS.RESPOND_FRIEND_REQUEST, "HandleGardenRespondFriendRequest")
+    SubscribeToEvent(Shared.EVENTS.REMOVE_FRIEND, "HandleGardenRemoveFriend")
+    SubscribeToEvent(Shared.EVENTS.CLEAR_SOCIAL_MESSAGES, "HandleGardenClearSocialMessages")
     SubscribeToEvent(Shared.EVENTS.REQUEST_GIFTS, "HandleGardenRequestGifts")
     SubscribeToEvent(Shared.EVENTS.CLAIM_GIFT, "HandleGardenClaimGift")
     print("[社交花园服务端] 权威农场服务已启动")

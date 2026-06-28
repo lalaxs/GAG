@@ -11,9 +11,14 @@ Shared.KEYS = {
     STEAL_LOGS = "garden_steal_logs_v1",
     RECENT_VISITORS = "garden_recent_visitors_v1",
     SEED_REWARDS = "garden_seed_rewards_v1",
+    FRIENDS = "garden_friends_v1",
+    FRIEND_REQUESTS = "garden_friend_requests_v1",
+    SOCIAL_NOTICES = "garden_social_notices_v1",
+    GIFT_SENT_TARGETS = "garden_gift_sent_targets_v1",
     SOCIAL_GOLD = "gold",
     ECONOMY_STATE = "garden_economy_state_v1",
     AUTH_FARM_STATE = "garden_auth_farm_state_v1",
+    SHARED_SEED_SHOP = "garden_shared_seed_shop_v1",
 }
 
 Shared.EVENTS = {
@@ -31,6 +36,8 @@ Shared.EVENTS = {
     SOCIAL_STATE_RESPONSE = "GardenSocialStateResponse",
     REQUEST_ECONOMY_STATE = "GardenRequestEconomyState",
     ECONOMY_STATE_RESPONSE = "GardenEconomyStateResponse",
+    REQUEST_SEED_SHOP = "GardenRequestSeedShop",
+    SEED_SHOP_RESPONSE = "GardenSeedShopResponse",
     REQUEST_AUTH_FARM = "GardenRequestAuthFarm",
     AUTH_FARM_RESPONSE = "GardenAuthFarmResponse",
     BUY_SEED = "GardenBuySeed",
@@ -71,6 +78,14 @@ Shared.EVENTS = {
     CLAIM_GIFT_RESPONSE = "GardenClaimGiftResponse",
     LIKE_GARDEN = "GardenLikeGarden",
     LIKE_GARDEN_RESPONSE = "GardenLikeGardenResponse",
+    SEND_FRIEND_REQUEST = "GardenSendFriendRequest",
+    SEND_FRIEND_REQUEST_RESPONSE = "GardenSendFriendRequestResponse",
+    RESPOND_FRIEND_REQUEST = "GardenRespondFriendRequest",
+    RESPOND_FRIEND_REQUEST_RESPONSE = "GardenRespondFriendRequestResponse",
+    REMOVE_FRIEND = "GardenRemoveFriend",
+    REMOVE_FRIEND_RESPONSE = "GardenRemoveFriendResponse",
+    CLEAR_SOCIAL_MESSAGES = "GardenClearSocialMessages",
+    CLEAR_SOCIAL_MESSAGES_RESPONSE = "GardenClearSocialMessagesResponse",
 }
 
 Shared.SERVER_EVENTS = {
@@ -81,6 +96,7 @@ Shared.SERVER_EVENTS = {
     Shared.EVENTS.REQUEST_STEAL,
     Shared.EVENTS.REQUEST_SOCIAL_STATE,
     Shared.EVENTS.REQUEST_ECONOMY_STATE,
+    Shared.EVENTS.REQUEST_SEED_SHOP,
     Shared.EVENTS.REQUEST_AUTH_FARM,
     Shared.EVENTS.BUY_SEED,
     Shared.EVENTS.CLEAR_SAVE,
@@ -101,6 +117,10 @@ Shared.SERVER_EVENTS = {
     Shared.EVENTS.REQUEST_GIFTS,
     Shared.EVENTS.CLAIM_GIFT,
     Shared.EVENTS.LIKE_GARDEN,
+    Shared.EVENTS.SEND_FRIEND_REQUEST,
+    Shared.EVENTS.RESPOND_FRIEND_REQUEST,
+    Shared.EVENTS.REMOVE_FRIEND,
+    Shared.EVENTS.CLEAR_SOCIAL_MESSAGES,
 }
 
 Shared.CLIENT_EVENTS = {
@@ -111,6 +131,7 @@ Shared.CLIENT_EVENTS = {
     Shared.EVENTS.STEAL_RESPONSE,
     Shared.EVENTS.SOCIAL_STATE_RESPONSE,
     Shared.EVENTS.ECONOMY_STATE_RESPONSE,
+    Shared.EVENTS.SEED_SHOP_RESPONSE,
     Shared.EVENTS.AUTH_FARM_RESPONSE,
     Shared.EVENTS.BUY_SEED_RESPONSE,
     Shared.EVENTS.CLEAR_SAVE_RESPONSE,
@@ -131,6 +152,10 @@ Shared.CLIENT_EVENTS = {
     Shared.EVENTS.GIFTS_RESPONSE,
     Shared.EVENTS.CLAIM_GIFT_RESPONSE,
     Shared.EVENTS.LIKE_GARDEN_RESPONSE,
+    Shared.EVENTS.SEND_FRIEND_REQUEST_RESPONSE,
+    Shared.EVENTS.RESPOND_FRIEND_REQUEST_RESPONSE,
+    Shared.EVENTS.REMOVE_FRIEND_RESPONSE,
+    Shared.EVENTS.CLEAR_SOCIAL_MESSAGES_RESPONSE,
 }
 
 function Shared.RegisterServerEvents()

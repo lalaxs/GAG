@@ -441,6 +441,22 @@ function PlayerSystem.GetSelectedAvatar()
     return AVATARS[state_.selectedAvatar] or AVATARS[1]
 end
 
+function PlayerSystem.GetSelectedAvatarProfile()
+    EnsureSelectedAvatarUnlocked()
+    local avatar = AVATARS[state_.selectedAvatar] or AVATARS[1]
+    if avatar == nil then return nil end
+    return {
+        selectedAvatar = state_.selectedAvatar,
+        avatarId = avatar.id,
+        visualId = avatar.visualId,
+        plantIndex = avatar.plantIndex,
+        name = avatar.name,
+        rarity = avatar.rarity,
+        image = avatar.image,
+        color = avatar.color,
+    }
+end
+
 function PlayerSystem.SelectAvatar(index)
     index = Clamp(index or 1, 1, #AVATARS)
     if not IsAvatarUnlockedIndex(index) then

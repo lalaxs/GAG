@@ -14,10 +14,13 @@ local EconomyCloudSystem = {}
 
 local deps_ = {}
 local requests_ = RequestStateMachine.Create("economy", { timeout = 14.0 })
+local initialRetryDelay_ = 2.0
+local initialRetryTimer_ = 0
 local state_ = {
     serverEnabled = false,
     ready = false,
     authFarmReady = false,
+    commissionsReady = false,
     pending = {},
     lastSyncText = "未同步",
 }
@@ -60,6 +63,17 @@ local function FinishRequest(requestId, requestType)
     return record
 end
 
+local function FinishExactRequest(requestId, requestType)
+    local record = nil
+    if requestId ~= nil then
+        record = requests_:Finish(requestId)
+    elseif requestType ~= nil then
+        record = requests_:Finish(nil, requestType)
+    end
+    requests_:SyncLegacyPending(state_.pending)
+    return record
+end
+
 local function ReplaceTable(target, source)
     if target == nil then return end
     for key in pairs(target) do target[key] = nil end
@@ -74,8 +88,9 @@ local function ReplaceTable(target, source)
     end
 end
 
-local function ApplyState(cloudState)
+local function ApplyState(cloudState, options)
     if type(cloudState) ~= "table" then return false end
+    options = options or {}
     if deps_.WalletSystem and deps_.WalletSystem.SetBalance then
         deps_.WalletSystem.SetBalance(tonumber(cloudState.gold or 0) or 0)
     end
@@ -96,17 +111,19 @@ local function ApplyState(cloudState)
     end
     if deps_.ProgressionSystem and deps_.ProgressionSystem.LoadSaveData and cloudState.progression ~= nil then
         deps_.ProgressionSystem.LoadSaveData(cloudState.progression)
-        if deps_.onProgressionApplied then deps_.onProgressionApplied(cloudState.progression) end
+        if options.silentEvents ~= true and deps_.onProgressionApplied then deps_.onProgressionApplied(cloudState.progression) end
     end
     if deps_.ActivitySystem and deps_.ActivitySystem.LoadSaveData and cloudState.activity ~= nil then
         deps_.ActivitySystem.LoadSaveData(cloudState.activity)
     end
     if deps_.syncInventoryRefs then deps_.syncInventoryRefs() end
     if deps_.markDirty then deps_.markDirty() end
+    if options.silentEvents == true then return true end
     EventBus.Emit(UIEvents.WALLET_CHANGED, { reason = "economy_state_applied" })
     EventBus.Emit(UIEvents.INVENTORY_CHANGED, { reason = "economy_state_applied" })
     EventBus.Emit(UIEvents.SEEDPACK_CHANGED, { reason = "economy_state_applied" })
     EventBus.Emit(UIEvents.FARM_CHANGED, { reason = "economy_state_applied" })
+    EventBus.Emit(UIEvents.TALENT_CHANGED, { reason = "economy_state_applied" })
     return true
 end
 
@@ -116,6 +133,7 @@ function EconomyCloudSystem.Init(deps)
     Shared.RegisterClientEvents()
     if network ~= nil and IsClientMode ~= nil and IsClientMode() then
         SubscribeToEvent(Shared.EVENTS.ECONOMY_STATE_RESPONSE, "HandleGardenEconomyStateResponse")
+        SubscribeToEvent(Shared.EVENTS.SEED_SHOP_RESPONSE, "HandleGardenSeedShopResponse")
         SubscribeToEvent(Shared.EVENTS.AUTH_FARM_RESPONSE, "HandleGardenAuthFarmResponse")
         SubscribeToEvent(Shared.EVENTS.BUY_SEED_RESPONSE, "HandleGardenBuySeedResponse")
         SubscribeToEvent(Shared.EVENTS.CLEAR_SAVE_RESPONSE, "HandleGardenClearSaveResponse")
@@ -144,6 +162,14 @@ function EconomyCloudSystem.IsReady(requireFarm)
     return IsClientNetworkAvailable() and state_.ready == true and (requireFarm ~= true or state_.authFarmReady == true)
 end
 
+function EconomyCloudSystem.IsInitialSyncReady()
+    return state_.ready == true and state_.authFarmReady == true
+end
+
+local function NotifyInitialSyncProgress()
+    if deps_.onInitialSyncProgress then deps_.onInitialSyncProgress(EconomyCloudSystem.IsInitialSyncReady(), state_) end
+end
+
 function EconomyCloudSystem.IsBlocked(requireFarm)
     return BlockIfAuthoritativeNotReady(requireFarm)
 end
@@ -152,16 +178,30 @@ function EconomyCloudSystem.GetState()
     return state_
 end
 
-function EconomyCloudSystem.Update(_dt)
+function EconomyCloudSystem.Update(dt)
     requests_:Update(function(record)
         requests_:SyncLegacyPending(state_.pending)
         state_.lastSyncText = "请求超时"
-        if deps_.showToast then deps_.showToast("服务器请求超时，请稍后重试") end
+        if deps_.showToast then deps_.showToast("服务器请求超时，正在重试") end
         print("[经济同步] 请求超时: " .. tostring(record.type) .. " " .. tostring(record.id))
     end)
+    if EconomyCloudSystem.IsInitialSyncReady() then return end
+    initialRetryTimer_ = initialRetryTimer_ - (dt or 0)
+    if initialRetryTimer_ > 0 then return end
+    initialRetryTimer_ = initialRetryDelay_
+    if state_.ready ~= true then
+        print("[经济同步] 重试读取经济状态")
+        EconomyCloudSystem.RequestState()
+    end
+    if state_.authFarmReady ~= true then
+        print("[经济同步] 重试读取权威农场")
+        EconomyCloudSystem.RequestAuthFarm()
+    end
 end
 
 function EconomyCloudSystem.RequestState()
+    if state_.ready == true then return true end
+    if requests_:IsPending("load") then return true end
     local payload = BeginRequest("load", {})
     if SendRequest(Shared.EVENTS.REQUEST_ECONOMY_STATE, payload) then return true end
     FinishRequest(payload.requestId, "load")
@@ -169,6 +209,8 @@ function EconomyCloudSystem.RequestState()
 end
 
 function EconomyCloudSystem.RequestAuthFarm()
+    if state_.authFarmReady == true then return true end
+    if requests_:IsPending("authFarm") then return true end
     local payload = BeginRequest("authFarm", {})
     if SendRequest(Shared.EVENTS.REQUEST_AUTH_FARM, payload) then return true end
     FinishRequest(payload.requestId, "authFarm")
@@ -180,9 +222,16 @@ function EconomyCloudSystem.UploadState()
     return false
 end
 
-function EconomyCloudSystem.BuySeed(plantIndex, price, count)
+function EconomyCloudSystem.RequestSeedShop()
+    if IsClientNetworkAvailable() then
+        return Shared.SendToServer(Shared.EVENTS.REQUEST_SEED_SHOP, {})
+    end
+    return false
+end
+
+function EconomyCloudSystem.BuySeed(plantIndex, price, count, seedName, refreshId)
     if BlockIfAuthoritativeNotReady(false) then return false end
-    local payload = BeginRequest("buy", { plantIndex = plantIndex, price = price, count = count or 1 })
+    local payload = BeginRequest("buy", { plantIndex = plantIndex, price = price, count = count or 1, seedName = seedName, refreshId = refreshId })
     if SendRequest(Shared.EVENTS.BUY_SEED, payload) then return true end
     FinishRequest(payload.requestId, "buy")
     return false
@@ -332,6 +381,10 @@ end
 
 function EconomyCloudSystem.DrawActivityPack(count)
     if BlockIfAuthoritativeNotReady(false) then return false end
+    if requests_:IsPending("drawActivityPack") then
+        if deps_.showToast then deps_.showToast("抽取请求处理中，请稍后") end
+        return true
+    end
     local payload = BeginRequest("drawActivityPack", { count = count or 1 })
     if SendRequest(Shared.EVENTS.DRAW_ACTIVITY_PACK, payload) then return true end
     FinishRequest(payload.requestId, "drawActivityPack")
@@ -357,8 +410,18 @@ function EconomyCloudSystem.HandleEconomyStateResponse(data)
     if data.success and ApplyState(data.state) then
         state_.ready = true
         state_.lastSyncText = "已同步"
+        print("[经济同步] 经济状态已同步")
+        NotifyInitialSyncProgress()
     elseif deps_.showToast then
         deps_.showToast(data.message or "经济数据读取失败")
+    end
+end
+
+function EconomyCloudSystem.HandleSeedShopResponse(data)
+    if data.success and deps_.Shop and deps_.Shop.ApplyServerSeedShop then
+        deps_.Shop.ApplyServerSeedShop(data.shop)
+    elseif deps_.showToast then
+        deps_.showToast(data.message or "商店同步失败")
     end
 end
 
@@ -366,7 +429,9 @@ function EconomyCloudSystem.HandleAuthFarmResponse(data)
     FinishRequest(data.requestId, "authFarm")
     if data.success then
         state_.authFarmReady = true
+        print("[经济同步] 权威农场已同步")
         if deps_.onAuthFarmReceived then deps_.onAuthFarmReceived(data.farm) end
+        NotifyInitialSyncProgress()
     elseif deps_.showToast then
         deps_.showToast(data.message or "权威农场读取失败")
     end
@@ -374,6 +439,9 @@ end
 
 function EconomyCloudSystem.HandleBuySeedResponse(data)
     FinishRequest(data.requestId, "buy")
+    if data.shop ~= nil and deps_.Shop and deps_.Shop.ApplyServerSeedShop then
+        deps_.Shop.ApplyServerSeedShop(data.shop)
+    end
     if data.success then
         ApplyState(data.state)
         local text = data.message or "购买成功"
@@ -390,12 +458,15 @@ function EconomyCloudSystem.HandleClearSaveResponse(data)
     if data.success then
         state_.ready = true
         state_.authFarmReady = true
+        state_.commissionsReady = false
         ApplyState(data.state)
         if deps_.onAuthFarmReceived then deps_.onAuthFarmReceived(data.farm) end
         if deps_.showToast then deps_.showToast(data.message or "游戏存档已清除") end
+        if deps_.onClearSaveCompleted then deps_.onClearSaveCompleted(true) end
     else
         if data.state ~= nil then ApplyState(data.state) end
         if deps_.showToast then deps_.showToast(data.message or "清除存档失败") end
+        if deps_.onClearSaveCompleted then deps_.onClearSaveCompleted(false) end
     end
 end
 
@@ -452,7 +523,18 @@ function EconomyCloudSystem.HandleSynthesizePackResponse(data)
 end
 
 function EconomyCloudSystem.HandleUnlockTalentResponse(data)
-    HandleGenericStateResult(data, "unlockTalent", "天赋已解锁", "解锁天赋失败")
+    FinishRequest(data.requestId, "unlockTalent")
+    if data.success then
+        if data.state ~= nil then ApplyState(data.state) end
+        local text = data.message or "天赋已解锁"
+        if deps_.showToast then deps_.showToast(text) end
+        if deps_.showFloatingToast then deps_.showFloatingToast(text) end
+        EventBus.Emit(UIEvents.TALENT_CHANGED, { reason = "unlock_talent", successText = text })
+        if deps_.refreshUI then deps_.refreshUI(true) end
+    else
+        if data.state ~= nil then ApplyState(data.state) end
+        if deps_.showToast then deps_.showToast(data.message or "解锁天赋失败") end
+    end
 end
 
 function EconomyCloudSystem.HandleExpandPlotResponse(data)
@@ -463,6 +545,8 @@ function EconomyCloudSystem.HandleCommissionsResponse(data)
     FinishRequest(data.requestId, "commissions")
     if data.success and deps_.CommissionSystem and deps_.CommissionSystem.LoadSaveData then
         deps_.CommissionSystem.LoadSaveData(data.commission)
+        state_.commissionsReady = true
+        NotifyInitialSyncProgress()
         if deps_.refreshUI then deps_.refreshUI(true) end
     elseif deps_.showToast then
         deps_.showToast(data.message or "委托读取失败")
@@ -476,8 +560,12 @@ function EconomyCloudSystem.HandleCompleteCommissionResponse(data)
         if data.commission ~= nil and deps_.CommissionSystem and deps_.CommissionSystem.LoadSaveData then
             deps_.CommissionSystem.LoadSaveData(data.commission)
         end
-        if deps_.showToast then deps_.showToast(data.message or "委托完成") end
-        if deps_.showFloatingToast then deps_.showFloatingToast(data.message or "委托完成") end
+        local message = data.message or "委托完成，获得种子包"
+        if deps_.showFloatingToast then
+            deps_.showFloatingToast(message)
+        elseif deps_.showToast then
+            deps_.showToast(message)
+        end
         if deps_.refreshUI then deps_.refreshUI(true) end
     else
         if data.state ~= nil then ApplyState(data.state) end
@@ -494,15 +582,23 @@ function EconomyCloudSystem.HandleExchangeActivityRewardResponse(data)
 end
 
 function EconomyCloudSystem.HandleDrawActivityPackResponse(data)
-    FinishRequest(data.requestId, "drawActivityPack")
+    local record = FinishExactRequest(data.requestId, "drawActivityPack")
+    if record == nil then
+        print("[经济同步] 忽略重复或过期的活动抽取响应: " .. tostring(data.requestId))
+        return
+    end
     if data.success then
-        if data.state ~= nil then ApplyState(data.state) end
+        if data.state ~= nil then ApplyState(data.state, { silentEvents = true }) end
         local rewards = data.rewards or {}
-        if deps_.onActivityDrawResult and #rewards > 0 then deps_.onActivityDrawResult(rewards) end
+        if deps_.onActivityDrawResult and #rewards > 0 then
+            deps_.onActivityDrawResult(rewards)
+        elseif deps_.onActivityDrawFailed then
+            deps_.onActivityDrawFailed()
+        end
         if deps_.showToast then deps_.showToast(data.message or "抽取成功") end
-        if deps_.refreshUI then deps_.refreshUI(true) end
     else
         if data.state ~= nil then ApplyState(data.state) end
+        if deps_.onActivityDrawFailed then deps_.onActivityDrawFailed() end
         if deps_.showToast then deps_.showToast(data.message or "抽取失败") end
     end
 end
@@ -513,6 +609,10 @@ end
 
 function HandleGardenEconomyStateResponse(eventType, eventData)
     EconomyCloudSystem.HandleEconomyStateResponse(Shared.ReadEventData(eventData))
+end
+
+function HandleGardenSeedShopResponse(eventType, eventData)
+    EconomyCloudSystem.HandleSeedShopResponse(Shared.ReadEventData(eventData))
 end
 
 function HandleGardenAuthFarmResponse(eventType, eventData)
@@ -581,6 +681,7 @@ end
 
 function HandleGardenEconomyServerReady(eventType, eventData)
     EconomyCloudSystem.RequestState()
+    EconomyCloudSystem.RequestSeedShop()
     EconomyCloudSystem.RequestAuthFarm()
     EconomyCloudSystem.RequestCommissions()
 end

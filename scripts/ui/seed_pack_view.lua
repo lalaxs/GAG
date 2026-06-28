@@ -657,28 +657,31 @@ function SeedPackView.BuildOpeningOverlay(opening, stage, revealIndex, timer, sc
     local rollingCards, updateRollingCards, _ = BuildRollingCards(results, current, isSelected)
 
     -- 底部固定区域（高度恒定，避免UI跳动）
+    local bottomChildren = {
+        isSelected and UI.Label { text = currentPlantName, fontSize = 16, fontWeight = "bold", fontColor = rarityColor, marginBottom = 10 } or UI.Label { text = " ", fontSize = 16 },
+    }
+    if isSelected then
+        table.insert(bottomChildren, UI.Button {
+            text = "确认",
+            width = 120,
+            height = 42,
+            fontSize = 15,
+            fontWeight = "bold",
+            backgroundColor = {60, 170, 130, 255},
+            fontColor = {255, 255, 255, 255},
+            borderRadius = 12,
+            onClick = function()
+                deps_.suppressWorldTap()
+                deps_.skipOpening()
+            end,
+        })
+    end
     local bottomSection = UI.Panel {
         height = 80,
         alignItems = "center",
         justifyContent = "center",
         marginTop = 10,
-        children = {
-            isSelected and UI.Label { text = currentPlantName, fontSize = 16, fontWeight = "bold", fontColor = rarityColor, marginBottom = 10 } or UI.Label { text = " ", fontSize = 16 },
-            UI.Button {
-                text = isSelected and "确认" or "跳过",
-                width = isSelected and 120 or 68,
-                height = isSelected and 42 or 32,
-                fontSize = isSelected and 15 or 12,
-                fontWeight = "bold",
-                backgroundColor = isSelected and {60, 170, 130, 255} or {200, 200, 195, 255},
-                fontColor = isSelected and {255, 255, 255, 255} or {80, 80, 75, 255},
-                borderRadius = isSelected and 12 or 8,
-                onClick = function()
-                    deps_.suppressWorldTap()
-                    deps_.skipOpening()
-                end,
-            },
-        },
+        children = bottomChildren,
     }
 
     local overlay = UI.Panel {

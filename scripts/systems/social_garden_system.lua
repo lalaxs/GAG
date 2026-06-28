@@ -30,6 +30,9 @@ local state_ = {
     leaderboard = {},
     gifts = {},
     friends = {},
+    friendRequests = {},
+    socialNotices = {},
+    giftedTargets = {},
     recommendedPlayers = {},
     recentVisitors = {},
     stealLogs = {},
@@ -66,6 +69,22 @@ local function FinishRequest(requestId, requestType)
     return record
 end
 
+local function MarkGiftTarget(targetUserId, value)
+    if targetUserId == nil then return end
+    state_.giftedTargets[tostring(targetUserId)] = value == true or nil
+end
+
+local function ShouldRollbackGiftTarget(targetUserId)
+    if targetUserId == nil then return false end
+    local targetKey = tostring(targetUserId)
+    for _, record in pairs(requests_.byId or {}) do
+        if record.type == "gift" and record.payload ~= nil and tostring(record.payload.targetUserId) == targetKey then
+            return false
+        end
+    end
+    return true
+end
+
 local function ClampPlotIndex(index)
     local unlocked = deps_.getUnlockedPlotCount and deps_.getUnlockedPlotCount() or 1
     return Clamp(tonumber(index or 1) or 1, 1, math.max(1, unlocked))
@@ -74,6 +93,11 @@ end
 local function GetDisplayName()
     if deps_.getDisplayName then return deps_.getDisplayName() end
     return "Tap玩家"
+end
+
+local function GetAvatarProfile()
+    if deps_.getAvatarProfile then return deps_.getAvatarProfile() end
+    return nil
 end
 
 local function GetUserId()
@@ -138,6 +162,7 @@ local function BuildSnapshot()
         version = 1,
         userId = GetUserId(),
         nickname = GetDisplayName(),
+        avatar = GetAvatarProfile(),
         visitablePlotIndex = plotIndex,
         unlockedPlotCount = deps_.getUnlockedPlotCount and deps_.getUnlockedPlotCount() or 1,
         tourValue = deps_.getTourValue and deps_.getTourValue() or 0,
@@ -292,6 +317,10 @@ function SocialGardenSystem.Init(deps)
         SubscribeToEvent(Shared.EVENTS.GIFTS_RESPONSE, "HandleGardenGiftsResponse")
         SubscribeToEvent(Shared.EVENTS.CLAIM_GIFT_RESPONSE, "HandleGardenClaimGiftResponse")
         SubscribeToEvent(Shared.EVENTS.LIKE_GARDEN_RESPONSE, "HandleGardenLikeGardenResponse")
+        SubscribeToEvent(Shared.EVENTS.SEND_FRIEND_REQUEST_RESPONSE, "HandleGardenSendFriendRequestResponse")
+        SubscribeToEvent(Shared.EVENTS.RESPOND_FRIEND_REQUEST_RESPONSE, "HandleGardenRespondFriendRequestResponse")
+        SubscribeToEvent(Shared.EVENTS.REMOVE_FRIEND_RESPONSE, "HandleGardenRemoveFriendResponse")
+        SubscribeToEvent(Shared.EVENTS.CLEAR_SOCIAL_MESSAGES_RESPONSE, "HandleGardenClearSocialMessagesResponse")
         SubscribeToEvent("ServerReady", "HandleGardenServerReady")
         SocialGardenSystem.BindServerConnection()
     end
@@ -462,21 +491,7 @@ end
 
 function SocialGardenSystem.GetFriends()
     if ALLOW_DEMO_SOCIAL then EnsureDemoData() end
-    local rows = {}
-    local seen = {}
-    for _, entry in ipairs(state_.recommendedPlayers or {}) do
-        if entry.userId ~= nil and not seen[tostring(entry.userId)] then
-            seen[tostring(entry.userId)] = true
-            rows[#rows + 1] = entry
-        end
-    end
-    for _, entry in ipairs(state_.friends or {}) do
-        if entry.userId ~= nil and not seen[tostring(entry.userId)] then
-            seen[tostring(entry.userId)] = true
-            rows[#rows + 1] = entry
-        end
-    end
-    return rows
+    return state_.friends or {}
 end
 
 function SocialGardenSystem.GetRecentVisitors()
@@ -523,6 +538,11 @@ end
 
 function SocialGardenSystem.VisitPlayer(userId)
     if userId == nil then return false end
+    local pendingVisit = requests_:GetPending("visit")
+    if pendingVisit ~= nil and pendingVisit.payload ~= nil and tostring(pendingVisit.payload.targetUserId) == tostring(userId) then
+        if deps_.showToast then deps_.showToast("正在拜访该花园，请稍候") end
+        return false
+    end
     local payload = BeginRequest("visit", { targetUserId = userId })
     state_.pending.visitUserId = userId
     if SendRequest(Shared.EVENTS.REQUEST_GARDEN, payload) then return true end
@@ -638,15 +658,97 @@ function SocialGardenSystem.RequestSteal(cropIndex, cropId)
     return true
 end
 
+function SocialGardenSystem.GetFriendRequests()
+    return state_.friendRequests or {}
+end
+
+function SocialGardenSystem.GetSocialNotices()
+    return state_.socialNotices or {}
+end
+
+function SocialGardenSystem.HasGiftedToday(targetUserId)
+    return state_.giftedTargets ~= nil and state_.giftedTargets[tostring(targetUserId)] == true
+end
+
+function SocialGardenSystem.SendFriendRequest(targetUserId)
+    targetUserId = tonumber(targetUserId or 0) or 0
+    if targetUserId <= 0 then
+        if deps_.showToast then deps_.showToast("请输入有效玩家 ID") end
+        return false
+    end
+    if tostring(targetUserId) == tostring(GetUserId() or "") then
+        if deps_.showToast then deps_.showToast("不能添加自己为好友") end
+        return false
+    end
+    local payload = BeginRequest("friendRequest", {
+        targetUserId = targetUserId,
+        profile = {
+            nickname = GetDisplayName(),
+            avatar = GetAvatarProfile(),
+        },
+    })
+    if SendRequest(Shared.EVENTS.SEND_FRIEND_REQUEST, payload) then
+        if deps_.showToast then deps_.showToast("已发出好友申请") end
+        return true
+    end
+    FinishRequest(payload.requestId, "friendRequest")
+    if deps_.showToast then deps_.showToast("网络异常，好友申请发送失败") end
+    return false
+end
+
+function SocialGardenSystem.RespondFriendRequest(request, accepted)
+    if request == nil then return false end
+    local payload = BeginRequest("friendRespond", {
+        requestIdValue = request.requestId or request.listId,
+        fromUserId = request.fromUserId,
+        accepted = accepted == true,
+    })
+    if SendRequest(Shared.EVENTS.RESPOND_FRIEND_REQUEST, payload) then return true end
+    FinishRequest(payload.requestId, "friendRespond")
+    if deps_.showToast then deps_.showToast("网络异常，处理好友申请失败") end
+    return false
+end
+
+function SocialGardenSystem.RemoveFriend(friendUserId)
+    local targetUserId = tostring(friendUserId or "")
+    if targetUserId == "" or targetUserId == "0" then
+        if deps_.showToast then deps_.showToast("好友 ID 无效") end
+        return false
+    end
+    local payload = BeginRequest("removeFriend", { friendUserId = targetUserId })
+    if SendRequest(Shared.EVENTS.REMOVE_FRIEND, payload) then return true end
+    FinishRequest(payload.requestId, "removeFriend")
+    if deps_.showToast then deps_.showToast("网络异常，删除好友失败") end
+    return false
+end
+
+function SocialGardenSystem.ClearSocialMessages()
+    local payload = BeginRequest("clearMessages", {})
+    if SendRequest(Shared.EVENTS.CLEAR_SOCIAL_MESSAGES, payload) then return true end
+    FinishRequest(payload.requestId, "clearMessages")
+    if deps_.showToast then deps_.showToast("网络异常，清除消息失败") end
+    return false
+end
+
 function SocialGardenSystem.SendSeedGift(targetUserId, seedId)
-    targetUserId = tonumber(targetUserId or 0)
+    targetUserId = tonumber(targetUserId or 0) or 0
     seedId = tonumber(seedId or 1) or 1
     if targetUserId <= 0 then
         if deps_.showToast then deps_.showToast("请输入好友玩家 ID") end
         return false
     end
+    if SocialGardenSystem.HasGiftedToday(targetUserId) then
+        if deps_.showToast then deps_.showToast("今天已经给这位好友送过礼了") end
+        return false
+    end
+    if (state_.daily.giftSentCount or 0) >= DAILY_GIFT_LIMIT then
+        if deps_.showToast then deps_.showToast("今日赠送次数已用完") end
+        return false
+    end
     local payload = BeginRequest("gift", { targetUserId = targetUserId, seedId = seedId, count = 1 })
     if SendRequest(Shared.EVENTS.SEND_SEED_GIFT, payload) then
+        MarkGiftTarget(targetUserId, true)
+        EmitSocialChanged("updated")
         return true
     end
     FinishRequest(payload.requestId, "gift")
@@ -654,12 +756,10 @@ function SocialGardenSystem.SendSeedGift(targetUserId, seedId)
         if deps_.showToast then deps_.showToast("网络异常，赠送失败") end
         return false
     end
-    if (state_.daily.giftSentCount or 0) >= DAILY_GIFT_LIMIT then
-        if deps_.showToast then deps_.showToast("今日赠送次数已用完") end
-        return false
-    end
     state_.daily.giftSentCount = (state_.daily.giftSentCount or 0) + 1
+    MarkGiftTarget(targetUserId, true)
     if deps_.showToast then deps_.showToast("已向好友发送种子礼物") end
+    EmitSocialChanged("updated")
     return true
 end
 
@@ -886,9 +986,17 @@ function SocialGardenSystem.HandleStealResponse(data)
         elseif data.reward ~= nil then
             ApplyStealReward(data.reward)
         end
-        if data.daily ~= nil then state_.daily.stealCount = data.daily.stealCount or state_.daily.stealCount end
+        if data.daily ~= nil then
+            if data.daily.stealCount ~= nil then
+                state_.daily.stealCount = data.daily.stealCount
+            elseif data.daily.stealCountDelta ~= nil then
+                state_.daily.stealCount = (state_.daily.stealCount or 0) + data.daily.stealCountDelta
+            end
+        end
         SocialGardenSystem.RequestSocialState()
-        if deps_.showToast then deps_.showToast(data.message or "偷菜成功") end
+        local message = data.message or "偷菜成功"
+        if deps_.showToast then deps_.showToast(message) end
+        if deps_.showFloatingToast then deps_.showFloatingToast(message) end
         if deps_.markDirty then deps_.markDirty() end
         EmitSocialChanged("updated")
     elseif deps_.showToast then
@@ -899,9 +1007,19 @@ end
 function SocialGardenSystem.HandleSocialStateResponse(data)
     FinishRequest(data.requestId, "socialState")
     if data.success then
+        if type(data.friends) == "table" then state_.friends = data.friends end
+        if type(data.friendRequests) == "table" then state_.friendRequests = data.friendRequests end
+        if type(data.socialNotices) == "table" then state_.socialNotices = data.socialNotices end
+        if type(data.giftedTargets) == "table" then state_.giftedTargets = data.giftedTargets end
         if type(data.recommendedPlayers) == "table" then state_.recommendedPlayers = data.recommendedPlayers end
         if type(data.recentVisitors) == "table" then state_.recentVisitors = data.recentVisitors end
         if type(data.stealLogs) == "table" then state_.stealLogs = data.stealLogs end
+        if type(data.daily) == "table" then
+            local nextStealCount = tonumber(data.daily.stealCount or 0) or 0
+            local nextGiftSentCount = tonumber(data.daily.giftSentCount or 0) or 0
+            state_.daily.stealCount = math.max(tonumber(state_.daily.stealCount or 0) or 0, nextStealCount)
+            state_.daily.giftSentCount = math.max(tonumber(state_.daily.giftSentCount or 0) or 0, nextGiftSentCount)
+        end
         EmitSocialChanged("updated")
     elseif deps_.showToast then
         deps_.showToast(data.message or "社交数据读取失败")
@@ -911,10 +1029,34 @@ end
 function SocialGardenSystem.HandleSendSeedGiftResponse(data)
     FinishRequest(data.requestId, "gift")
     if data.success then
-        if data.daily ~= nil then state_.daily.giftSentCount = data.daily.giftSentCount or state_.daily.giftSentCount end
-        if deps_.showToast then deps_.showToast(data.message or "种子已送出") end
+        if data.state ~= nil and deps_.applyEconomyState ~= nil then
+            deps_.applyEconomyState(data.state)
+        end
+        if data.daily ~= nil then
+            if data.daily.giftSentCount ~= nil then
+                state_.daily.giftSentCount = data.daily.giftSentCount
+            elseif data.daily.giftSentDelta ~= nil then
+                state_.daily.giftSentCount = (state_.daily.giftSentCount or 0) + data.daily.giftSentDelta
+            end
+        end
+        if data.targetUserId ~= nil then MarkGiftTarget(data.targetUserId, true) end
+        local message = data.message or "种子已送出"
+        if deps_.showToast then deps_.showToast(message) end
+        if deps_.showFloatingToast then deps_.showFloatingToast(message) end
+        SocialGardenSystem.RequestSocialState()
+        if deps_.markDirty then deps_.markDirty() end
+        EmitSocialChanged("updated")
     elseif deps_.showToast then
-        deps_.showToast(data.message or "赠送失败")
+        if data.state ~= nil and deps_.applyEconomyState ~= nil then
+            deps_.applyEconomyState(data.state)
+        end
+        if data.targetUserId ~= nil and ShouldRollbackGiftTarget(data.targetUserId) then
+            MarkGiftTarget(data.targetUserId, false)
+            EmitSocialChanged("updated")
+        end
+        local message = data.message or "赠送失败"
+        deps_.showToast(message)
+        if deps_.showFloatingToast then deps_.showFloatingToast(message) end
     end
 end
 
@@ -947,6 +1089,52 @@ function SocialGardenSystem.HandleLikeGardenResponse(data)
     end
 end
 
+function SocialGardenSystem.HandleSendFriendRequestResponse(data)
+    FinishRequest(data.requestId, "friendRequest")
+    if deps_.showToast and data.success ~= true then deps_.showToast(data.message or "好友申请发送失败") end
+    if data.success then SocialGardenSystem.RequestSocialState() end
+end
+
+function SocialGardenSystem.HandleRespondFriendRequestResponse(data)
+    FinishRequest(data.requestId, "friendRespond")
+    if deps_.showToast then deps_.showToast(data.message or (data.success and "好友申请已处理" or "好友申请处理失败")) end
+    if data.success then SocialGardenSystem.RequestSocialState() end
+end
+
+function SocialGardenSystem.HandleRemoveFriendResponse(data)
+    FinishRequest(data.requestId, "removeFriend")
+    if data.success then
+        local friendUserId = data.friendUserId
+        if friendUserId ~= nil then
+            for i = #state_.friends, 1, -1 do
+                if tostring(state_.friends[i].userId) == tostring(friendUserId) then
+                    table.remove(state_.friends, i)
+                end
+            end
+        end
+        if deps_.showToast then deps_.showToast(data.message or "已删除好友") end
+        EmitSocialChanged("updated")
+        SocialGardenSystem.RequestSocialState()
+    elseif deps_.showToast then
+        deps_.showToast(data.message or "删除好友失败")
+    end
+end
+
+function SocialGardenSystem.HandleClearSocialMessagesResponse(data)
+    FinishRequest(data.requestId, "clearMessages")
+    if data.success then
+        state_.recentVisitors = {}
+        state_.stealLogs = {}
+        state_.socialNotices = {}
+        state_.gifts = {}
+        if type(data.friendRequests) == "table" then state_.friendRequests = data.friendRequests end
+        if deps_.showToast then deps_.showToast(data.message or "消息已清除") end
+        EmitSocialChanged("updated")
+    elseif deps_.showToast then
+        deps_.showToast(data.message or "消息清除失败")
+    end
+end
+
 function SocialGardenSystem.HandleGiftsResponse(data)
     FinishRequest(data.requestId, "gifts")
     if data.success and type(data.gifts) == "table" then
@@ -964,11 +1152,27 @@ function SocialGardenSystem.HandleClaimGiftResponse(data)
         else
             ApplyGiftReward(data.gift or data.reward)
         end
-        if deps_.showToast then deps_.showToast(data.message or "礼物已领取") end
+        local message = data.message or "礼物已领取"
+        if deps_.showToast then deps_.showToast(message) end
+        if deps_.showFloatingToast then deps_.showFloatingToast(message) end
         SocialGardenSystem.RequestGifts()
         if deps_.markDirty then deps_.markDirty() end
-    elseif deps_.showToast then
-        deps_.showToast(data.message or "领取失败")
+    else
+        local message = data.message or "领取失败"
+        if deps_.showToast then deps_.showToast(message) end
+        if deps_.showFloatingToast then deps_.showFloatingToast(message) end
+        if data.code == "GIFT_ALREADY_CLAIMED" or data.code == "GIFT_NOT_FOUND" or data.code == "INVALID_GIFT_CONTENT" then
+            local giftId = data.giftId
+            if giftId ~= nil then
+                for i = #state_.gifts, 1, -1 do
+                    if tostring(state_.gifts[i].giftId or state_.gifts[i].listId) == tostring(giftId) then
+                        table.remove(state_.gifts, i)
+                    end
+                end
+            end
+            SocialGardenSystem.RequestGifts()
+            EmitSocialChanged("updated")
+        end
     end
 end
 
@@ -1006,6 +1210,22 @@ end
 
 function HandleGardenLikeGardenResponse(eventType, eventData)
     SocialGardenSystem.HandleLikeGardenResponse(Shared.ReadEventData(eventData))
+end
+
+function HandleGardenSendFriendRequestResponse(eventType, eventData)
+    SocialGardenSystem.HandleSendFriendRequestResponse(Shared.ReadEventData(eventData))
+end
+
+function HandleGardenRespondFriendRequestResponse(eventType, eventData)
+    SocialGardenSystem.HandleRespondFriendRequestResponse(Shared.ReadEventData(eventData))
+end
+
+function HandleGardenRemoveFriendResponse(eventType, eventData)
+    SocialGardenSystem.HandleRemoveFriendResponse(Shared.ReadEventData(eventData))
+end
+
+function HandleGardenClearSocialMessagesResponse(eventType, eventData)
+    SocialGardenSystem.HandleClearSocialMessagesResponse(Shared.ReadEventData(eventData))
 end
 
 function HandleGardenServerReady(eventType, eventData)

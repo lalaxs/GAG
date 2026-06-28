@@ -11,7 +11,8 @@ local anims_ = {}           -- { plotIndex, timer, duration, done }
 local delay_ = 0.12         -- 每个地块间隔时间
 local duration_ = 0.4       -- 单个地块弹出动画时长
 local active_ = false
-local initDelay_ = 0.8      -- 进入游戏后等待时间再开始弹出
+local initialDelay_ = 0.8   -- 进入游戏后等待时间再开始弹出
+local initDelay_ = initialDelay_
 
 --- 弹性缓动函数 (overshoot回弹)
 local function EaseOutBack(t)
@@ -26,10 +27,14 @@ end
 
 function PlotBounceAnimator.StartAll(plots)
     anims_ = {}
+    initDelay_ = initialDelay_
     active_ = true
     for i = 1, #plots do
         local plot = plots[i]
         if plot ~= nil and plot.unlocked then
+            if plot.node ~= nil then
+                plot.node.scale = Vector3(0, 0, 0)
+            end
             table.insert(anims_, {
                 plotIndex = i,
                 delay = (i - 1) * delay_,

@@ -16,6 +16,7 @@ local modal_ = nil
 local submitModal_ = nil
 local alienResultModal_ = nil
 local previewActivityId_ = nil
+local alienDrawPending_ = false
 
 local COLORS = {
     text = {74, 53, 36, 255},
@@ -187,19 +188,17 @@ end
 
 local BuildMainContent
 
+local function GetActivityModalLayout()
+    local logicalHeight = graphics:GetHeight() / graphics:GetDPR()
+    local fixedHeight = math.min(900, math.floor(logicalHeight * 0.92))
+    local contentHeight = math.max(0, fixedHeight - 60)
+    return fixedHeight, contentHeight
+end
+
 local function ResolveSelectedActivity()
     local activeId, activeActivity, activeState = GetActiveActivity()
-    if previewActivityId_ == nil then previewActivityId_ = activeId end
-
-    local selectedId = previewActivityId_ or activeId
-    local activity = GetActivityConfig(selectedId)
-    local state = GetActivityState(selectedId)
-    if activity == nil then
-        selectedId = activeId
-        activity = activeActivity
-        state = activeState or {}
-    end
-    return selectedId, activity, state or {}, selectedId == activeId, activeId
+    previewActivityId_ = activeId
+    return activeId, activeActivity, activeState or {}, true, activeId
 end
 
 local function Reopen()
@@ -214,9 +213,7 @@ local function RefreshMainModalContent()
     if modal_ == nil then return end
     local activityId, activity, state, isActive, activeId = ResolveSelectedActivity()
     if activity == nil then return end
-    local logicalHeight = graphics:GetHeight() / graphics:GetDPR()
-    local fixedHeight = math.min(980, math.floor(logicalHeight * 0.99))
-    local contentHeight = math.max(850, fixedHeight - 28)
+    local fixedHeight, contentHeight = GetActivityModalLayout()
     modal_:ClearContent()
     modal_:AddContent(BuildMainContent(activityId, activity, state, isActive, activeId, contentHeight))
 end
@@ -768,7 +765,13 @@ local function BuildAlienResultCards(rewards)
     return cards
 end
 
+function ActivityView.CancelAlienDrawPending()
+    alienDrawPending_ = false
+    RefreshMainModalContent()
+end
+
 function ActivityView.ShowAlienDrawResult(rewards)
+    alienDrawPending_ = false
     if rewards == nil or #rewards == 0 then return end
     if alienResultModal_ ~= nil then
         alienResultModal_:Close()
@@ -782,6 +785,7 @@ function ActivityView.ShowAlienDrawResult(rewards)
         contentPadding = {8, 14, 8, 14},
         onClose = function()
             alienResultModal_ = nil
+            RefreshMainModalContent()
         end,
     }
 
@@ -844,6 +848,8 @@ function ActivityView.ShowAlienDrawResult(rewards)
 
     ModalAnim.Apply(alienResultModal_, { fixedHeight = 610 })
     alienResultModal_:Open()
+    alienResultModal_.animProgress_ = 1
+    alienResultModal_.targetAnimProgress_ = 1
 end
 
 local function BuildSweetPrototype(activity, state, isActive)
@@ -903,24 +909,31 @@ local function BuildAlienActions(activity, state, isActive)
                     fontWeight = "bold",
                     borderRadius = 20,
                     variant = "primary",
-                    disabled = not isActive,
+                    disabled = not isActive or alienDrawPending_,
                     backgroundColor = theme.accent,
                     textColor = {255, 255, 255, 255},
                     onClick = function()
                         if deps_.suppressWorldTap then deps_.suppressWorldTap() end
+                        if alienDrawPending_ then
+                            ShowActivityFloatingToast("抽取请求处理中")
+                            return
+                        end
                         if (state.genes or 0) < cost then
                             ShowActivityFloatingToast("外星基因不足")
                             return
                         end
+                        alienDrawPending_ = true
                         local ok, errOrRewards = deps_.drawAlienPack(count)
                         if ok then
                             if errOrRewards ~= nil and #errOrRewards > 0 then
+                                alienDrawPending_ = false
                                 ShowActivityFloatingToast("抽取成功")
                                 ActivityView.ShowAlienDrawResult(errOrRewards)
                             else
                                 ShowActivityFloatingToast("抽取请求已发送")
                             end
                         else
+                            alienDrawPending_ = false
                             ShowActivityFloatingToast(errOrRewards or "抽取失败")
                         end
                     end,
@@ -1037,9 +1050,12 @@ BuildMainContent = function(activityId, activity, state, isActive, activeId, con
     return UI.Panel {
         width = "100%",
         height = contentHeight,
+        paddingTop = 34,
+        paddingLeft = 4,
+        paddingRight = 4,
+        paddingBottom = 4,
         gap = 8,
         children = {
-            BuildTabBar(activityId, activeId),
             activityId == "sweet" and BuildSweetPrototype(activity, state, isActive)
                 or activityId == "alien" and BuildAlienPrototype(activity, state, isActive)
                 or BuildDarkPrototype(activity, state, isActive),
@@ -1186,15 +1202,13 @@ function ActivityView.Open()
     local activityId, activity, state, isActive, activeId = ResolveSelectedActivity()
     if activity == nil then return end
 
-    local logicalHeight = graphics:GetHeight() / graphics:GetDPR()
-    local fixedHeight = math.min(980, math.floor(logicalHeight * 0.99))
-    local contentHeight = math.max(850, fixedHeight - 28)
+    local fixedHeight, contentHeight = GetActivityModalLayout()
 
     modal_ = UI.Modal {
         size = "lg",
         closeOnOverlay = true,
         showCloseButton = true,
-        contentPadding = {8, 12, 12, 12},
+        contentPadding = {4, 8, 8, 8},
         onClose = function() modal_ = nil end,
     }
 

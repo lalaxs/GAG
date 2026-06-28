@@ -8,7 +8,6 @@
 
 local UI = require("urhox-libs/UI")
 local ModalAnim = require("ui.modal_anim")
-local FloatingToast = require("ui.floating_toast")
 
 local CommissionView = {}
 
@@ -151,14 +150,7 @@ local function SubmitCommission(commission, item)
         return
     end
     if deps_.completeCommission and deps_.completeCommission(commission, item) then
-        FloatingToast.Show("委托提交请求已发送", {
-            fontSize = 19,
-            duration = 1.7,
-            yRatio = 0.38,
-            priority = 8,
-        })
         CloseDetailModal()
-        CloseMainModal()
     end
 end
 
@@ -359,10 +351,23 @@ local function BuildCommissionCard(commission)
         boxShadow = canComplete and { { x = 0, y = 5, blur = 14, spread = 0, color = {70, 170, 80, 70} } }
             or { { x = 0, y = 4, blur = 12, spread = 0, color = {0, 0, 0, 36} } },
         onClick = function()
+            if completed then return end
             if deps_.suppressWorldTap then deps_.suppressWorldTap() end
             CommissionView.ShowDetail(commission, nil)
         end,
         children = {
+            canComplete and UI.Panel {
+                position = "absolute",
+                top = 8,
+                right = 8,
+                width = 14,
+                height = 14,
+                borderRadius = 7,
+                backgroundColor = {232, 54, 54, 255},
+                borderWidth = 2,
+                borderColor = {255, 246, 232, 255},
+                boxShadow = { { x = 0, y = 2, blur = 7, spread = 0, color = {160, 24, 24, 95} } },
+            } or UI.Panel { height = 0 },
             UI.Label {
                 text = "求购作物",
                 fontSize = 18,
@@ -411,23 +416,7 @@ local function BuildCommissionCard(commission)
                 },
             },
             BuildRewardPanel(commission),
-            (completed or canComplete) and UI.Panel {
-                height = 38,
-                justifyContent = "center",
-                alignItems = "center",
-                marginTop = 8,
-                backgroundColor = canComplete and {232, 250, 225, 255} or {244, 236, 222, 255},
-                borderRadius = 14,
-                children = {
-                    UI.Label {
-                        text = completed and "已完成" or ("可提交 x" .. tostring(#matches)),
-                        fontSize = 12,
-                        fontWeight = "bold",
-                        fontColor = canComplete and {54, 142, 66, 255} or {145, 112, 78, 235},
-                        textAlign = "center",
-                    },
-                },
-            } or UI.Panel { height = 0 },
+            UI.Panel { height = 0 },
         },
     }
 end
@@ -451,6 +440,9 @@ local function BuildContent()
         })
     end
 
+    local logicalHeight = graphics:GetHeight() / graphics:GetDPR()
+    local listHeight = math.max(740, math.floor(logicalHeight - 108))
+
     return UI.Panel {
         gap = 8,
         children = {
@@ -470,7 +462,7 @@ local function BuildContent()
                 },
             },
             UI.ScrollView {
-                height = 595,
+                height = listHeight,
                 scrollY = true,
                 showScrollbar = false,
                 bounces = true,
@@ -515,7 +507,7 @@ function CommissionView.Show()
     }
 
     commissionModal_:AddContent(BuildContent())
-    ModalAnim.Apply(commissionModal_, { fixedHeight = math.floor((graphics:GetHeight() / graphics:GetDPR()) * 0.96) })
+    ModalAnim.Apply(commissionModal_, { fixedHeight = math.floor((graphics:GetHeight() / graphics:GetDPR()) * 0.995), maxHeightRatio = 0.995 })
     commissionModal_:Open()
 end
 

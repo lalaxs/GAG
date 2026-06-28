@@ -83,11 +83,18 @@ local unsubscribeSeedPackChanged_ = nil
 local unsubscribeCommissionChanged_ = nil
 local unsubscribeActivityChanged_ = nil
 local unsubscribeTaskChanged_ = nil
+local unsubscribeTalentChanged_ = nil
 local unsubscribeWalletChanged_ = nil
 local unsubscribeInventoryChanged_ = nil
 local unsubscribeFarmChanged_ = nil
 local unsubscribePlayerChanged_ = nil
 local pendingRebuildUI_ = false
+local harvestPanelRefreshTimer_ = 0
+local initialUiReady_ = false
+local initialUiBuildPending_ = false
+local initialPlayerReady_ = false
+local initialSocialSnapshotUploaded_ = false
+local initialPlotBounceStarted_ = false
 local selectedBagItem_ = nil
 local ViewMode = CameraSystem.ViewMode
 local unlockedPlotCount_ = CONFIG.InitialUnlockedPlots
@@ -115,6 +122,8 @@ local UpdateCurrentTourValue = nil
 local CreateFarm = nil
 local DisposeCurrentFarm = nil
 local ApplyUnlockedPlotCount = nil
+local HandleClearSaveCompleted = nil
+local EnsureInitialUiReady = nil
 
 local function SyncInventoryRefs()
     inventoryState_ = InventorySystem.GetState()
@@ -154,15 +163,21 @@ end
 local function ApplyAuthoritativeFarmState(farm)
     if type(farm) ~= "table" or type(farm.plots) ~= "table" then return false end
     local serverUnlocked = ProgressionSystem.GetUnlockedPlotCount()
+    local farmRecreated = false
     if serverUnlocked ~= unlockedPlotCount_ then
         ownFarmPlotsSave_ = CropSystem.GetPlotsSaveData(plots_)
         DisposeCurrentFarm()
         unlockedPlotCount_ = serverUnlocked
         CreateFarm()
         ApplyUnlockedPlotCount()
+        farmRecreated = true
     end
     CropSystem.ClearPlots(plots_)
     CropSystem.RestorePlotsFromSave(plots_, farm.plots)
+    if farmRecreated and initialUiReady_ then
+        PlotBounceAnimator.StartAll(plots_)
+        initialPlotBounceStarted_ = true
+    end
     ownFarmPlotsSave_ = CropSystem.GetPlotsSaveData(plots_)
     UpdateCurrentTourValue()
     RefreshSelection()
@@ -509,7 +524,15 @@ local function OpenAllSeedPacks(packId)
     SeedPackOpeningController.OpenAllPacks(packId)
 end
 
+local function IsInitialUiBlocked()
+    if initialUiReady_ then return false end
+    if ShowToast ~= nil then ShowToast("正在同步服务器数据，请稍后") end
+    EnsureInitialUiReady()
+    return true
+end
+
 OpenSeedPackHub = function()
+    if IsInitialUiBlocked() then return end
     SeedPackOpeningController.OpenHub()
 end
 
@@ -522,14 +545,17 @@ local function BuildSeedPackOpeningOverlay()
 end
 
 OpenTaskPanel = function()
+    if IsInitialUiBlocked() then return end
     TaskView.Open()
 end
 
 OpenCommissionPanel = function()
+    if IsInitialUiBlocked() then return end
     CommissionView.Show()
 end
 
 ExpandNextPlot = function()
+    if IsInitialUiBlocked() then return false end
     return ExpansionController.ExpandNextPlot()
 end
 
@@ -584,6 +610,15 @@ local function SubscribeUIEvents()
             else
                 RefreshUI(true)
             end
+        end)
+    end
+    if unsubscribeTalentChanged_ == nil then
+        unsubscribeTalentChanged_ = EventBus.On(UIEvents.TALENT_CHANGED, function(payload)
+            if TalentView.IsOpen() then
+                local successText = payload ~= nil and payload.successText or nil
+                TalentView.RefreshContent(successText)
+            end
+            RefreshUI(true)
         end)
     end
     if unsubscribeWalletChanged_ == nil then
@@ -642,6 +677,10 @@ local function UnsubscribeUIEvents()
         unsubscribeTaskChanged_()
         unsubscribeTaskChanged_ = nil
     end
+    if unsubscribeTalentChanged_ ~= nil then
+        unsubscribeTalentChanged_()
+        unsubscribeTalentChanged_ = nil
+    end
     if unsubscribeWalletChanged_ ~= nil then
         unsubscribeWalletChanged_()
         unsubscribeWalletChanged_ = nil
@@ -676,11 +715,43 @@ local function RegisterModalGuards()
     ModalRegistry.Register("codex", function() return CodexView.IsOpen() end)
 end
 
+local function IsInitialDataReady()
+    return EconomyCloudSystem.IsInitialSyncReady ~= nil and EconomyCloudSystem.IsInitialSyncReady()
+end
+
+EnsureInitialUiReady = function()
+    if initialUiReady_ then return true end
+    if not IsInitialDataReady() then return false end
+    initialUiReady_ = true
+    initialUiBuildPending_ = false
+    pendingRebuildUI_ = false
+    if not initialPlotBounceStarted_ then
+        PlotBounceAnimator.StartAll(plots_)
+        initialPlotBounceStarted_ = true
+    end
+    UIController.Rebuild()
+    RefreshUI(true)
+    if initialSocialSnapshotUploaded_ ~= true then
+        SocialGardenSystem.UploadSnapshot()
+        initialSocialSnapshotUploaded_ = true
+    end
+    print("[启动同步] 初始权威数据已同步，显示主界面")
+    return true
+end
+
 RefreshUI = function(force)
+    if not initialUiReady_ then
+        initialUiBuildPending_ = true
+        return
+    end
     UIController.Refresh(force)
 end
 
 RebuildUI = function()
+    if not initialUiReady_ then
+        initialUiBuildPending_ = true
+        return
+    end
     if ModalRegistry.AnyOpen() then
         pendingRebuildUI_ = true
         return
@@ -690,10 +761,40 @@ RebuildUI = function()
 end
 
 local function FlushPendingRebuildUI()
+    if not initialUiReady_ then
+        EnsureInitialUiReady()
+        return
+    end
     if pendingRebuildUI_ and not ModalRegistry.AnyOpen() then
         pendingRebuildUI_ = false
         UIController.Rebuild()
     end
+end
+
+HandleClearSaveCompleted = function(success)
+    SettingsView.HandleClearSaveCompleted(success)
+    if not success then return end
+
+    SettingsView.Close()
+    ProfileView.Close()
+    selectedBagItem_ = nil
+    plantTab_ = "seed"
+    if ClearBagPreview ~= nil then
+        ClearBagPreview()
+    end
+
+    CameraSystem.EnterFarmView()
+    PlotDisplayController.SetDisplayMode("all")
+    selectedPlot_ = Clamp(selectedPlot_, 1, math.max(1, unlockedPlotCount_))
+    UpdateCameraTargetForPlotDisplay()
+    RefreshSelection()
+    UpdateCamera()
+
+    UIController.RefreshInventoryPanels()
+    pendingRebuildUI_ = false
+    UIController.Rebuild()
+    RefreshUI(true)
+    FloatingToast.Show("存档已清除，已返回主界面", { fontSize = 20, duration = 1.8, yRatio = 0.38, priority = 10 })
 end
 
 SelectPlotByDelta = function(dx, dz)
@@ -757,8 +858,17 @@ end
 local function UpdatePlants(dt)
     local maturedThisFrame = CropSystem.UpdatePlants(plots_, dt)
     UpdateCurrentTourValue()
-    if maturedThisFrame and plantTab_ == "harvest" and GetViewMode() == ViewMode.PLANT and RebuildUI ~= nil then
-        RebuildUI()
+    if plantTab_ == "harvest" and GetViewMode() == ViewMode.PLANT then
+        harvestPanelRefreshTimer_ = harvestPanelRefreshTimer_ + dt
+        if maturedThisFrame and RebuildUI ~= nil then
+            harvestPanelRefreshTimer_ = 0
+            RebuildUI()
+        elseif harvestPanelRefreshTimer_ >= 1.0 and not ModalRegistry.AnyOpen() then
+            harvestPanelRefreshTimer_ = 0
+            PlantPanelView.RefreshHarvestCountdowns(plots_[selectedPlot_])
+        end
+    else
+        harvestPanelRefreshTimer_ = 0
     end
 end
 
@@ -770,6 +880,17 @@ end
 ---@param eventData UpdateEventData
 function HandleUpdate(eventType, eventData)
     local dt = eventData["TimeStep"]:GetFloat()
+
+    if not initialUiReady_ then
+        PlayerSystem.Update(dt)
+        EconomyCloudSystem.Update(dt)
+        SocialGardenSystem.Update(dt)
+        EnsureInitialUiReady()
+        FloatingToast.Update(dt)
+        UIController.Update(dt)
+        AudioSystem.Update(dt)
+        return
+    end
 
     if not ModelPreviewSystem.IsOpen() then
         HandleInput(dt)
@@ -826,6 +947,12 @@ function Start()
     math.randomseed(os.time())
     saveData_, hasSaveData_ = nil, false
     saveDisabled_ = true
+    initialUiReady_ = false
+    initialUiBuildPending_ = false
+    initialPlayerReady_ = false
+    initialSocialSnapshotUploaded_ = false
+    initialPlotBounceStarted_ = false
+    UIController.ShowLoading("正在同步服务器数据...")
 
     InitMaterials()
     FarmSystem.Init(CONFIG, materials_)
@@ -920,7 +1047,6 @@ function Start()
         end,
         refreshUI = RefreshUI,
     })
-    StartPlotBounceAnimation()
     ApplyUnlockedPlotCount()
 
     WalletSystem.Init(CONFIG.StartMoney)
@@ -1084,7 +1210,6 @@ function Start()
         getMatchingItems = function(commission) return CommissionSystem.GetMatchingHarvestedItems(commission) end,
         completeCommission = function(commission, item)
             local ok = EconomyCloudSystem.CompleteCommission(commission, item)
-            if ok then ShowToast("正在请求服务器提交委托...") end
             RefreshUI(true)
             return ok
         end,
@@ -1106,6 +1231,9 @@ function Start()
         getSelectedSeed = function() return selectedSeed_ end,
         setSelectedSeed = SetSelectedSeedIndex,
         getPlantTab = function() return plantTab_ end,
+        getUnlockedPlotCount = function() return unlockedPlotCount_ end,
+        getVisitablePlotIndex = function() return SocialGardenSystem.GetVisitablePlotIndex() end,
+        setVisitablePlotIndex = function(plotIndex) return SocialGardenSystem.SetVisitablePlotIndex(plotIndex) end,
         getUiRarityColor = GetUiRarityColor,
         suppressWorldTap = RequestSuppressWorldTap,
         rebuildUI = function()
@@ -1171,6 +1299,10 @@ function Start()
         beginStealingMode = function() SocialGardenSystem.BeginStealingMode() end,
         endStealingMode = function() SocialGardenSystem.EndStealingMode() end,
         getPlantTab = function() return plantTab_ end,
+        getSelectedPlotIndex = function() return selectedPlot_ end,
+        getUnlockedPlotCount = function() return unlockedPlotCount_ end,
+        getVisitablePlotIndex = function() return SocialGardenSystem.GetVisitablePlotIndex() end,
+        setVisitablePlotIndex = function(plotIndex) return SocialGardenSystem.SetVisitablePlotIndex(plotIndex) end,
         setPlantTab = function(tab) plantTab_ = tab end,
         suppressWorldTap = RequestSuppressWorldTap,
         enterPlantView = EnterPlantView,
@@ -1208,9 +1340,14 @@ function Start()
 
     PlayerSystem.Init({
         onChanged = function()
+            initialPlayerReady_ = PlayerSystem.GetUserId() ~= nil
             MarkSaveDirty()
             if ProfileView.IsOpen() then
                 ProfileView.RebuildProfileContent()
+            end
+            if initialPlayerReady_ then
+                EnsureInitialUiReady()
+                if SocialGardenSystem ~= nil then SocialGardenSystem.UploadSnapshot() end
             end
             if RebuildUI ~= nil then
                 RebuildUI()
@@ -1265,6 +1402,9 @@ function Start()
         end,
         switchNextPlot = function()
             SwitchNextFocusedPlot()
+        end,
+        onClearSaveSuccess = function()
+            SettingsView.Close()
         end,
         rebuildUI = function()
             if RebuildUI ~= nil then RebuildUI() end
@@ -1359,14 +1499,17 @@ function Start()
         PLANTS = PLANTS,
         getMoney = function() return WalletSystem.GetBalance() end,
         getGardenLevel = GetGardenLevel,
-        onBuy = function(_cost, plantIndex, count)
+        onBuy = function(_cost, plantIndex, count, seedName, refreshId)
             count = math.max(1, math.floor(tonumber(count or 1) or 1))
-            if plantIndex ~= nil and EconomyCloudSystem.BuySeed(plantIndex, nil, count) then
+            if plantIndex ~= nil and EconomyCloudSystem.BuySeed(plantIndex, nil, count, seedName, refreshId) then
                 ShowToast("正在请求服务器购买...")
                 return true
             end
             ShowToast("服务器尚未就绪，无法购买")
             return false
+        end,
+        requestSeedShop = function()
+            return EconomyCloudSystem.RequestSeedShop()
         end,
         showToast = ShowToast,
     })
@@ -1376,6 +1519,7 @@ function Start()
     EconomyCloudSystem.Init({
         WalletSystem = WalletSystem,
         InventorySystem = InventorySystem,
+        Shop = Shop,
         TalentSystem = TalentSystem,
         ProgressionSystem = ProgressionSystem,
         CommissionSystem = CommissionSystem,
@@ -1386,6 +1530,9 @@ function Start()
         showToast = ShowToast,
         showFloatingToast = function(text)
             FloatingToast.Show(text, { fontSize = 20, duration = 1.5, yRatio = 0.38, priority = 6 })
+        end,
+        onInitialSyncProgress = function(isReady)
+            if isReady then EnsureInitialUiReady() end
         end,
         onPlantSeedConfirmed = function(data)
             PlantActionController.ApplyConfirmedPlantSeed(data)
@@ -1399,12 +1546,24 @@ function Start()
         onActivityDrawResult = function(rewards)
             ActivityView.ShowAlienDrawResult(rewards)
         end,
+        onActivityDrawFailed = function()
+            ActivityView.CancelAlienDrawPending()
+        end,
         onAuthFarmReceived = function(farm)
             ApplyAuthoritativeFarmState(farm)
         end,
+        onClearSaveCompleted = function(success)
+            if HandleClearSaveCompleted ~= nil then
+                HandleClearSaveCompleted(success)
+            end
+        end,
         onProgressionApplied = function(_progression)
+            local previousUnlocked = unlockedPlotCount_
             unlockedPlotCount_ = ProgressionSystem.GetUnlockedPlotCount()
             ApplyUnlockedPlotCount()
+            if initialUiReady_ and unlockedPlotCount_ > previousUnlocked then
+                StartSinglePlotBounceAnimation(unlockedPlotCount_)
+            end
             RefreshSelection()
             RefreshUI(true)
         end,
@@ -1423,6 +1582,7 @@ function Start()
         getBestTourValue = function() return ProgressionSystem.GetBestTourValue() end,
         getUserId = function() return PlayerSystem.GetUserId() end,
         getDisplayName = function() return PlayerSystem.GetDisplayName() end,
+        getAvatarProfile = function() return PlayerSystem.GetSelectedAvatarProfile() end,
         addSeedToBag = AddSeedToBag,
         addSeedPack = AddSeedPack,
         enterVisitMode = function(garden)
@@ -1499,12 +1659,10 @@ function Start()
         end,
     })
 
-    SocialGardenSystem.UploadSnapshot()
     EconomyCloudSystem.RequestState()
     EconomyCloudSystem.RequestAuthFarm()
     EconomyCloudSystem.RequestCommissions()
-    RebuildUI()
-    RefreshUI(true)
+    EnsureInitialUiReady()
 
     RefreshSelection()
     UpdateCamera()

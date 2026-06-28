@@ -8,6 +8,7 @@ local UIEvents = {
     COMMISSION_CHANGED = "commission:changed",
     ACTIVITY_CHANGED = "activity:changed",
     TASK_CHANGED = "task:changed",
+    TALENT_CHANGED = "talent:changed",
     MODAL_CLOSED = "modal:closed",
 }
 

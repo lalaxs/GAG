@@ -52,6 +52,29 @@ local function EncodeCropForServer(crop)
     }
 end
 
+local function FormatGrowCountdown(seconds)
+    seconds = math.max(0, math.ceil(tonumber(seconds or 0) or 0))
+    if seconds <= 0 then return "可收获" end
+    if seconds >= 3600 then
+        local h = math.floor(seconds / 3600)
+        local m = math.floor((seconds % 3600) / 60)
+        local s = seconds % 60
+        return string.format("%d:%02d:%02d", h, m, s)
+    elseif seconds >= 60 then
+        local m = math.floor(seconds / 60)
+        local s = seconds % 60
+        return string.format("%d:%02d", m, s)
+    end
+    return tostring(seconds) .. "秒"
+end
+
+local function GetCropRemainingSeconds(crop)
+    if crop == nil or crop.mature then return 0 end
+    local growTime = tonumber(crop.growTime or 0) or 0
+    local elapsed = tonumber(crop.elapsed or 0) or 0
+    return math.max(0, math.ceil(growTime - elapsed))
+end
+
 function PlantActionController.Init(deps)
     deps_ = deps or {}
 end
@@ -308,6 +331,7 @@ function PlantActionController.ApplyConfirmedPlantSeed(data)
         })
     end
     if success then
+        RefreshTourValue()
         AudioSystem.PlaySFX("plant_seed")
         ShowToast("已播种 " .. GetPlants()[plantIndex].name, true)
         PlantActionController.SelectNextOwnedSeedIfEmpty(plantIndex)
@@ -407,8 +431,17 @@ function PlantActionController.PerformPlotAction(plotIndex, localPos)
     end
 
     local clickedMatureCrop = nil
+    local clickedCrop = nil
     if deps_.getPlantTab() == "harvest" and localPos ~= nil then
-        clickedMatureCrop = deps_.findPlantAtLocalPosition(plot, localPos, true)
+        clickedCrop = deps_.findPlantAtLocalPosition(plot, localPos, false)
+        if clickedCrop ~= nil and clickedCrop.mature then
+            clickedMatureCrop = clickedCrop
+        end
+    end
+    if clickedCrop ~= nil and clickedMatureCrop == nil then
+        ShowToast("还需 " .. FormatGrowCountdown(GetCropRemainingSeconds(clickedCrop)) .. " 成熟")
+        RebuildUI()
+        return
     end
     if clickedMatureCrop ~= nil then
         local success, harvestInfo = PlantActionController.HarvestNearestMature(GetSelectedPlot(), localPos)
@@ -455,9 +488,13 @@ function PlantActionController.PerformPlotAction(plotIndex, localPos)
             end
         end
     elseif deps_.getPlantTab() == "harvest" then
-        -- 收获模式：点击成熟作物收获
+        -- 收获模式：点击成熟作物收获，未成熟作物在页签中查看倒计时
         if deps_.countMaturePlants(plot) <= 0 then
-            ShowToast("当前地块暂无成熟作物")
+            if deps_.countPlotPlants(plot) > 0 then
+                ShowToast("作物还在生长，请查看收获页倒计时")
+            else
+                ShowToast("当前地块暂无作物")
+            end
         else
             local crop = nil
             if localPos ~= nil then

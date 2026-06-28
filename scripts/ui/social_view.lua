@@ -18,6 +18,8 @@ local giftSeedInput_ = "1"
 local searchUserInput_ = ""
 local showMessages_ = false
 local activeView_ = "friends"
+local friendDetailModal_ = nil
+local CloseFriendDetailModal = nil
 local RebuildContent = nil
 
 local FRIEND_LIMIT = 50
@@ -36,6 +38,22 @@ local COLORS = {
     badge = {239, 83, 80, 255},
 }
 
+local function GetPlantImageIndex(index)
+    index = math.floor(tonumber(index or 1) or 1)
+    if index >= 1 and index <= 47 then return index end
+    return ((index - 1) % 29) + 1
+end
+
+local function GetAvatarImagePath(avatar)
+    if type(avatar) ~= "table" then return "image/plants/plants (1).png" end
+    if avatar.image ~= nil and avatar.image ~= "" then return avatar.image end
+    local plantIndex = tonumber(avatar.plantIndex or avatar.selectedAvatar or avatar.index)
+    if plantIndex ~= nil then
+        return string.format("image/plants/plants (%d).png", GetPlantImageIndex(plantIndex))
+    end
+    return "image/plants/plants (1).png"
+end
+
 function SocialView.Init(deps)
     deps_ = deps or {}
     if unsubscribeSocialChanged_ == nil then
@@ -52,6 +70,7 @@ function SocialView.IsOpen()
 end
 
 function SocialView.Close()
+    CloseFriendDetailModal()
     if modal_ ~= nil then
         if modal_.parent ~= nil then
             modal_.parent:RemoveChild(modal_)
@@ -79,6 +98,7 @@ local function Suppress()
 end
 
 RebuildContent = function()
+    CloseFriendDetailModal()
     if modal_ == nil then return end
     local parent = modal_.parent
     if parent == nil then return end
@@ -185,29 +205,58 @@ local function BuildLeaderboardSection()
     }
 end
 
+local function BuildTourIcon(size)
+    size = size or 22
+    local inner = math.max(10, math.floor(size * 0.64))
+    return UI.Panel {
+        width = size,
+        height = size,
+        justifyContent = "center",
+        alignItems = "center",
+        flexShrink = 0,
+        children = {
+            UI.Panel { width = size, height = size, borderRadius = math.floor(size / 2), backgroundColor = {190, 160, 230, 255} },
+            UI.Panel { position = "absolute", width = inner, height = inner, borderRadius = math.floor(inner / 2), backgroundColor = {155, 120, 210, 255} },
+            UI.Label { position = "absolute", text = "★", fontSize = math.max(10, math.floor(size * 0.5)), fontColor = {245, 240, 255, 255} },
+        },
+    }
+end
+
 local function BuildFriendAvatar(entry)
+    local avatar = entry and entry.avatar or nil
     local name = tostring(entry.nickname or entry.userId or "友")
     local first = string.sub(name, 1, 3)
+    local avatarImage = GetAvatarImagePath(avatar)
+    local avatarColor = avatar and avatar.color or COLORS.surfaceAlt
+    local children = {}
+    if avatarImage ~= nil and avatarImage ~= "" then
+        children[#children + 1] = UI.Panel {
+            width = 48,
+            height = 48,
+            backgroundImage = avatarImage,
+            backgroundFit = "contain",
+        }
+    else
+        children[#children + 1] = UI.Label {
+            text = first,
+            fontSize = 15,
+            fontWeight = "bold",
+            fontColor = COLORS.text,
+            textAlign = "center",
+            maxLines = 1,
+        }
+    end
     return UI.Panel {
         width = 64,
         height = 64,
         borderRadius = 999,
         borderWidth = 3,
         borderColor = COLORS.border,
-        backgroundColor = COLORS.surfaceAlt,
+        backgroundColor = avatarColor,
         alignItems = "center",
         justifyContent = "center",
         flexShrink = 0,
-        children = {
-            UI.Label {
-                text = first,
-                fontSize = 15,
-                fontWeight = "bold",
-                fontColor = COLORS.text,
-                textAlign = "center",
-                maxLines = 1,
-            },
-        },
+        children = children,
     }
 end
 
@@ -252,10 +301,140 @@ local function BuildFriendActionButton(text, color, onClick)
     }
 end
 
+CloseFriendDetailModal = function()
+    if friendDetailModal_ ~= nil then
+        if friendDetailModal_.parent ~= nil then
+            friendDetailModal_.parent:RemoveChild(friendDetailModal_)
+        end
+        friendDetailModal_ = nil
+    end
+end
+
+local function OpenFriendDetailModal(entry)
+    local system = GetSystem()
+    CloseFriendDetailModal()
+    local root = UI.GetRoot()
+    if root == nil or entry == nil then return end
+    local playerName = tostring(entry.nickname or entry.userId or "玩家名字")
+    local scoreText = tostring(entry.score or entry.tourValue or 0)
+    friendDetailModal_ = UI.Panel {
+        position = "absolute",
+        left = 0,
+        top = 0,
+        right = 0,
+        bottom = 0,
+        zIndex = 1200,
+        backgroundColor = {0, 0, 0, 120},
+        alignItems = "center",
+        justifyContent = "center",
+        onTap = function()
+            Suppress()
+            CloseFriendDetailModal()
+        end,
+        children = {
+            UI.Panel {
+                width = 440,
+                minHeight = 260,
+                backgroundColor = COLORS.surfaceRaised,
+                borderRadius = 28,
+                borderWidth = 4,
+                borderColor = COLORS.borderStrong,
+                paddingTop = 24,
+                paddingLeft = 22,
+                paddingRight = 22,
+                paddingBottom = 22,
+                boxShadow = {
+                    { x = 0, y = 7, blur = 0, spread = 0, color = {30, 30, 30, 95} },
+                },
+                onTap = function(event)
+                    if event and event.StopPropagation then event:StopPropagation() end
+                    Suppress()
+                end,
+                children = {
+                    UI.Panel {
+                        flexDirection = "row",
+                        alignItems = "center",
+                        gap = 18,
+                        children = {
+                            UI.Panel {
+                                width = 92,
+                                height = 92,
+                                borderRadius = 999,
+                                borderWidth = 4,
+                                borderColor = {255, 252, 235, 255},
+                                backgroundColor = entry.avatar and entry.avatar.color or COLORS.surfaceAlt,
+                                alignItems = "center",
+                                justifyContent = "center",
+                                boxShadow = {
+                                    { x = 0, y = 3, blur = 0, spread = 0, color = {125, 92, 45, 80} },
+                                },
+                                children = {
+                                    UI.Panel {
+                                        width = 66,
+                                        height = 66,
+                                        backgroundImage = GetAvatarImagePath(entry.avatar),
+                                        backgroundFit = "contain",
+                                    },
+                                },
+                            },
+                            UI.Panel {
+                                flexGrow = 1,
+                                flexShrink = 1,
+                                gap = 10,
+                                children = {
+                                    UI.Label { text = playerName, fontSize = 24, fontWeight = "bold", fontColor = {70, 50, 34, 255}, maxLines = 1 },
+                                    UI.Panel {
+                                        flexDirection = "row",
+                                        alignItems = "center",
+                                        gap = 10,
+                                        children = {
+                                            BuildTourIcon(34),
+                                            UI.Label { text = scoreText, fontSize = 22, fontWeight = "bold", fontColor = {94, 142, 78, 255} },
+                                        },
+                                    },
+                                },
+                            },
+                        },
+                    },
+                    UI.Panel {
+                        height = 62,
+                    },
+                    UI.Panel {
+                        alignItems = "center",
+                        children = {
+                            UI.Button {
+                                text = "删除好友",
+                                width = 172,
+                                height = 48,
+                                fontSize = 17,
+                                fontWeight = "bold",
+                                backgroundColor = COLORS.secondary,
+                                hoverBackgroundColor = {205, 130, 54, 255},
+                                pressedBackgroundColor = {176, 105, 42, 255},
+                                fontColor = {255, 255, 255, 255},
+                                borderRadius = 18,
+                                onClick = function(self, event)
+                                    if event and event.StopPropagation then event:StopPropagation() end
+                                    Suppress()
+                                    if system.RemoveFriend and system.RemoveFriend(entry.userId) then
+                                        CloseFriendDetailModal()
+                                    end
+                                end,
+                            },
+                        },
+                    },
+                },
+            },
+        },
+    }
+    root:AddChild(friendDetailModal_)
+end
+
 local function BuildFriendRow(entry)
     local system = GetSystem()
     local playerName = tostring(entry.nickname or entry.userId or "神秘园丁")
     local scoreText = tostring(entry.score or entry.tourValue or 0)
+    local giftSent = system.HasGiftedToday and system.HasGiftedToday(entry.userId) or false
     return UI.Panel {
         width = "100%",
         minHeight = 94,
@@ -270,6 +449,11 @@ local function BuildFriendRow(entry)
         borderRadius = 20,
         borderWidth = 3,
         borderColor = COLORS.border,
+        onTap = function(event)
+            if event and event.StopPropagation then event:StopPropagation() end
+            Suppress()
+            OpenFriendDetailModal(entry)
+        end,
         children = {
             BuildFriendAvatar(entry),
             UI.Panel {
@@ -290,9 +474,10 @@ local function BuildFriendRow(entry)
                         gap = 6,
                         children = {
                             BuildSourceBadge(entry.source),
+                            BuildTourIcon(20),
                             UI.Label {
-                                text = scoreText .. " 观光值",
-                                fontSize = 11,
+                                text = scoreText,
+                                fontSize = 12,
                                 fontWeight = "bold",
                                 fontColor = {94, 142, 78, 255},
                                 maxLines = 1,
@@ -311,11 +496,30 @@ local function BuildFriendRow(entry)
                 flexDirection = "row",
                 gap = 8,
                 flexShrink = 0,
+                onTap = function(event)
+                    if event and event.StopPropagation then event:StopPropagation() end
+                    Suppress()
+                end,
                 children = {
-                    BuildFriendActionButton("送礼", COLORS.info, function()
-                        system.SendSeedGift(entry.userId, tonumber(giftSeedInput_) or 1)
-                        RebuildContent()
-                    end),
+                    UI.Button {
+                        text = giftSent and "已送" or "送礼",
+                        width = 74,
+                        height = 44,
+                        fontSize = 13,
+                        fontWeight = "bold",
+                        disabled = giftSent,
+                        backgroundColor = giftSent and {170, 160, 145, 200} or COLORS.info,
+                        fontColor = {255, 255, 255, 255},
+                        borderRadius = 16,
+                        onClick = function()
+                            Suppress()
+                            if not (system.HasGiftedToday and system.HasGiftedToday(entry.userId)) then
+                                if system.SendSeedGift(entry.userId, tonumber(giftSeedInput_) or 1) then
+                                    RebuildContent()
+                                end
+                            end
+                        end,
+                    },
                     BuildFriendActionButton("拜访", COLORS.primary, function()
                         SocialView.Close()
                         system.VisitPlayer(entry.userId)
@@ -328,7 +532,9 @@ end
 
 local function BuildMessageButton()
     local system = GetSystem()
-    local count = #system.GetGifts() + #system.GetRecentVisitors() + #system.GetStealLogs()
+    local requestCount = system.GetFriendRequests and #system.GetFriendRequests() or 0
+    local noticeCount = system.GetSocialNotices and #system.GetSocialNotices() or 0
+    local count = #system.GetGifts() + #system.GetRecentVisitors() + #system.GetStealLogs() + requestCount + noticeCount
     return UI.Panel {
         width = 76,
         height = 56,
@@ -409,13 +615,8 @@ local function BuildQuickActionPanel()
                                 borderColor = COLORS.border,
                                 onClick = function()
                                     Suppress()
-                                    local friends = system.GetFriends()
-                                    local first = friends and friends[1]
-                                    if first ~= nil and first.userId ~= nil then
-                                        SocialView.Close()
-                                        system.VisitPlayer(first.userId)
-                                    elseif deps_.showToast then
-                                        deps_.showToast("暂无可拜访好友，点击刷新获取推荐玩家")
+                                    if deps_.showToast then
+                                        deps_.showToast("该功能暂未开放")
                                     end
                                 end,
                             },
@@ -446,8 +647,8 @@ local function HandleAddFriendByInput()
         if deps_.showToast then deps_.showToast("请输入有效玩家 ID") end
         return false
     end
-    if deps_.showToast then deps_.showToast("好友请求已发送") end
-    return true
+    local system = GetSystem()
+    return system.SendFriendRequest(userId)
 end
 
 local function BuildSearchFriendPanel()
@@ -638,18 +839,54 @@ local function BuildMessageRow(text, actions)
     }
 end
 
+local function BuildSocialNoticeText(notice)
+    local name = tostring(notice.fromNickname or notice.fromUserId or "玩家")
+    if notice.type == "friend_request_sent" then
+        return "已向 " .. name .. " 发送好友申请"
+    elseif notice.type == "friend_request_accepted" then
+        return name .. " 已同意你的好友申请"
+    elseif notice.type == "friend_request_rejected" then
+        return name .. " 已拒绝你的好友申请"
+    end
+    return name .. " 有一条新消息"
+end
+
 local function BuildMessagesSection()
     local system = GetSystem()
     local rows = {}
     local friends = system.GetFriends()
     local friendCount = #friends
 
+    if system.GetFriendRequests ~= nil then
+        for _, request in ipairs(system.GetFriendRequests()) do
+            rows[#rows + 1] = BuildMessageRow(
+                tostring(request.fromNickname or request.fromUserId or "玩家") .. " 请求添加你为好友",
+                {
+                    BuildMessageActionButton("同意", COLORS.primary, function()
+                        system.RespondFriendRequest(request, true)
+                    end),
+                    BuildMessageActionButton("拒绝", COLORS.secondary, function()
+                        system.RespondFriendRequest(request, false)
+                    end),
+                }
+            )
+        end
+    end
+
+    if system.GetSocialNotices ~= nil then
+        for _, notice in ipairs(system.GetSocialNotices()) do
+            rows[#rows + 1] = BuildMessageRow(BuildSocialNoticeText(notice))
+        end
+    end
+
     for _, visitor in ipairs(system.GetRecentVisitors()) do
         rows[#rows + 1] = BuildMessageRow(
-            tostring(visitor.nickname or visitor.userId or "玩家") .. "请求添加你为好友",
+            tostring(visitor.nickname or visitor.userId or "玩家") .. "拜访了你的花园",
             {
-                BuildMessageActionButton("拒绝", COLORS.info, function() end),
-                BuildMessageActionButton("同意", COLORS.info, function() end),
+                BuildMessageActionButton("回访", COLORS.primary, function()
+                    SocialView.Close()
+                    system.VisitPlayer(visitor.userId)
+                end),
             }
         )
     end
@@ -679,6 +916,20 @@ local function BuildMessagesSection()
                 alignItems = "center",
                 children = {
                     UI.Label { text = string.format("好友上限：%d/%d", friendCount, FRIEND_LIMIT), flexGrow = 1, fontSize = 14, fontWeight = "bold", fontColor = COLORS.text },
+                    UI.Button {
+                        text = "清除消息",
+                        width = 96,
+                        height = 42,
+                        fontSize = 13,
+                        fontWeight = "bold",
+                        backgroundColor = COLORS.secondary,
+                        fontColor = {255, 255, 255, 255},
+                        borderRadius = 22,
+                        onClick = function()
+                            Suppress()
+                            if system.ClearSocialMessages then system.ClearSocialMessages() end
+                        end,
+                    },
                     UI.Button {
                         text = "关闭",
                         width = 76,
@@ -1018,6 +1269,7 @@ function SocialView.Open(skipRequests)
     activeView_ = "friends"
     local system = GetSystem()
     if skipRequests ~= true then
+        system.RequestSocialState()
         system.RequestGifts()
     end
     if modal_ ~= nil then SocialView.Close() end

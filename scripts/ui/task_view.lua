@@ -7,7 +7,6 @@
 
 local UI = require("urhox-libs/UI")
 local ModalAnim = require("ui.modal_anim")
-local FloatingToast = require("ui.floating_toast")
 
 local TaskView = {}
 
@@ -237,7 +236,6 @@ function TaskView.Open()
                         onClick = function()
                             deps_.suppressWorldTap()
                             if canClaim and deps_.claimDailyReward() then
-                                FloatingToast.Show("领取请求已发送")
                                 local currentModal = deps_.getTaskModal()
                                 if currentModal ~= nil then
                                     currentModal:Close()

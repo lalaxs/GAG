@@ -17,6 +17,7 @@ local settingsModal_ = nil
 local clearSaveModal_ = nil
 local musicVolume_ = 80
 local sfxVolume_ = 80
+local clearSavePending_ = false
 
 function SettingsView.Init(deps)
     deps_ = deps or {}
@@ -27,6 +28,17 @@ end
 
 function SettingsView.IsOpen()
     return settingsModal_ ~= nil or clearSaveModal_ ~= nil
+end
+
+function SettingsView.HandleClearSaveCompleted(success)
+    clearSavePending_ = false
+    if clearSaveModal_ ~= nil then
+        clearSaveModal_:Close()
+        clearSaveModal_ = nil
+    end
+    if success and deps_.onClearSaveSuccess then
+        deps_.onClearSaveSuccess()
+    end
 end
 
 local function GetPlotDisplayMode()
@@ -246,25 +258,37 @@ function SettingsView.OpenClearSaveConfirm()
                         backgroundColor = {205, 88, 70, 255},
                         fontColor = {255, 255, 255, 255},
                         borderRadius = 16,
-                        onClick = function()
-                            local ok = true
-                            if deps_.clearSave then ok = deps_.clearSave() end
-                            if clearSaveModal_ ~= nil then
-                                clearSaveModal_:Close()
-                                clearSaveModal_ = nil
+                        onClick = function(self)
+                            if clearSavePending_ then return end
+                            local requested = true
+                            if deps_.clearSave then requested = deps_.clearSave() end
+                            if not requested then
+                                SettingsView.HandleClearSaveCompleted(false)
+                                local text = "清除存档失败，请稍后重试"
+                                if deps_.showToast then
+                                    deps_.showToast(text)
+                                end
+                                FloatingToast.Show(text, {
+                                    fontSize = 20,
+                                    duration = 1.6,
+                                    yRatio = 0.38,
+                                    priority = 10,
+                                    stackable = false,
+                                })
+                                return
                             end
-                            local text = ok and "存档已清除并验证，重新进入后生效" or "清除存档失败，请稍后重试"
-                            if deps_.showToast then
-                                deps_.showToast(text)
-                            end
+                            clearSavePending_ = true
+                            self:SetDisabled(true)
+                            self:SetText("清除中...")
+                            local text = "正在清除存档..."
+                            if deps_.showToast then deps_.showToast(text) end
                             FloatingToast.Show(text, {
                                 fontSize = 20,
-                                duration = ok and 1.8 or 1.6,
+                                duration = 1.2,
                                 yRatio = 0.38,
-                                priority = ok and 9 or 10,
+                                priority = 8,
                                 stackable = false,
                             })
-                            if deps_.rebuildUI then deps_.rebuildUI() end
                         end,
                     },
                 },
@@ -285,6 +309,7 @@ function SettingsView.Close()
         clearSaveModal_:Close()
         clearSaveModal_ = nil
     end
+    clearSavePending_ = false
 end
 
 --- 构建名片弹窗内的设置与清档入口
@@ -326,6 +351,7 @@ end
 
 function SettingsView.BuildPlotDisplayButtons()
     local isPlantView = deps_.isPlantView and deps_.isPlantView() or false
+    local showNextPlot = isPlantView or GetPlotDisplayMode() == "single"
     local children = {
         BuildModeButton("全部", GetPlotDisplayMode() ~= "single", function()
             if deps_.suppressWorldTap then deps_.suppressWorldTap() end
@@ -335,7 +361,7 @@ function SettingsView.BuildPlotDisplayButtons()
             if deps_.suppressWorldTap then deps_.suppressWorldTap() end
             if deps_.setPlotDisplayMode then deps_.setPlotDisplayMode("single") end
         end),
-        GetPlotDisplayMode() == "single" and UI.Button {
+        showNextPlot and UI.Button {
             text = "下一块",
             height = 40,
             fontSize = 14,

@@ -43,6 +43,64 @@ local function RefreshPanel()
     end
 end
 
+local function GetCropRemainingSeconds(crop)
+    if crop == nil or crop.mature then return 0 end
+    local growTime = tonumber(crop.growTime or 0) or 0
+    local elapsed = tonumber(crop.elapsed or 0) or 0
+    return math.max(0, math.ceil(growTime - elapsed))
+end
+
+local function FormatGrowCountdown(seconds)
+    seconds = math.max(0, math.ceil(tonumber(seconds or 0) or 0))
+    if seconds <= 0 then return "可收获" end
+    if seconds >= 3600 then
+        local h = math.floor(seconds / 3600)
+        local m = math.floor((seconds % 3600) / 60)
+        local s = seconds % 60
+        return string.format("%d:%02d:%02d", h, m, s)
+    elseif seconds >= 60 then
+        local m = math.floor(seconds / 60)
+        local s = seconds % 60
+        return string.format("%d:%02d", m, s)
+    end
+    return tostring(seconds) .. "秒"
+end
+
+local function GetCropCountdownLabelId(crop, fallbackIndex)
+    local rawKey = tostring(crop and (crop.cropId or crop.serverCropId) or "")
+    if rawKey == "" or rawKey == "nil" then
+        local localPos = crop and crop.localPos or Vector3(0, 0, 0)
+        rawKey = string.format("local_%d_%d_%d", tonumber(crop and crop.plantIndex or fallbackIndex or 0) or 0, math.floor((localPos.x or 0) * 1000), math.floor((localPos.z or 0) * 1000))
+    end
+    rawKey = string.gsub(rawKey, "[^%w_]", "_")
+    return "harvestCountdown_" .. rawKey
+end
+
+function PlantPanelView.RefreshHarvestCountdowns(plot)
+    if plot == nil or plot.plants == nil then return false end
+    local updated = false
+    for i, crop in ipairs(plot.plants) do
+        if crop.mature ~= true then
+            local label = UI.FindById(GetCropCountdownLabelId(crop, i))
+            if label ~= nil then
+                label:SetText(FormatGrowCountdown(GetCropRemainingSeconds(crop)))
+                updated = true
+            end
+        end
+    end
+    return updated
+end
+
+local function GetCropProgressPercent(crop)
+    if crop == nil then return 0 end
+    if crop.mature then return 100 end
+    local growTime = tonumber(crop.growTime or 0) or 0
+    if growTime <= 0 then return 0 end
+    local elapsed = tonumber(crop.elapsed or 0) or 0
+    local progress = math.max(0.0, math.min(elapsed / growTime, 1.0))
+    return math.floor(progress * 100 + 0.5)
+end
+
 local function GetOwnedSeedIndices()
     local list = {}
     local plants = deps_.plants
@@ -199,49 +257,75 @@ function PlantPanelView.BuildContent()
     elseif plantTab == "harvest" then
         local harvestCards = {}
         if plot ~= nil and plot.plants ~= nil then
+            local crops = {}
             for _, crop in ipairs(plot.plants) do
-                if crop.mature then
-                    local tags = {}
-                    if crop.mutation and crop.mutation.specials then
-                        for _, sp in ipairs(crop.mutation.specials) do
-                            table.insert(tags, UI.Panel {
-                                paddingTop = 2, paddingBottom = 2, paddingLeft = 6, paddingRight = 6,
-                                backgroundColor = {94, 194, 131, 255}, borderRadius = 4,
-                                children = { UI.Label { text = sp.name or sp.key, fontSize = 9, fontColor = {255, 255, 255, 255} } },
-                            })
-                        end
+                table.insert(crops, crop)
+            end
+            table.sort(crops, function(a, b)
+                local aMature = a.mature == true
+                local bMature = b.mature == true
+                if aMature ~= bMature then return aMature end
+                return GetCropRemainingSeconds(a) < GetCropRemainingSeconds(b)
+            end)
+
+            for _, crop in ipairs(crops) do
+                local tags = {}
+                if crop.mutation and crop.mutation.specials then
+                    for _, sp in ipairs(crop.mutation.specials) do
+                        table.insert(tags, UI.Panel {
+                            paddingTop = 2, paddingBottom = 2, paddingLeft = 6, paddingRight = 6,
+                            backgroundColor = {94, 194, 131, 255}, borderRadius = 4,
+                            children = { UI.Label { text = sp.name or sp.key, fontSize = 9, fontColor = {255, 255, 255, 255} } },
+                        })
                     end
-                    table.insert(harvestCards, UI.Panel {
-                        flexDirection = "row",
-                        alignItems = "center",
-                        padding = 10,
-                        marginBottom = 6,
-                        backgroundColor = {255, 253, 245, 255},
-                        borderRadius = 12,
-                        borderWidth = 1,
-                        borderColor = {195, 180, 150, 200},
-                        children = {
-                            UI.Panel {
-                                flexGrow = 1, flexShrink = 1, gap = 4,
-                                children = {
-                                    UI.Label { text = crop.name, fontSize = 13, fontWeight = "bold", fontColor = COL_TXT },
-                                    #tags > 0 and UI.Panel { flexDirection = "row", gap = 4, flexWrap = "wrap", children = tags } or UI.Panel { height = 0 },
-                                },
-                            },
-                            UI.Button {
-                                text = "收获", width = 52, height = 30, fontSize = 12,
-                                backgroundColor = {94, 194, 131, 255}, fontColor = {255, 255, 255, 255}, borderRadius = 8,
-                                onClick = function()
-                                    deps_.suppressWorldTap()
-                                    local success = deps_.harvestNearestMature(deps_.getSelectedPlotIndex(), crop.localPos)
-                                    if success then
-                                        RefreshPanel()
-                                    end
-                                end,
+                end
+
+                local remaining = GetCropRemainingSeconds(crop)
+                local isMature = crop.mature == true
+                local countdownLabelId = GetCropCountdownLabelId(crop)
+
+                table.insert(harvestCards, UI.Panel {
+                    flexDirection = "row",
+                    alignItems = "center",
+                    padding = 10,
+                    marginBottom = 6,
+                    backgroundColor = isMature and {255, 253, 245, 255} or {250, 246, 234, 245},
+                    borderRadius = 12,
+                    borderWidth = 1,
+                    borderColor = isMature and {195, 180, 150, 200} or {220, 190, 135, 210},
+                    children = {
+                        UI.Panel {
+                            flexGrow = 1, flexShrink = 1, gap = 4,
+                            children = {
+                                UI.Label { text = crop.name, fontSize = 13, fontWeight = "bold", fontColor = COL_TXT },
+                                #tags > 0 and UI.Panel { flexDirection = "row", gap = 4, flexWrap = "wrap", children = tags } or UI.Panel { height = 0 },
                             },
                         },
-                    })
-                end
+                        isMature and UI.Button {
+                            text = "收获", width = 58, height = 30, fontSize = 12,
+                            backgroundColor = {94, 194, 131, 255}, fontColor = {255, 255, 255, 255}, borderRadius = 8,
+                            onClick = function()
+                                deps_.suppressWorldTap()
+                                local success = deps_.harvestNearestMature(deps_.getSelectedPlotIndex(), crop.localPos)
+                                if success then
+                                    RefreshPanel()
+                                end
+                            end,
+                        } or UI.Panel {
+                            width = 76,
+                            height = 30,
+                            borderRadius = 8,
+                            backgroundColor = {236, 218, 178, 255},
+                            borderWidth = 1,
+                            borderColor = {204, 166, 96, 230},
+                            justifyContent = "center",
+                            alignItems = "center",
+                            children = {
+                                UI.Label { id = countdownLabelId, text = FormatGrowCountdown(remaining), fontSize = remaining >= 3600 and 10 or 12, fontWeight = "bold", fontColor = {116, 82, 40, 255}, textAlign = "center" },
+                            },
+                        },
+                    },
+                })
             end
         end
 
@@ -250,7 +334,7 @@ function PlantPanelView.BuildContent()
                 height = HARVEST_CONTENT_H,
                 gap = 6,
                 children = {
-                    UI.Label { text = "点击土地中成熟的作物收获", fontSize = 12, fontWeight = "bold", fontColor = COL_TXT },
+                    UI.Label { text = "成熟作物可收获，生长中显示成熟倒计时", fontSize = 12, fontWeight = "bold", fontColor = COL_TXT },
                     UI.ScrollView {
                         scrollY = true, showScrollbar = false, flexGrow = 1, flexBasis = 0,
                         children = harvestCards,
@@ -263,7 +347,7 @@ function PlantPanelView.BuildContent()
                 justifyContent = "center",
                 alignItems = "center",
                 children = {
-                    UI.Label { text = "当前地块暂无成熟作物", fontSize = 14, fontColor = COL_SUB },
+                    UI.Label { text = "当前地块暂无作物", fontSize = 14, fontColor = COL_SUB },
                 },
             }
         end

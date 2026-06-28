@@ -51,9 +51,10 @@ local RARITY_NAME_COLORS = {
 
 -- 种子商店配置
 -- 刷新规则：
---   1. 胡萝卜、玉米固定上架，保证新手始终能循环
---   2. 普通到传奇按稀有度概率独立刷新，越高阶库存越少
---   3. 商店列表始终展示全部作物，未刷出或售罄显示为“售罄”
+--   1. 参考 Grow a Garden 的全服共享库存：固定 5 分钟一轮，所有玩家看到同一份库存
+--   2. 胡萝卜、玉米固定上架，保证新手始终能循环
+--   3. 普通到史诗按稀有度概率刷新，最高只到史诗，不在普通商店出售传奇种子
+--   4. 商店列表始终展示普通到史诗全部作物，未刷出或售罄显示为“售罄”
 local SEED_SHOP_CONFIG = {
     { name = "胡萝卜", rarity = "普通" },
     { name = "番茄",   rarity = "普通" },
@@ -80,14 +81,6 @@ local SEED_SHOP_CONFIG = {
     { name = "百合",   rarity = "史诗" },
     { name = "杜鹃",   rarity = "史诗" },
     { name = "玉兰",   rarity = "史诗" },
-
-    { name = "三色堇", rarity = "传奇" },
-    { name = "玫瑰",   rarity = "传奇" },
-    { name = "蒲公英", rarity = "传奇" },
-    { name = "风信子", rarity = "传奇" },
-    { name = "绣球花", rarity = "传奇" },
-    { name = "杨桃",   rarity = "传奇" },
-    { name = "牡丹",   rarity = "传奇" },
 }
 
 local SEED_SHOP_REFRESH_RULES = {
@@ -96,11 +89,10 @@ local SEED_SHOP_REFRESH_RULES = {
         stock = 50,
     },
     random = {
-        ["普通"] = { names = { "番茄", "葡萄" }, chance = 0.70, minStock = 20, maxStock = 60 },
-        ["罕见"] = { chance = 0.70, minStock = 8, maxStock = 25 },
-        ["稀有"] = { chance = 0.40, minStock = 3, maxStock = 10 },
-        ["史诗"] = { chance = 0.18, minStock = 1, maxStock = 4 },
-        ["传奇"] = { chance = 0.04, minStock = 1, maxStock = 1 },
+        ["普通"] = { names = { "番茄", "葡萄" }, chance = 0.80, minStock = 15, maxStock = 30 },
+        ["罕见"] = { chance = 0.60, minStock = 8, maxStock = 15 },
+        ["稀有"] = { chance = 0.25, minStock = 3, maxStock = 6 },
+        ["史诗"] = { chance = 0.08, minStock = 1, maxStock = 3 },
     },
 }
 
@@ -129,6 +121,10 @@ local REFRESH_CONFIG = {
 ---@field stock table<string, number>  种子名 -> 当前库存
 ---@field timer number                 当前倒计时剩余秒数
 ---@field lastRefreshRealTime number   上次刷新的 os.time()
+---@field refreshId number             当前全服刷新批次 ID
+---@field serverTimeBase number        最近一次服务端同步时的服务端时间
+---@field localElapsedSinceServerSync number 最近一次服务端同步后的本地累计时间
+---@field nextRefreshAt number         下一次全服刷新服务端时间戳
 
 local state_ = {
     serverAuthoritative = false,
@@ -137,6 +133,11 @@ local state_ = {
         items = {},         -- 当前轮上架种子名数组
         timer = 0,          -- 倒计时剩余秒数
         lastRefreshRealTime = 0,
+        refreshId = 0,
+        serverTimeBase = 0,
+        localElapsedSinceServerSync = 0,
+        nextRefreshAt = 0,
+        awaitingServer = false,
     },
     tool = {
         stock = {},         -- { [toolName] = quantity }
@@ -156,6 +157,7 @@ local gameRef_ = {
     gardenLevel = nil,      -- 花园等级 getter
     showToast = nil,        -- 提示函数
     onBuy = nil,            -- 购买回调
+    requestSeedShop = nil,  -- 请求服务器同步全服商店库存
 }
 
 -- UI 引用
@@ -226,6 +228,76 @@ local function AddSeedShopItem(items, seedName, stock)
     table.insert(items, seedName)
 end
 
+local function GetSeedRefreshId(now)
+    now = math.max(0, math.floor(tonumber(now or os.time()) or 0))
+    return math.floor(now / REFRESH_CONFIG.seed.interval)
+end
+
+local function GetSeedRefreshRemaining(now)
+    now = math.max(0, math.floor(tonumber(now or os.time()) or 0))
+    local elapsedInCycle = now % REFRESH_CONFIG.seed.interval
+    local remaining = REFRESH_CONFIG.seed.interval - elapsedInCycle
+    if remaining <= 0 then remaining = REFRESH_CONFIG.seed.interval end
+    return remaining
+end
+
+local function UpdateSeedTimerFromServerClock()
+    if state_.seed.serverTimeBase <= 0 or state_.seed.nextRefreshAt <= 0 then
+        state_.seed.timer = GetSeedRefreshRemaining()
+        return state_.seed.timer
+    end
+    local estimatedServerNow = state_.seed.serverTimeBase + state_.seed.localElapsedSinceServerSync
+    state_.seed.timer = math.max(0, state_.seed.nextRefreshAt - estimatedServerNow)
+    return state_.seed.timer
+end
+
+local function RequestSeedShopFromServer()
+    if not state_.serverAuthoritative or gameRef_.requestSeedShop == nil then return false end
+    state_.seed.awaitingServer = true
+    local ok = gameRef_.requestSeedShop()
+    if not ok then
+        state_.seed.awaitingServer = false
+    end
+    return ok
+end
+
+local function SyncSeedShopFromData(data)
+    if type(data) ~= "table" then return false end
+    state_.seed.stock = {}
+    state_.seed.items = {}
+
+    if type(data.stock) == "table" then
+        for seedName, stock in pairs(data.stock) do
+            local numericStock = math.max(0, math.floor(tonumber(stock or 0) or 0))
+            state_.seed.stock[tostring(seedName)] = numericStock
+            if numericStock > 0 then
+                table.insert(state_.seed.items, tostring(seedName))
+            end
+        end
+    end
+
+    if type(data.items) == "table" then
+        state_.seed.items = {}
+        for _, seedName in ipairs(data.items) do
+            if state_.seed.stock[tostring(seedName)] ~= nil then
+                table.insert(state_.seed.items, tostring(seedName))
+            end
+        end
+    end
+
+    state_.seed.refreshId = math.floor(tonumber(data.refreshId or GetSeedRefreshId()) or 0)
+    local serverTime = math.max(0, tonumber(data.serverTime or os.time()) or 0)
+    local nextRefreshIn = math.max(0, tonumber(data.nextRefreshIn or data.timer or GetSeedRefreshRemaining(serverTime)) or 0)
+    state_.seed.serverTimeBase = serverTime
+    state_.seed.localElapsedSinceServerSync = 0
+    state_.seed.nextRefreshAt = math.max(serverTime, tonumber(data.nextRefreshAt or (serverTime + nextRefreshIn)) or (serverTime + nextRefreshIn))
+    state_.seed.timer = math.max(0, state_.seed.nextRefreshAt - state_.seed.serverTimeBase)
+    state_.seed.lastRefreshRealTime = math.floor(serverTime)
+    state_.seed.awaitingServer = false
+    print(string.format("[Shop] 已同步全服种子商店：批次%d，上架%d种，%.1f秒后刷新", state_.seed.refreshId, #state_.seed.items, state_.seed.timer))
+    return true
+end
+
 --- 执行一次种子商店刷新
 --- 规则：胡萝卜、玉米必定上架；其他普通到史诗作物按概率独立随机上架
 local function RefreshSeedStock()
@@ -236,7 +308,7 @@ local function RefreshSeedStock()
         AddSeedShopItem(items, seedName, SEED_SHOP_REFRESH_RULES.guaranteed.stock)
     end
 
-    for _, rarity in ipairs({ "普通", "罕见", "稀有", "史诗", "传奇" }) do
+    for _, rarity in ipairs({ "普通", "罕见", "稀有", "史诗" }) do
         local rule = SEED_SHOP_REFRESH_RULES.random[rarity]
         if rule ~= nil then
             local pool = rule.names or GetSeedNamesByRarity(rarity)
@@ -249,9 +321,10 @@ local function RefreshSeedStock()
     end
 
     state_.seed.items = items
+    state_.seed.refreshId = GetSeedRefreshId()
     state_.seed.timer = REFRESH_CONFIG.seed.interval
     state_.seed.lastRefreshRealTime = os.time()
-    print(string.format("[Shop] 种子商店已刷新：必出%d种，随机上架%d种，总库存条目%d；未上架作物显示售罄", #SEED_SHOP_REFRESH_RULES.guaranteed.names, math.max(0, #items - #SEED_SHOP_REFRESH_RULES.guaranteed.names), #items))
+    print(string.format("[Shop] 种子商店已刷新：必出%d种，随机上架%d种，总库存条目%d；最高品质史诗，未上架作物显示售罄", #SEED_SHOP_REFRESH_RULES.guaranteed.names, math.max(0, #items - #SEED_SHOP_REFRESH_RULES.guaranteed.names), #items))
 end
 
 --- 执行一次工具商店刷新
@@ -300,7 +373,7 @@ local function FormatTimer(seconds)
     return string.format("%d:%02d", m, s)
 end
 
---- 获取当前种子商店列表（始终显示普通到传奇全部作物）
+--- 获取当前种子商店列表（始终显示普通到史诗全部作物）
 local function GetCurrentSeedShopItems()
     local result = {}
 
@@ -355,12 +428,17 @@ local function BuySeed(seedName, count)
     end
 
     local totalCost = plant.seedPrice * buyCount
-    if gameRef_.onBuy and gameRef_.onBuy(totalCost, plantIdx, buyCount) == false then
+    if gameRef_.onBuy and gameRef_.onBuy(totalCost, plantIdx, buyCount, seedName, state_.seed.refreshId) == false then
         return 0
     end
 
-    -- 纯服务器游戏：购买结果以服务端返回为准，本地商店库存不作为权威库存扣减。
-    print(string.format("[Shop] 已请求服务器购买种子: %s x%d, 预计花费 %d", seedName, buyCount, totalCost))
+    if state_.serverAuthoritative then
+        print(string.format("[Shop] 已请求服务器购买全服库存种子: %s x%d, 批次%d, 预计花费 %d", seedName, buyCount, state_.seed.refreshId, totalCost))
+        return buyCount
+    end
+
+    state_.seed.stock[seedName] = stock - buyCount
+    print(string.format("[Shop] 购买种子: %s x%d, 花费 %d, 剩余库存 %d", seedName, buyCount, totalCost, state_.seed.stock[seedName]))
     return buyCount
 end
 
@@ -447,42 +525,73 @@ local function ShowBuyConfirm(seedData)
     local stock = state_.seed.stock[seedData.name] or 0
     local price = seedData.price
     local currentMoney = gameRef_.money and gameRef_.money() or 0
+    local buyOneCount = 1
+    local buyTenCount = 10
+    local maxAffordableCount = math.min(stock, math.floor(currentMoney / math.max(1, price)))
+
+    local function BuildBuyOption(count, width)
+        local totalPrice = price * count
+        return UI.Panel {
+            alignItems = "center", gap = 5,
+            children = {
+                UI.Label {
+                    text = tostring(totalPrice) .. " 金币",
+                    fontSize = 11,
+                    fontWeight = "bold",
+                    fontColor = currentMoney >= totalPrice and {92, 74, 45, 255} or {170, 90, 70, 255},
+                },
+                UI.Button {
+                    text = "购买 x" .. count,
+                    width = width or 82,
+                    height = 36,
+                    fontSize = 12,
+                    fontWeight = "bold",
+                    variant = "primary",
+                    borderRadius = 10,
+                    disabled = count <= 0 or stock < count or currentMoney < totalPrice,
+                    onClick = function()
+                        local bought = BuySeed(seedData.name, count)
+                        if bought > 0 then
+                            if gameRef_.showToast then gameRef_.showToast("已购买 x" .. bought .. "!") end
+                            if buyConfirmModal_ then buyConfirmModal_:Close() end
+                            Shop.RebuildShopContent()
+                        end
+                    end,
+                },
+            },
+        }
+    end
 
     buyConfirmModal_:AddContent(UI.Panel {
-        alignItems = "center", gap = 12, padding = 12,
+        alignItems = "center", gap = 10, padding = 12,
         children = {
-            UI.Label { text = "单价: " .. price .. " 金币", fontSize = 14, fontColor = {80, 60, 40, 255} },
-            UI.Label { text = "库存: " .. stock .. "  |  持有: " .. currentMoney .. " 金币", fontSize = 12, fontColor = {120, 100, 80, 200} },
-            -- 按钮行
             UI.Panel {
-                flexDirection = "row", gap = 12, marginTop = 8,
+                width = 78,
+                height = 78,
+                justifyContent = "center",
+                alignItems = "center",
+                backgroundColor = {244, 238, 218, 255},
+                borderRadius = 18,
+                borderWidth = 1,
+                borderColor = {214, 188, 130, 150},
                 children = {
-                    UI.Button {
-                        text = "购买 x1", width = 100, height = 38, fontSize = 13, fontWeight = "bold",
-                        variant = "primary", borderRadius = 10,
-                        disabled = stock < 1 or currentMoney < price,
-                        onClick = function()
-                            local bought = BuySeed(seedData.name, 1)
-                            if bought > 0 then
-                                if gameRef_.showToast then gameRef_.showToast("已购买!") end
-                                if buyConfirmModal_ then buyConfirmModal_:Close() end
-                                Shop.RebuildShopContent()
-                            end
-                        end,
+                    UI.Panel {
+                        width = 58,
+                        height = 58,
+                        backgroundImage = string.format(SEED_ICON_PATH, seedData.plantIndex),
+                        backgroundSize = "contain",
                     },
-                    UI.Button {
-                        text = "购买 x10", width = 100, height = 38, fontSize = 13, fontWeight = "bold",
-                        variant = "primary", borderRadius = 10,
-                        disabled = stock < 1 or currentMoney < price,
-                        onClick = function()
-                            local bought = BuySeed(seedData.name, 10)
-                            if bought > 0 then
-                                if gameRef_.showToast then gameRef_.showToast("已购买 x" .. bought .. "!") end
-                                if buyConfirmModal_ then buyConfirmModal_:Close() end
-                                Shop.RebuildShopContent()
-                            end
-                        end,
-                    },
+                },
+            },
+            UI.Label { text = "种子单价: " .. price .. " 金币", fontSize = 14, fontWeight = "bold", fontColor = {80, 60, 40, 255} },
+            UI.Label { text = "作物基础售价: " .. seedData.plant.fruitPrice .. " 金币", fontSize = 13, fontColor = {95, 75, 45, 255} },
+            UI.Label { text = "库存: " .. stock .. "  |  持有: " .. currentMoney .. " 金币", fontSize = 12, fontColor = {120, 100, 80, 200} },
+            UI.Panel {
+                flexDirection = "row", gap = 8, marginTop = 4,
+                children = {
+                    BuildBuyOption(buyOneCount, 78),
+                    BuildBuyOption(buyTenCount, 78),
+                    BuildBuyOption(maxAffordableCount, 88),
                 },
             },
         },
@@ -714,14 +823,14 @@ local function BuildSeedShopContent()
     local s = timerSec % 60
 
     seedTimerLabel_ = UI.Label {
-        text = string.format("刷新倒计时 %d:%02d", m, s),
+        text = string.format("全服刷新倒计时 %d:%02d", m, s),
         fontSize = 12,
         fontWeight = "bold",
         fontColor = {100, 80, 60, 220},
     }
 
     refreshBtnSeed_ = UI.Button {
-        text = "▶ 刷新",
+        text = state_.serverAuthoritative and "同步" or "▶ 刷新",
         height = 30,
         width = 86,
         fontSize = 11,
@@ -730,8 +839,12 @@ local function BuildSeedShopContent()
         fontColor = {60, 40, 10, 255},
         borderRadius = 8,
         onClick = function()
-            ManualRefresh("seed")
-            Shop.RebuildShopContent()
+            if state_.serverAuthoritative then
+                if RequestSeedShopFromServer() and gameRef_.showToast then gameRef_.showToast("正在同步全服商店...") end
+            else
+                ManualRefresh("seed")
+                Shop.RebuildShopContent()
+            end
         end,
     }
 
@@ -902,10 +1015,15 @@ function Shop.RebuildShopContent()
         fontSize = 13,
         tabs = {
             { id = "seed", label = "种子商店" },
-            { id = "tool", label = "工具商店" },
+            { id = "tool", label = "工具商店", disabled = true },
         },
         activeTab = state_.activeTab,
         onChange = function(self, tabId)
+            if tostring(tabId) == "tool" then
+                if gameRef_.showToast then gameRef_.showToast("工具商店暂未开放") end
+                pendingTabSwitch_ = "seed"
+                return
+            end
             -- 延迟到下一帧处理，避免在回调中销毁自身
             pendingTabSwitch_ = tostring(tabId)
         end,
@@ -929,11 +1047,22 @@ function Shop.Init(opts)
     gameRef_.money = opts.getMoney
     gameRef_.gardenLevel = opts.getGardenLevel
     gameRef_.onBuy = opts.onBuy
+    gameRef_.requestSeedShop = opts.requestSeedShop
     gameRef_.showToast = opts.showToast
     state_.serverAuthoritative = opts.serverAuthoritative == true
 
     -- 初始化商店状态（第一次刷新）
-    RefreshSeedStock()
+    if state_.serverAuthoritative then
+        local serverTime = os.time()
+        state_.seed.serverTimeBase = serverTime
+        state_.seed.localElapsedSinceServerSync = 0
+        state_.seed.nextRefreshAt = serverTime + GetSeedRefreshRemaining(serverTime)
+        state_.seed.timer = state_.seed.nextRefreshAt - state_.seed.serverTimeBase
+        state_.seed.refreshId = GetSeedRefreshId(serverTime)
+        state_.seed.lastRefreshRealTime = serverTime
+    else
+        RefreshSeedStock()
+    end
     RefreshToolStock()
 
     print("[Shop] 商店系统初始化完成")
@@ -942,6 +1071,7 @@ end
 --- 打开商店弹窗
 function Shop.Open()
     state_.isOpen = true
+    state_.activeTab = "seed"
 
     -- 计算固定商店高度：弹窗高度固定在屏幕 88%，列表超出时只在列表区域内滚动
     local screenH = graphics:GetHeight() / graphics:GetDPR()
@@ -971,6 +1101,10 @@ function Shop.Open()
     ModalAnim.Apply(shopModal_, { fixedHeight = modalFixedHeight })
     shopModal_:Open()
 
+    if state_.serverAuthoritative then
+        RequestSeedShopFromServer()
+    end
+
     print("[Shop] 商店已打开")
 end
 
@@ -990,7 +1124,15 @@ function Shop.Update(dt)
     local toolRefreshed = false
 
     -- 更新种子商店倒计时
-    if state_.seed.timer > 0 then
+    if state_.serverAuthoritative then
+        state_.seed.localElapsedSinceServerSync = state_.seed.localElapsedSinceServerSync + dt
+        UpdateSeedTimerFromServerClock()
+        if state_.seed.timer <= 0 and state_.seed.awaitingServer ~= true then
+            if RequestSeedShopFromServer() then
+                seedRefreshed = true
+            end
+        end
+    elseif state_.seed.timer > 0 then
         state_.seed.timer = state_.seed.timer - dt
         if state_.seed.timer <= 0 then
             RefreshSeedStock()
@@ -1028,7 +1170,7 @@ function Shop.Update(dt)
     if state_.isOpen and shopModal_ ~= nil then
         if state_.activeTab == "seed" and seedTimerLabel_ ~= nil then
             local ts = math.max(0, math.floor(state_.seed.timer))
-            seedTimerLabel_:SetText(string.format("刷新倒计时 %d:%02d", math.floor(ts / 60), ts % 60))
+            seedTimerLabel_:SetText(string.format("全服刷新倒计时 %d:%02d", math.floor(ts / 60), ts % 60))
         elseif state_.activeTab == "tool" and toolTimerLabel_ ~= nil then
             toolTimerLabel_:SetText("下次刷新: " .. FormatTimer(state_.tool.timer))
         end
@@ -1039,7 +1181,18 @@ end
 
 --- 处理离线恢复
 function Shop.HandleOffline()
-    HandleOfflineTime("seed")
+    if state_.serverAuthoritative then
+        local serverTime = os.time()
+        state_.seed.serverTimeBase = serverTime
+        state_.seed.localElapsedSinceServerSync = 0
+        state_.seed.nextRefreshAt = serverTime + GetSeedRefreshRemaining(serverTime)
+        state_.seed.timer = state_.seed.nextRefreshAt - state_.seed.serverTimeBase
+        state_.seed.refreshId = GetSeedRefreshId(serverTime)
+        state_.seed.lastRefreshRealTime = serverTime
+        RequestSeedShopFromServer()
+    else
+        HandleOfflineTime("seed")
+    end
     HandleOfflineTime("tool")
 end
 
@@ -1085,6 +1238,10 @@ function Shop.GetSaveData()
             items = state_.seed.items,
             timer = state_.seed.timer,
             lastRefreshRealTime = state_.seed.lastRefreshRealTime,
+            refreshId = state_.seed.refreshId,
+            serverTimeBase = state_.seed.serverTimeBase,
+            localElapsedSinceServerSync = state_.seed.localElapsedSinceServerSync,
+            nextRefreshAt = state_.seed.nextRefreshAt,
         },
         tool = {
             stock = state_.tool.stock,
@@ -1103,7 +1260,11 @@ function Shop.LoadSaveData(data)
         state_.seed.items = data.seed.items or {}
         state_.seed.timer = data.seed.timer or 0
         state_.seed.lastRefreshRealTime = data.seed.lastRefreshRealTime or 0
-        if #state_.seed.items == 0 then
+        state_.seed.refreshId = data.seed.refreshId or 0
+        state_.seed.serverTimeBase = data.seed.serverTimeBase or state_.seed.lastRefreshRealTime or 0
+        state_.seed.localElapsedSinceServerSync = data.seed.localElapsedSinceServerSync or 0
+        state_.seed.nextRefreshAt = data.seed.nextRefreshAt or 0
+        if #state_.seed.items == 0 and not state_.serverAuthoritative then
             RefreshSeedStock()
         end
     end
@@ -1116,6 +1277,18 @@ function Shop.LoadSaveData(data)
 
     -- 处理离线刷新
     Shop.HandleOffline()
+end
+
+--- 应用服务器下发的全服种子商店状态
+function Shop.ApplyServerSeedShop(data)
+    if SyncSeedShopFromData(data) then
+        if state_.isOpen and shopModal_ ~= nil and state_.activeTab == "seed" then
+            Shop.RebuildShopContent()
+        end
+        return true
+    end
+    state_.seed.awaitingServer = false
+    return false
 end
 
 return Shop

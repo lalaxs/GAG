@@ -269,9 +269,17 @@ function BagDetailView.Build(item, isPlantView)
                         borderColor = {255, 255, 255, 230},
                         onClick = function()
                             deps_.suppressWorldTap()
-                            local earned = deps_.sellBagItem(item)
-                            if earned > 0 then
-                                local text = "出售获得 " .. earned .. " 金币"
+                            local result, earned = deps_.sellBagItem(item)
+                            local saleValue = nil
+                            if result == true then
+                                deps_.showToast("正在请求服务器出售作物...")
+                            elseif type(result) == "number" and result > 0 then
+                                saleValue = result
+                            elseif type(earned) == "number" and earned > 0 then
+                                saleValue = earned
+                            end
+                            if saleValue ~= nil then
+                                local text = "出售获得 " .. saleValue .. " 金币"
                                 deps_.showToast(text)
                                 FloatingToast.Show(text, { fontSize = 20, duration = 1.5, yRatio = 0.36, priority = 6 })
                             end
