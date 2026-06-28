@@ -260,7 +260,7 @@ function InventorySystem.AddSeedToBag(plantIndex, count, buff)
     count = count or 1
     buff = buff or 0
     local current = state_.seedBag[plantIndex] or 0
-    local addCount = math.min(count, cfg_.SEED_STACK_MAX - current)
+    local addCount = math.max(0, math.floor(tonumber(count or 0) or 0))
     if addCount <= 0 then return 0 end
     state_.seedBag[plantIndex] = current + addCount
     if buff > 0 then
@@ -518,13 +518,7 @@ function InventorySystem.CountPackResults(results)
 end
 
 function InventorySystem.CanReceivePackResults(results)
-    local counts = InventorySystem.CountPackResults(results)
-    for seedId, count in pairs(counts) do
-        if (state_.seedBag[seedId] or 0) + count > cfg_.SEED_STACK_MAX then
-            return false
-        end
-    end
-    return true
+    return type(results) == "table"
 end
 
 function InventorySystem.BuildSeedPackResults(packCfg, packCount)
@@ -576,9 +570,6 @@ function InventorySystem.OpenSeedPack(packId, packCount)
     if packCfg == nil or packCount <= 0 then return nil end
 
     local results = InventorySystem.BuildSeedPackResults(packCfg, packCount)
-    if not InventorySystem.CanReceivePackResults(results) then
-        return nil, "背包空间不足，无法开启礼包"
-    end
     state_.seedPacks[packId] = owned - packCount
     InventorySystem.ApplyPackResults(results)
     return results
@@ -592,9 +583,6 @@ function InventorySystem.PreviewSeedPack(packId, packCount)
     if packCfg == nil or packCount <= 0 then return nil end
 
     local results = InventorySystem.BuildSeedPackResults(packCfg, packCount)
-    if not InventorySystem.CanReceivePackResults(results) then
-        return nil, "背包空间不足，无法开启礼包"
-    end
     state_.seedPacks[packId] = owned - packCount
     return results
 end

@@ -179,7 +179,7 @@ function GiftServer.ClaimGift(uid, giftId, _seedId, _count, connection, requestI
                         return
                     end
                     local seedId = deps_.normalizePlantIndex(found.seedId)
-                    local count = NormalizePositiveCount(found.count or 1, deps_.seedStackMax)
+                    local count = NormalizePositiveCount(found.count or 1)
                     if seedId == nil then
                         SendError(connection, Shared.EVENTS.CLAIM_GIFT_RESPONSE, "INVALID_GIFT_CONTENT", "礼物内容无效", { requestId = requestId, giftId = giftId })
                         return
@@ -188,10 +188,6 @@ function GiftServer.ClaimGift(uid, giftId, _seedId, _count, connection, requestI
                         ok = function(scores)
                             local state = deps_.normalizeEconomyState(scores[Shared.KEYS.ECONOMY_STATE] or deps_.buildInitialEconomyState())
                             local owned = tonumber(state.seedBag[seedId] or 0) or 0
-                            if owned + count > deps_.seedStackMax then
-                                SendError(connection, Shared.EVENTS.CLAIM_GIFT_RESPONSE, "SEED_STACK_FULL", "种子背包空间不足", { requestId = requestId, state = state })
-                                return
-                            end
                             state.seedBag[seedId] = owned + count
                             state.updatedAt = Now()
                             deps_.nextRevision(state)

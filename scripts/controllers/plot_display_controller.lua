@@ -183,7 +183,11 @@ end
 
 function PlotDisplayController.SwitchNextFocusedPlot()
     local unlockedPlotCount = GetUnlockedPlotCount()
-    if unlockedPlotCount <= 0 then return end
+    print(string.format("[地块切换] 请求下一块 displayMode=%s focused=%d selected=%d unlocked=%d", tostring(displayMode_), focusedPlotIndex_, GetSelectedPlot(), unlockedPlotCount))
+    if unlockedPlotCount <= 0 then
+        print("[地块切换] 忽略：没有已解锁地块")
+        return
+    end
     focusedPlotIndex_ = focusedPlotIndex_ + 1
     if focusedPlotIndex_ > unlockedPlotCount then
         focusedPlotIndex_ = 1
@@ -192,6 +196,7 @@ function PlotDisplayController.SwitchNextFocusedPlot()
     PlotDisplayController.ApplyDisplayMode()
     PlotDisplayController.RefreshSelection()
     deps_.startSinglePlotBounceAnimation(focusedPlotIndex_)
+    print(string.format("[地块切换] 完成 focused=%d selected=%d", focusedPlotIndex_, GetSelectedPlot()))
     FloatingToast.Show(string.format("已切换到第 %d 块地", focusedPlotIndex_))
     ShowToast(string.format("已切换到第 %d 块地", focusedPlotIndex_))
     RebuildUI()

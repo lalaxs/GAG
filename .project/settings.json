@@ -26,9 +26,9 @@
       "max_players": 4,
       "background_match": true,
       "match_info": {
-        "desc_name": "free_match_with_ai",
+        "desc_name": "free_match",
         "immediately_start": true,
-        "match_timeout": 3,
+        "match_timeout": 0,
         "player_number": 1
       },
       "persistent_world": {

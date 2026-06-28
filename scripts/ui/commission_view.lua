@@ -33,6 +33,17 @@ local LABEL_BG = {238, 218, 176, 255}
 local LABEL_TITLE = {138, 94, 42, 255}
 local LABEL_VALUE = {76, 50, 24, 255}
 
+local DETAIL_MODAL_HEIGHT_RATIO = 0.80
+local DETAIL_MODAL_BASE_CONTENT_HEIGHT = 452
+
+local function GetLogicalScreenHeight()
+    return graphics:GetHeight() / graphics:GetDPR()
+end
+
+local function GetDetailModalHeight()
+    return math.floor(GetLogicalScreenHeight() * DETAIL_MODAL_HEIGHT_RATIO)
+end
+
 function CommissionView.Init(deps)
     deps_ = deps or {}
 end
@@ -219,6 +230,9 @@ function CommissionView.ShowDetail(commission, selectedItem)
         selectedItem = matches[1]
     end
 
+    local detailModalHeight = GetDetailModalHeight()
+    local itemListHeight = math.max(188, detailModalHeight - DETAIL_MODAL_BASE_CONTENT_HEIGHT)
+
     detailModal_ = UI.Modal {
         title = "委托详情",
         size = "md",
@@ -303,7 +317,7 @@ function CommissionView.ShowDetail(commission, selectedItem)
                 marginTop = 4,
             },
             UI.ScrollView {
-                height = 188,
+                height = itemListHeight,
                 scrollY = true,
                 showScrollbar = false,
                 bounces = true,
@@ -325,7 +339,7 @@ function CommissionView.ShowDetail(commission, selectedItem)
         },
     })
 
-    ModalAnim.Apply(detailModal_, { fixedHeight = 640 })
+    ModalAnim.Apply(detailModal_, { fixedHeight = detailModalHeight, maxHeightRatio = DETAIL_MODAL_HEIGHT_RATIO })
     detailModal_:Open()
 end
 

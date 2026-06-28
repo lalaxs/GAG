@@ -271,6 +271,10 @@ end
 
 local function EnterPlantView()
     selectedPlot_ = Clamp(selectedPlot_, 1, math.max(1, unlockedPlotCount_))
+    if EconomyCloudSystem ~= nil and EconomyCloudSystem.RequestAuthFarm ~= nil then
+        print(string.format("[种植模式] 进入前请求权威农场刷新 plot=%d", selectedPlot_))
+        EconomyCloudSystem.RequestAuthFarm({ force = true, reason = "enter_plant_view" })
+    end
     CameraSystem.SetTarget(FarmSystem.PlotWorldPosition(selectedPlot_))
     CameraSystem.EnterPlantView()
     RefreshSelection()
@@ -856,7 +860,8 @@ UpdateCurrentTourValue = function()
 end
 
 local function UpdatePlants(dt)
-    local maturedThisFrame = CropSystem.UpdatePlants(plots_, dt)
+    local rotateMaturePlants = GetViewMode() == ViewMode.PLANT
+    local maturedThisFrame = CropSystem.UpdatePlants(plots_, dt, rotateMaturePlants)
     UpdateCurrentTourValue()
     if plantTab_ == "harvest" and GetViewMode() == ViewMode.PLANT then
         harvestPanelRefreshTimer_ = harvestPanelRefreshTimer_ + dt

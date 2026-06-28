@@ -39,7 +39,24 @@ function InteractionSystem.SuppressNextWorldTap()
     suppressNextWorldTap_ = true
 end
 
+local function IsPlotDisplayToolbarArea(x, y)
+    local dpr = graphics:GetDPR()
+    local logicalW = graphics:GetWidth() / dpr
+    local logicalX = x / dpr
+    local logicalY = y / dpr
+    local left = logicalW - 14 - 56 - 12
+    local right = logicalW
+    local top = 152 - 12
+    local bottom = 152 + 5 * 40 + 4 * 8 + 12
+    return logicalX >= left and logicalX <= right and logicalY >= top and logicalY <= bottom
+end
+
 local function IsWorldTapArea(x, y)
+    if IsPlotDisplayToolbarArea(x, y) then
+        print(string.format("[交互] 忽略右上地块工具栏区域触摸 x=%d y=%d", x, y))
+        return false
+    end
+
     local dpr = graphics:GetDPR()
     local h = graphics:GetHeight() / dpr
     local logicalY = y / dpr

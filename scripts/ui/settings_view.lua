@@ -370,6 +370,7 @@ function SettingsView.BuildPlotDisplayButtons()
             fontColor = {92, 62, 32, 255},
             borderRadius = 14,
             onClick = function()
+                print("[地块切换] 顶层快捷按钮点击：下一块")
                 if deps_.suppressWorldTap then deps_.suppressWorldTap() end
                 if deps_.switchNextPlot then deps_.switchNextPlot() end
             end,

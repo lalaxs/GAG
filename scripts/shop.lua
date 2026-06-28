@@ -11,6 +11,7 @@
 
 local UI = require("urhox-libs/UI")
 local ModalAnim = require("ui.modal_anim")
+local FloatingToast = require("ui.floating_toast")
 local AudioSystem = require("systems.audio_system")
 
 local Shop = {}
@@ -552,7 +553,11 @@ local function ShowBuyConfirm(seedData)
                     onClick = function()
                         local bought = BuySeed(seedData.name, count)
                         if bought > 0 then
-                            if gameRef_.showToast then gameRef_.showToast("已购买 x" .. bought .. "!") end
+                            if state_.serverAuthoritative then
+                                if gameRef_.showToast then gameRef_.showToast("购买请求已发送，等待服务器确认") end
+                            else
+                                if gameRef_.showToast then gameRef_.showToast("已购买 x" .. bought .. "!") end
+                            end
                             if buyConfirmModal_ then buyConfirmModal_:Close() end
                             Shop.RebuildShopContent()
                         end
@@ -1015,12 +1020,12 @@ function Shop.RebuildShopContent()
         fontSize = 13,
         tabs = {
             { id = "seed", label = "种子商店" },
-            { id = "tool", label = "工具商店", disabled = true },
+            { id = "tool", label = "工具商店" },
         },
         activeTab = state_.activeTab,
         onChange = function(self, tabId)
             if tostring(tabId) == "tool" then
-                if gameRef_.showToast then gameRef_.showToast("工具商店暂未开放") end
+                FloatingToast.Show("工具商店暂未开放", { fontSize = 19, duration = 1.4, yRatio = 0.42, priority = 8 })
                 pendingTabSwitch_ = "seed"
                 return
             end

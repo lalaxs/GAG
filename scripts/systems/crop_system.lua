@@ -83,11 +83,11 @@ end
 
 local function RollCropWeightScale()
     local r = math.random()
-    if r < 0.25 then
+    if r < 0.34 then
         return RandomRange(0.65, 0.9), "Light"
-    elseif r < 0.80 then
+    elseif r < 0.94 then
         return RandomRange(0.9, 1.2), "Normal"
-    elseif r < 0.97 then
+    elseif r < 0.99 then
         return RandomRange(1.2, 2.0), "Large"
     end
     return RandomRange(2.0, 3.5), "Giant"
@@ -876,7 +876,7 @@ function CropSystem.GetPlotText(plot)
     return string.format("%d株生长中 | 最近 %.1fs 成熟", cropCount, minRemain)
 end
 
-function CropSystem.UpdatePlants(plots, dt)
+function CropSystem.UpdatePlants(plots, dt, rotateMaturePlants)
     local maturedThisFrame = false
     gameTime_ = gameTime_ + dt
     for _, plot in ipairs(plots) do
@@ -900,7 +900,7 @@ function CropSystem.UpdatePlants(plots, dt)
                         deps_.PlantVisual.CreateSpecialEffects(plantData)
                         print("成熟: " .. plantData.name .. "，可收获")
                     end
-                else
+                elseif rotateMaturePlants == true then
                     plantData.root:Rotate(Quaternion(12.0 * dt, Vector3.UP))
                 end
                 if plantData.sprouted or plantData.mature then

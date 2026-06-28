@@ -20,7 +20,6 @@ local DAILY_STEAL_LIMIT = 10
 local DAILY_GIFT_LIMIT = 5
 local MAX_SOCIAL_ROWS = 20
 local START_GOLD = 150
-local SEED_STACK_MAX = 999
 local MAX_OPEN_PACK_COUNT = 50
 local MAX_GIFT_COUNT = 1
 local GLOBAL_SHOP_UID = 858557875
@@ -201,13 +200,107 @@ local function EnsureSeedShopState(callback)
     })
 end
 
+local DeepCopy
+
+local function RebuildSeedShopItemsFromStock(shop)
+    local items = {}
+    local seen = {}
+    if type(shop.items) == "table" then
+        for _, seedName in ipairs(shop.items) do
+            seedName = tostring(seedName)
+            local stock = math.max(0, math.floor(tonumber(shop.stock and shop.stock[seedName] or 0) or 0))
+            if stock > 0 and seen[seedName] ~= true then
+                items[#items + 1] = seedName
+                seen[seedName] = true
+            end
+        end
+    end
+    if type(shop.stock) == "table" then
+        for seedName, stock in pairs(shop.stock) do
+            seedName = tostring(seedName)
+            stock = math.max(0, math.floor(tonumber(stock or 0) or 0))
+            if stock > 0 and seen[seedName] ~= true then
+                items[#items + 1] = seedName
+                seen[seedName] = true
+            end
+        end
+    end
+    shop.items = items
+end
+
+local function FetchSeedShopAvailableState(shop, callback)
+    local responseShop = AddSeedShopResponseFields(DeepCopy(shop), Now())
+    responseShop.stock = type(responseShop.stock) == "table" and responseShop.stock or {}
+
+    local pending = 1
+    local completed = false
+    local function FinishOne()
+        pending = pending - 1
+        if pending <= 0 and completed ~= true then
+            completed = true
+            RebuildSeedShopItemsFromStock(responseShop)
+            callback(responseShop)
+        end
+    end
+
+    for seedName, stock in pairs(responseShop.stock) do
+        local plantIndex = FindPlantIndexByName(seedName)
+        local maxStock = math.max(0, math.floor(tonumber(stock or 0) or 0))
+        responseShop.stock[seedName] = maxStock
+        if plantIndex ~= nil and maxStock > 0 then
+            pending = pending + 1
+            local quotaKey = BuildSeedShopQuotaKey(responseShop.refreshId, plantIndex)
+            serverCloud.quota:Get(GLOBAL_SHOP_UID, quotaKey, {
+                ok = function(rows)
+                    local quotaRow = rows and rows[1]
+                    local soldCount = math.max(0, math.floor(tonumber(quotaRow and quotaRow.value or 0) or 0))
+                    responseShop.stock[seedName] = math.max(0, maxStock - soldCount)
+                    FinishOne()
+                end,
+                error = function()
+                    FinishOne()
+                end,
+            })
+        end
+    end
+
+    FinishOne()
+end
+
 local function Send(connection, eventName, data)
     Shared.SendToClient(connection, eventName, data)
 end
 
+local function BroadcastSeedShopState(shop)
+    for _, connection in pairs(connections_) do
+        Send(connection, Shared.EVENTS.SEED_SHOP_RESPONSE, { success = true, shop = shop })
+    end
+end
+
+local function SendFullAvailableSeedShop(connection, eventName, baseData)
+    EnsureSeedShopState(function(shop)
+        FetchSeedShopAvailableState(shop, function(availableShop)
+            local data = baseData or {}
+            data.success = data.success ~= false
+            data.shop = availableShop
+            Send(connection, eventName, data)
+        end)
+    end)
+end
+
+local function BroadcastFullAvailableSeedShop()
+    EnsureSeedShopState(function(shop)
+        FetchSeedShopAvailableState(shop, function(availableShop)
+            BroadcastSeedShopState(availableShop)
+        end)
+    end)
+end
+
 local function SendSeedShopState(connection)
     EnsureSeedShopState(function(shop)
-        Send(connection, Shared.EVENTS.SEED_SHOP_RESPONSE, { success = true, shop = shop })
+        FetchSeedShopAvailableState(shop, function(availableShop)
+            Send(connection, Shared.EVENTS.SEED_SHOP_RESPONSE, { success = true, shop = availableShop })
+        end)
     end)
 end
 
@@ -274,7 +367,7 @@ local function AddRequestRecordToCommit(...)
     return RequestGuard.AddToCommit(...)
 end
 
-local function DeepCopy(value)
+DeepCopy = function(value)
     if type(value) ~= "table" then return value end
     local result = {}
     for key, item in pairs(value) do
@@ -347,9 +440,9 @@ end
 
 local function RollCropWeightScale()
     local r = math.random()
-    if r < 0.25 then return RandomRange(0.65, 0.9), "Light" end
-    if r < 0.80 then return RandomRange(0.9, 1.2), "Normal" end
-    if r < 0.97 then return RandomRange(1.2, 2.0), "Large" end
+    if r < 0.34 then return RandomRange(0.65, 0.9), "Light" end
+    if r < 0.94 then return RandomRange(0.9, 1.2), "Normal" end
+    if r < 0.99 then return RandomRange(1.2, 2.0), "Large" end
     return RandomRange(2.0, 3.5), "Giant"
 end
 
@@ -921,17 +1014,12 @@ local function ApplyActivityHarvestReward(state, crop)
         if math.random() <= (rates[rarityOrder] or 0.08) then
             local plantIndex = RollDarkSeed(activity)
             local current = tonumber(state.seedBag[plantIndex] or 0) or 0
-            if current < SEED_STACK_MAX then
-                state.seedBag[plantIndex] = current + 1
-                state.collectedPlants[plantIndex] = true
-                state.activity.dark.darkSeedDrops = state.activity.dark.darkSeedDrops + 1
-                local plant = GameConfig.PLANTS[plantIndex]
-                local text = "黑暗来临掉落: " .. (plant and (plant.name .. "种子") or "限定种子")
-                return { type = "dark_seed", plantIndex = plantIndex, activityId = activityId, toastText = text, message = text }
-            end
+            state.seedBag[plantIndex] = current + 1
+            state.collectedPlants[plantIndex] = true
+            state.activity.dark.darkSeedDrops = state.activity.dark.darkSeedDrops + 1
             local plant = GameConfig.PLANTS[plantIndex]
-            local text = "种子背包已满，未获得" .. (plant and (plant.name .. "种子") or "黑暗限定种子")
-            return { type = "dark_seed_full", plantIndex = plantIndex, activityId = activityId, toastText = text, message = text, bagFull = true }
+            local text = "黑暗来临掉落: " .. (plant and (plant.name .. "种子") or "限定种子")
+            return { type = "dark_seed", plantIndex = plantIndex, activityId = activityId, toastText = text, message = text }
         end
     end
     return nil
@@ -987,7 +1075,7 @@ end
 
 local function BuySeed(uid, plantIndex, _price, connection, count, requestId, refreshId)
     plantIndex = NormalizePlantIndex(plantIndex)
-    count = NormalizePositiveCount(count or 1, 10)
+    count = NormalizePositiveCount(count or 1)
     if plantIndex == nil then
         SendError(connection, Shared.EVENTS.BUY_SEED_RESPONSE, "INVALID_PLANT", "种子配置不存在", { requestId = requestId })
         return
@@ -996,12 +1084,12 @@ local function BuySeed(uid, plantIndex, _price, connection, count, requestId, re
     local price = math.max(0, math.floor(tonumber(plant.seedPrice or 0) or 0))
     EnsureSeedShopState(function(shop)
         if refreshId ~= nil and math.floor(tonumber(refreshId or 0) or 0) ~= shop.refreshId then
-            Send(connection, Shared.EVENTS.BUY_SEED_RESPONSE, { success = false, message = "商店已刷新，请重新购买", requestId = requestId, shop = shop })
+            SendFullAvailableSeedShop(connection, Shared.EVENTS.BUY_SEED_RESPONSE, { success = false, message = "商店已刷新，请重新购买", requestId = requestId })
             return
         end
         local maxStock = math.max(0, math.floor(tonumber(shop.stock[plant.name] or 0) or 0))
         if maxStock <= 0 then
-            Send(connection, Shared.EVENTS.BUY_SEED_RESPONSE, { success = false, message = "该种子已售罄", requestId = requestId, shop = shop })
+            SendFullAvailableSeedShop(connection, Shared.EVENTS.BUY_SEED_RESPONSE, { success = false, message = "该种子已售罄", requestId = requestId })
             return
         end
 
@@ -1012,9 +1100,8 @@ local function BuySeed(uid, plantIndex, _price, connection, count, requestId, re
                 local soldCount = math.max(0, math.floor(tonumber(quotaRow and quotaRow.value or 0) or 0))
                 local available = math.max(0, maxStock - soldCount)
                 if available <= 0 then
-                    local responseShop = AddSeedShopResponseFields(DeepCopy(shop), Now())
-                    responseShop.stock[plant.name] = 0
-                    Send(connection, Shared.EVENTS.BUY_SEED_RESPONSE, { success = false, message = "该种子已售罄", requestId = requestId, shop = responseShop })
+                    SendFullAvailableSeedShop(connection, Shared.EVENTS.BUY_SEED_RESPONSE, { success = false, message = "该种子已售罄", requestId = requestId })
+                    BroadcastFullAvailableSeedShop()
                     return
                 end
 
@@ -1022,9 +1109,9 @@ local function BuySeed(uid, plantIndex, _price, connection, count, requestId, re
                     ok = function(scores)
                         local state = NormalizeEconomyState(scores[Shared.KEYS.ECONOMY_STATE] or BuildInitialEconomyState())
                         local owned = tonumber(state.seedBag[plantIndex] or 0) or 0
-                        local buyCount = math.min(count, available, SEED_STACK_MAX - owned)
+                        local buyCount = math.min(count, available)
                         if buyCount <= 0 then
-                            Send(connection, Shared.EVENTS.BUY_SEED_RESPONSE, { success = false, message = "种子背包已满", requestId = requestId, state = state, shop = shop })
+                            SendFullAvailableSeedShop(connection, Shared.EVENTS.BUY_SEED_RESPONSE, { success = false, message = "库存不足", requestId = requestId, state = state })
                             return
                         end
                         local totalPrice = price * buyCount
@@ -1033,7 +1120,7 @@ local function BuySeed(uid, plantIndex, _price, connection, count, requestId, re
                             totalPrice = price * buyCount
                         end
                         if buyCount <= 0 then
-                            Send(connection, Shared.EVENTS.BUY_SEED_RESPONSE, { success = false, message = "金币不足", requestId = requestId, state = state, shop = shop })
+                            SendFullAvailableSeedShop(connection, Shared.EVENTS.BUY_SEED_RESPONSE, { success = false, message = "金币不足", requestId = requestId, state = state })
                             return
                         end
 
@@ -1042,30 +1129,27 @@ local function BuySeed(uid, plantIndex, _price, connection, count, requestId, re
                         state.updatedAt = Now()
                         NextRevision(state)
 
-                        local responseShop = AddSeedShopResponseFields(DeepCopy(shop), Now())
-                        responseShop.stock[plant.name] = math.max(0, available - buyCount)
-
                         local c = serverCloud:BatchCommit("全服商店原子购买种子")
                         c:QuotaAdd(GLOBAL_SHOP_UID, quotaKey, buyCount, maxStock)
                         c:ScoreSet(uid, Shared.KEYS.ECONOMY_STATE, state)
                         c:Commit({
                             ok = function()
-                                Send(connection, Shared.EVENTS.BUY_SEED_RESPONSE, { success = true, message = "购买成功 x" .. tostring(buyCount), requestId = requestId, plantIndex = plantIndex, price = totalPrice, count = buyCount, state = state, shop = responseShop })
+                                SendFullAvailableSeedShop(connection, Shared.EVENTS.BUY_SEED_RESPONSE, { success = true, message = "购买成功 x" .. tostring(buyCount), requestId = requestId, plantIndex = plantIndex, price = totalPrice, count = buyCount, state = state })
+                                BroadcastFullAvailableSeedShop()
                             end,
                             error = function(_, reason)
-                                local soldOutShop = AddSeedShopResponseFields(DeepCopy(shop), Now())
-                                soldOutShop.stock[plant.name] = 0
-                                Send(connection, Shared.EVENTS.BUY_SEED_RESPONSE, { success = false, message = "该种子已售罄或购买失败: " .. tostring(reason), requestId = requestId, state = state, shop = soldOutShop })
+                                SendFullAvailableSeedShop(connection, Shared.EVENTS.BUY_SEED_RESPONSE, { success = false, message = "该种子已售罄或购买失败: " .. tostring(reason), requestId = requestId, state = state })
+                                BroadcastFullAvailableSeedShop()
                             end,
                         })
                     end,
                     error = function(_, reason)
-                        Send(connection, Shared.EVENTS.BUY_SEED_RESPONSE, { success = false, message = "经济数据读取失败: " .. tostring(reason), requestId = requestId, shop = shop })
+                        SendFullAvailableSeedShop(connection, Shared.EVENTS.BUY_SEED_RESPONSE, { success = false, message = "经济数据读取失败: " .. tostring(reason), requestId = requestId })
                     end,
                 })
             end,
             error = function(_, reason)
-                Send(connection, Shared.EVENTS.BUY_SEED_RESPONSE, { success = false, message = "库存读取失败: " .. tostring(reason), requestId = requestId, shop = shop })
+                SendFullAvailableSeedShop(connection, Shared.EVENTS.BUY_SEED_RESPONSE, { success = false, message = "库存读取失败: " .. tostring(reason), requestId = requestId })
             end,
         })
     end)
@@ -1218,18 +1302,39 @@ local function HarvestCropAuthority(uid, payload, connection)
     serverCloud:Get(uid, Shared.KEYS.AUTH_FARM_STATE, {
         ok = function(farmScores)
             local farmState = NormalizeFarmState(farmScores[Shared.KEYS.AUTH_FARM_STATE])
+            local function SendHarvestFailure(message, extra)
+                local data = extra or {}
+                data.success = false
+                data.message = message
+                data.requestId = payload.requestId
+                data.farm = farmState
+                print(string.format("[权威收获] 拒绝 requestId=%s cropId=%s plot=%s cropIndex=%s reason=%s", tostring(payload.requestId), tostring(payload.cropId), tostring(payload.plotIndex), tostring(payload.cropIndex), tostring(message)))
+                Send(connection, Shared.EVENTS.HARVEST_CROP_RESPONSE, data)
+            end
             local crop, plotIndex, cropIndex = FindFarmCropFromHarvestPayload(farmState, payload)
             if crop == nil then
-                Send(connection, Shared.EVENTS.HARVEST_CROP_RESPONSE, { success = false, message = "作物不存在或已收获", requestId = payload.requestId })
+                SendHarvestFailure("作物不存在或已收获")
                 return
             end
             RefreshAuthCrop(crop)
+            print(string.format("[权威收获] 请求 requestId=%s uid=%s plot=%s cropIndex=%s cropId=%s now=%d plantedAt=%s matureAt=%s elapsed=%.2f growTime=%.2f mature=%s",
+                tostring(payload.requestId),
+                tostring(uid),
+                tostring(plotIndex),
+                tostring(cropIndex),
+                tostring(crop.cropId or crop.serverCropId),
+                Now(),
+                tostring(crop.plantedAt),
+                tostring(crop.matureAt),
+                tonumber(crop.elapsed or 0) or 0,
+                tonumber(crop.growTime or 0) or 0,
+                tostring(crop.mature)))
             if crop.harvested == true then
-                Send(connection, Shared.EVENTS.HARVEST_CROP_RESPONSE, { success = false, message = "这株作物已经收获过了", requestId = payload.requestId })
+                SendHarvestFailure("这株作物已经收获过了", { cropId = crop.cropId or crop.serverCropId, plotIndex = plotIndex, cropIndex = cropIndex })
                 return
             end
             if crop.mature ~= true then
-                Send(connection, Shared.EVENTS.HARVEST_CROP_RESPONSE, { success = false, message = "作物尚未成熟", requestId = payload.requestId })
+                SendHarvestFailure("作物尚未成熟", { cropId = crop.cropId or crop.serverCropId, plotIndex = plotIndex, cropIndex = cropIndex })
                 return
             end
 
@@ -1238,7 +1343,7 @@ local function HarvestCropAuthority(uid, payload, connection)
                     local state = NormalizeEconomyState(scores[Shared.KEYS.ECONOMY_STATE] or BuildInitialEconomyState())
                     state.harvested = state.harvested or {}
                     if #(state.harvested) >= 100 then
-                        Send(connection, Shared.EVENTS.HARVEST_CROP_RESPONSE, { success = false, message = "背包已满", requestId = payload.requestId, state = state })
+                        SendHarvestFailure("背包已满", { state = state, cropId = crop.cropId or crop.serverCropId, plotIndex = plotIndex, cropIndex = cropIndex })
                         return
                     end
 
@@ -1337,7 +1442,6 @@ local function OpenSeedPackAuthority(uid, payload, connection)
             end
 
             local results = {}
-            local seedCounts = {}
             for _ = 1, openCount do
                 for _ = 1, math.max(1, tonumber(packCfg.onceOpenCount or 1) or 1) do
                     local seedId = RollSeedFromPack(packCfg)
@@ -1349,15 +1453,6 @@ local function OpenSeedPackAuthority(uid, payload, connection)
                         isNew = state.collectedPlants[seedId] ~= true,
                         isPity = false,
                     }
-                    seedCounts[seedId] = (seedCounts[seedId] or 0) + 1
-                end
-            end
-
-            for seedId, addCount in pairs(seedCounts) do
-                local current = tonumber(state.seedBag[seedId] or 0) or 0
-                if current + addCount > SEED_STACK_MAX then
-                    Send(connection, Shared.EVENTS.OPEN_SEED_PACK_RESPONSE, { success = false, message = "种子背包空间不足，无法开启礼包", requestId = payload.requestId, state = state })
-                    return
                 end
             end
 
@@ -1723,7 +1818,6 @@ local function ExchangeActivityRewardAuthority(uid, payload, connection)
                 local plantIndex = NormalizePlantIndex(reward.plantIndex)
                 if plantIndex == nil then Send(connection, Shared.EVENTS.EXCHANGE_ACTIVITY_REWARD_RESPONSE, { success = false, message = "奖励种子不存在", requestId = payload.requestId, state = state }); return end
                 local current = tonumber(state.seedBag[plantIndex] or 0) or 0
-                if current + (reward.count or 1) > SEED_STACK_MAX then Send(connection, Shared.EVENTS.EXCHANGE_ACTIVITY_REWARD_RESPONSE, { success = false, message = "种子背包空间不足", requestId = payload.requestId, state = state }); return end
                 state.seedBag[plantIndex] = current + (reward.count or 1)
                 state.collectedPlants[plantIndex] = true
             elseif reward.type == "pack" then
@@ -1776,13 +1870,11 @@ local function DrawActivityPackAuthority(uid, payload, connection)
                         local plantIndex = NormalizePlantIndex(picked.plantIndex)
                         if plantIndex ~= nil then
                             local current = tonumber(state.seedBag[plantIndex] or 0) or 0
-                            local addCount = math.min(picked.count or 1, SEED_STACK_MAX - current)
-                            if addCount > 0 then
-                                state.seedBag[plantIndex] = current + addCount
-                                state.collectedPlants[plantIndex] = true
-                                reward.count = addCount
-                                rewards[#rewards + 1] = reward
-                            end
+                            local addCount = math.max(0, math.floor(tonumber(picked.count or 1) or 1))
+                            state.seedBag[plantIndex] = current + addCount
+                            state.collectedPlants[plantIndex] = true
+                            reward.count = addCount
+                            rewards[#rewards + 1] = reward
                         end
                     end
                 end
@@ -1790,7 +1882,7 @@ local function DrawActivityPackAuthority(uid, payload, connection)
             if #rewards <= 0 then
                 state.activity.alien.genes = state.activity.alien.genes + cost
                 state.activity.alien.drawCount = math.max(0, state.activity.alien.drawCount - drawCount)
-                Send(connection, Shared.EVENTS.DRAW_ACTIVITY_PACK_RESPONSE, { success = false, message = "奖励背包空间不足", requestId = payload.requestId, state = state })
+                Send(connection, Shared.EVENTS.DRAW_ACTIVITY_PACK_RESPONSE, { success = false, message = "未抽中奖励", requestId = payload.requestId, state = state })
                 return
             end
             state.updatedAt = Now()
@@ -1999,7 +2091,7 @@ local function BuildStealCropClaimKey(cropId)
     return "steal_crop_claim_" .. tostring(cropId or "unknown")
 end
 
-local function RequestSteal(uid, targetUid, cropIndex, cropId, connection, requestId, requestRecordKey)
+local function RequestStealWithQuotaAvailable(uid, targetUid, cropIndex, cropId, connection, requestId, requestRecordKey)
     cropIndex = NormalizePositiveCount(cropIndex or 1, GetMaxCropsPerPlot())
     cropId = tostring(cropId or "")
     if targetUid == nil or targetUid <= 0 then
@@ -2058,13 +2150,9 @@ local function RequestSteal(uid, targetUid, cropIndex, cropId, connection, reque
                                     if reward.type == "seed" then
                                         local seedId = NormalizePlantIndex(reward.seedId or crop.plantIndex or 1) or 1
                                         local current = tonumber(economy.seedBag[seedId] or 0) or 0
-                                        if current >= SEED_STACK_MAX then
-                                            reward = { type = "none", reason = "bag_full", chance = reward.chance }
-                                        else
-                                            economy.seedBag[seedId] = current + 1
-                                            economy.collectedPlants[seedId] = true
-                                            reward.seedId = seedId
-                                        end
+                                        economy.seedBag[seedId] = current + 1
+                                        economy.collectedPlants[seedId] = true
+                                        reward.seedId = seedId
                                     end
 
                                     local now = Now()
@@ -2094,8 +2182,6 @@ local function RequestSteal(uid, targetUid, cropIndex, cropId, connection, reque
                                     local message = "偷菜成功，但没有获得种子"
                                     if reward.type == "seed" then
                                         message = "偷菜成功，奖励已发放"
-                                    elseif reward.reason == "bag_full" then
-                                        message = "偷菜成功，但种子背包已满"
                                     end
                                     local response = {
                                         success = true,
@@ -2141,6 +2227,29 @@ local function RequestSteal(uid, targetUid, cropIndex, cropId, connection, reque
         end,
         error = function(_, reason)
             Send(connection, Shared.EVENTS.STEAL_RESPONSE, { success = false, message = "读取目标花园失败: " .. tostring(reason) })
+        end,
+    })
+end
+
+local function RequestSteal(uid, targetUid, cropIndex, cropId, connection, requestId, requestRecordKey)
+    serverCloud.quota:Get(uid, "daily_steal", {
+        ok = function(quotaRows)
+            local row = quotaRows and quotaRows[1]
+            local stealCount = math.max(0, math.floor(tonumber(row and row.value or 0) or 0))
+            if stealCount >= DAILY_STEAL_LIMIT then
+                Send(connection, Shared.EVENTS.STEAL_RESPONSE, {
+                    success = false,
+                    code = "STEAL_LIMIT_REACHED",
+                    message = "偷取次数不足",
+                    requestId = requestId,
+                    daily = { stealCount = stealCount, limit = DAILY_STEAL_LIMIT },
+                })
+                return
+            end
+            RequestStealWithQuotaAvailable(uid, targetUid, cropIndex, cropId, connection, requestId, requestRecordKey)
+        end,
+        error = function(_, reason)
+            Send(connection, Shared.EVENTS.STEAL_RESPONSE, { success = false, message = "偷菜次数读取失败: " .. tostring(reason), requestId = requestId })
         end,
     })
 end
@@ -2572,7 +2681,6 @@ function Start()
         RequestGuard = RequestGuard,
         dailyGiftLimit = DAILY_GIFT_LIMIT,
         maxGiftCount = MAX_GIFT_COUNT,
-        seedStackMax = SEED_STACK_MAX,
         normalizePlantIndex = NormalizePlantIndex,
         normalizeEconomyState = NormalizeEconomyState,
         buildInitialEconomyState = BuildInitialEconomyState,

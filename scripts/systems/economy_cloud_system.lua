@@ -208,10 +208,11 @@ function EconomyCloudSystem.RequestState()
     return false
 end
 
-function EconomyCloudSystem.RequestAuthFarm()
-    if state_.authFarmReady == true then return true end
+function EconomyCloudSystem.RequestAuthFarm(options)
+    options = options or {}
+    if state_.authFarmReady == true and options.force ~= true then return true end
     if requests_:IsPending("authFarm") then return true end
-    local payload = BeginRequest("authFarm", {})
+    local payload = BeginRequest("authFarm", { reason = options.reason or "sync" })
     if SendRequest(Shared.EVENTS.REQUEST_AUTH_FARM, payload) then return true end
     FinishRequest(payload.requestId, "authFarm")
     return false
@@ -255,7 +256,13 @@ end
 
 function EconomyCloudSystem.HarvestCrop(payload)
     if BlockIfAuthoritativeNotReady(true) then return false end
+    if requests_:IsPending("harvest") then
+        if deps_.showToast then deps_.showToast("收获请求处理中，请稍后") end
+        print("[经济同步] 忽略重复收获请求，已有请求处理中")
+        return true
+    end
     payload = BeginRequest("harvest", payload or {})
+    print(string.format("[经济同步] 发送收获请求 requestId=%s plot=%s cropId=%s cropIndex=%s", tostring(payload.requestId), tostring(payload.plotIndex), tostring(payload.cropId), tostring(payload.cropIndex)))
     if SendRequest(Shared.EVENTS.HARVEST_CROP, payload) then return true end
     FinishRequest(payload.requestId, "harvest")
     return false
@@ -483,11 +490,17 @@ end
 
 function EconomyCloudSystem.HandleHarvestCropResponse(data)
     FinishRequest(data.requestId, "harvest")
+    print(string.format("[经济同步] 收到收获响应 requestId=%s success=%s message=%s cropId=%s", tostring(data.requestId), tostring(data.success), tostring(data.message), tostring(data.cropId)))
     if data.success then
         ApplyState(data.state)
         if deps_.onHarvestCropConfirmed then deps_.onHarvestCropConfirmed(data) end
     else
         if data.state ~= nil then ApplyState(data.state) end
+        if data.farm ~= nil and deps_.onAuthFarmReceived then
+            deps_.onAuthFarmReceived(data.farm)
+        else
+            EconomyCloudSystem.RequestAuthFarm({ force = true, reason = "harvest_failed" })
+        end
         if deps_.showToast then deps_.showToast(data.message or "收获失败") end
     end
 end

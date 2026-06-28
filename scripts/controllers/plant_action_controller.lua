@@ -178,14 +178,28 @@ function PlantActionController.HarvestNearestMature(plotIndex, localPos, options
         if plot ~= nil and localPos ~= nil then
             crop, cropIndex = deps_.findPlantAtLocalPosition(plot, localPos, true)
         end
-        if crop == nil and plot ~= nil then
+        if crop == nil and plot ~= nil and localPos == nil then
             for i, item in ipairs(plot.plants or {}) do
                 if item.mature then crop = item; cropIndex = i; break end
             end
         end
-        if crop == nil then return false end
+        if crop == nil then
+            print(string.format("[收获请求] 未找到可收获作物 plot=%s localPos=%s", tostring(plotIndex), localPos ~= nil and string.format("%.2f,%.2f", localPos.x, localPos.z) or "nil"))
+            return false
+        end
+        local requestId = NextRequestId("harvest")
+        print(string.format("[收获请求] 准备发送 requestId=%s plot=%d cropIndex=%s cropId=%s mature=%s elapsed=%.2f growTime=%.2f local=(%.2f,%.2f)",
+            requestId,
+            plotIndex,
+            tostring(cropIndex),
+            tostring(crop.cropId or crop.serverCropId),
+            tostring(crop.mature),
+            tonumber(crop.elapsed or 0) or 0,
+            tonumber(crop.growTime or 0) or 0,
+            crop.localPos and crop.localPos.x or 0,
+            crop.localPos and crop.localPos.z or 0))
         local requested = deps_.EconomyCloudSystem.HarvestCrop({
-            requestId = NextRequestId("harvest"),
+            requestId = requestId,
             plotIndex = plotIndex,
             cropIndex = cropIndex,
             cropId = crop.cropId or crop.serverCropId,
@@ -391,13 +405,9 @@ function PlantActionController.ApplyConfirmedHarvestCrop(data)
             local rewardText = data.activityReward.toastText or data.activityReward.message
             if rewardText == nil and data.activityReward.type == "alien_gene" then
                 rewardText = "获得外星基因 x" .. tostring(data.activityReward.amount or 0)
-            elseif rewardText == nil and (data.activityReward.type == "dark_seed" or data.activityReward.type == "dark_seed_full") then
+            elseif rewardText == nil and data.activityReward.type == "dark_seed" then
                 local plant = deps_.plants and deps_.plants[data.activityReward.plantIndex]
-                if data.activityReward.type == "dark_seed_full" then
-                    rewardText = "种子背包已满，未获得" .. (plant and (plant.name .. "种子") or "黑暗限定种子")
-                else
-                    rewardText = "黑暗来临掉落: " .. (plant and (plant.name .. "种子") or "限定种子")
-                end
+                rewardText = "黑暗来临掉落: " .. (plant and (plant.name .. "种子") or "限定种子")
             end
             if rewardText ~= nil then
                 ShowToast(rewardText, true)
@@ -515,19 +525,9 @@ function PlantActionController.PerformPlotAction(plotIndex, localPos)
                     end
                 end
             else
-                local success, harvestInfo = PlantActionController.HarvestNearestMature(GetSelectedPlot(), nil)
-                if success then
-                    if harvestInfo and harvestInfo.pendingServer then
-                        ShowToast("正在请求服务器收获...", true)
-                    else
-                        AudioSystem.PlaySFX("harvest_crop")
-                        local cropName = harvestInfo and harvestInfo.name or "作物"
-                        local exp = harvestInfo and harvestInfo.exp or 0
-                        local text = "收获了" .. cropName .. "，获得了" .. exp .. "经验"
-                        ShowToast(text, true)
-                        FloatingToast.Show(text, { fontSize = 19, duration = 1.6, yRatio = 0.42, priority = 0 })
-                    end
-                end
+                local text = "请点击成熟作物本体进行收获"
+                ShowToast(text)
+                FloatingToast.Show(text)
             end
         end
     else

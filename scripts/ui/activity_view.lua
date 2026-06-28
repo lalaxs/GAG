@@ -190,7 +190,7 @@ local BuildMainContent
 
 local function GetActivityModalLayout()
     local logicalHeight = graphics:GetHeight() / graphics:GetDPR()
-    local fixedHeight = math.min(900, math.floor(logicalHeight * 0.92))
+    local fixedHeight = math.min(980, math.floor(logicalHeight * 0.96))
     local contentHeight = math.max(0, fixedHeight - 60)
     return fixedHeight, contentHeight
 end

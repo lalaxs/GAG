@@ -333,8 +333,6 @@ GameConfig.DAILY_TASK_CONFIG = {
     { key = "sell", title = "出售 1 次背包作物", target = 1 },
 }
 
-GameConfig.SEED_STACK_MAX = 999
-
 GameConfig.COLOR_MUTATIONS = {
     { key = "yellow", name = "黄色", color = Color(1.0, 0.88, 0.08, 1.0), multiplier = 1.3, sightMultiplier = 1.5, timeMultiplier = 1.03, prefixes = { "琥珀", "日耀", "鎏金", "圣辉", "光铸" } },
     { key = "blue", name = "蓝色", color = Color(0.12, 0.45, 1.0, 1.0), multiplier = 1.5, sightMultiplier = 1.6, timeMultiplier = 1.05, prefixes = { "冰海", "钴蓝", "苍穹", "霜魂", "星穹" } },

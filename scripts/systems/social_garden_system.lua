@@ -95,6 +95,54 @@ local function GetDisplayName()
     return "Tap玩家"
 end
 
+local function ShowToastMessage(message, floating)
+    if deps_.showToast then deps_.showToast(message) end
+    if floating == true and deps_.showFloatingToast then deps_.showFloatingToast(message) end
+end
+
+local function GetStealCount()
+    return math.max(0, math.floor(tonumber(state_.daily.stealCount or 0) or 0))
+end
+
+local function HasStealAttemptsLeft()
+    return GetStealCount() < DAILY_STEAL_LIMIT
+end
+
+local function ShowStealLimitInsufficient()
+    ShowToastMessage("偷取次数不足", true)
+end
+
+local function IsStealLimitError(data)
+    if data == nil then return false end
+    return data.code == "STEAL_LIMIT_REACHED" or data.message == "偷取次数不足"
+end
+
+local function GetSeedDisplayName(seedId, cropIndex)
+    local plants = deps_.getPlants and deps_.getPlants() or {}
+    local plant = plants[tonumber(seedId or 0) or 0]
+    if plant ~= nil and plant.name ~= nil and plant.name ~= "" then
+        return tostring(plant.name)
+    end
+    local crop = state_.visitGarden and state_.visitGarden.plot and state_.visitGarden.plot.plants and state_.visitGarden.plot.plants[cropIndex]
+    if crop ~= nil and crop.name ~= nil and crop.name ~= "" then
+        return tostring(crop.name)
+    end
+    return "作物"
+end
+
+local function BuildStealFloatingMessage(data)
+    local reward = data and data.reward or nil
+    if reward ~= nil and reward.type == "seed" then
+        local count = math.max(1, math.floor(tonumber(reward.count or 1) or 1))
+        local seedName = GetSeedDisplayName(reward.seedId, data.cropIndex)
+        return "偷取成功，获得" .. seedName .. "种子 x" .. tostring(count)
+    end
+    if reward ~= nil and reward.type == "none" then
+        return "偷取成功，但没有获得种子"
+    end
+    return data and data.message or "偷菜成功"
+end
+
 local function GetAvatarProfile()
     if deps_.getAvatarProfile then return deps_.getAvatarProfile() end
     return nil
@@ -385,6 +433,10 @@ end
 
 function SocialGardenSystem.BeginStealingMode()
     if state_.mode ~= MODE_VISIT then return false end
+    if not HasStealAttemptsLeft() then
+        ShowStealLimitInsufficient()
+        return false
+    end
     state_.stealingMode = true
     if deps_.enterStealingMode then deps_.enterStealingMode(state_.visitGarden) end
     if deps_.showToast then deps_.showToast("点击成熟作物偷取种子") end
@@ -580,6 +632,10 @@ function SocialGardenSystem.GetStealChanceText(crop)
 end
 
 function SocialGardenSystem.RequestStealAtLocalPosition(localPos)
+    if not HasStealAttemptsLeft() then
+        ShowStealLimitInsufficient()
+        return false
+    end
     if not SocialGardenSystem.IsStealingMode() then
         SocialGardenSystem.BeginStealingMode()
         return false
@@ -618,6 +674,10 @@ local ResolveLocalSteal = nil
 function SocialGardenSystem.RequestSteal(cropIndex, cropId)
     local garden = state_.visitGarden
     if garden == nil then return false end
+    if not HasStealAttemptsLeft() then
+        ShowStealLimitInsufficient()
+        return false
+    end
     cropIndex = cropIndex or 1
     if garden.isFallback == true and ResolveLocalSteal ~= nil then
         return ResolveLocalSteal(cropIndex, cropId)
@@ -631,8 +691,8 @@ function SocialGardenSystem.RequestSteal(cropIndex, cropId)
         if deps_.showToast then deps_.showToast("网络异常，偷菜失败") end
         return false
     end
-    if (state_.daily.stealCount or 0) >= DAILY_STEAL_LIMIT then
-        if deps_.showToast then deps_.showToast("今日偷菜次数已用完") end
+    if not HasStealAttemptsLeft() then
+        ShowStealLimitInsufficient()
         return false
     end
     local crop = garden.plot and garden.plot.plants and garden.plot.plants[cropIndex]
@@ -831,6 +891,10 @@ ResolveLocalSteal = function(cropIndex, cropId)
         ShowStealResult("这株作物已经偷过了")
         return false
     end
+    if not HasStealAttemptsLeft() then
+        ShowStealLimitInsufficient()
+        return false
+    end
     state_.daily.stealCount = (state_.daily.stealCount or 0) + 1
     local chance = GetStealChance(crop)
     local reward = math.random() <= chance and { type = "seed", seedId = crop.plantIndex or 1, count = 1 } or { type = "none" }
@@ -995,12 +1059,20 @@ function SocialGardenSystem.HandleStealResponse(data)
         end
         SocialGardenSystem.RequestSocialState()
         local message = data.message or "偷菜成功"
+        local floatingMessage = BuildStealFloatingMessage(data)
         if deps_.showToast then deps_.showToast(message) end
-        if deps_.showFloatingToast then deps_.showFloatingToast(message) end
+        if deps_.showFloatingToast then deps_.showFloatingToast(floatingMessage) end
         if deps_.markDirty then deps_.markDirty() end
         EmitSocialChanged("updated")
     elseif deps_.showToast then
-        deps_.showToast(data.message or "偷菜失败")
+        if IsStealLimitError(data) then
+            if data.daily ~= nil and data.daily.stealCount ~= nil then
+                state_.daily.stealCount = data.daily.stealCount
+            end
+            ShowStealLimitInsufficient()
+        else
+            deps_.showToast(data.message or "偷菜失败")
+        end
     end
 end
 
