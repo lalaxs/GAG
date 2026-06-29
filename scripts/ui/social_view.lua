@@ -595,8 +595,8 @@ local function BuildFriendRow(entry)
                 end,
                 children = {
                     UI.Button {
-                        text = giftSent and "已送" or "送礼",
-                        width = 74,
+                        text = giftSent and "已送" or "送种子",
+                        width = 78,
                         height = 44,
                         fontSize = 13,
                         fontWeight = "bold",
@@ -614,8 +614,9 @@ local function BuildFriendRow(entry)
                         end,
                     },
                     BuildFriendActionButton("拜访", COLORS.primary, function()
-                        SocialView.Close()
-                        system.VisitPlayer(entry.userId)
+                        if system.VisitPlayer(entry.userId) then
+                            SocialView.Close()
+                        end
                     end),
                 },
             },
@@ -790,8 +791,9 @@ local function BuildSearchFriendPanel()
                         borderRadius = 16,
                         onClick = function()
                             Suppress()
-                            SocialView.Close()
-                            system.VisitByInput(searchUserInput_)
+                            if system.VisitByInput(searchUserInput_) then
+                                SocialView.Close()
+                            end
                         end,
                     },
                     UI.Button {
@@ -998,8 +1000,9 @@ local function BuildMessagesSection()
             tostring(visitor.nickname or visitor.userId or "玩家") .. "拜访了你的花园",
             {
                 BuildMessageActionButton("回访", COLORS.primary, function()
-                    SocialView.Close()
-                    system.VisitPlayer(visitor.userId)
+                    if system.VisitPlayer(visitor.userId) then
+                        SocialView.Close()
+                    end
                 end),
             }
         )

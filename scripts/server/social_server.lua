@@ -835,6 +835,37 @@ function SocialServer.LikeGarden(uid, targetUid, connection, requestId, requestR
     })
 end
 
+local function PendingRequestMatches(value, fromUid, targetUid)
+    if type(value) ~= "table" or not (value.status == nil or value.status == "pending") then return false end
+    return SameUserId(value.fromUserId, fromUid) and SameUserId(value.targetUserId, targetUid)
+end
+
+local function HasPendingRequest(rows, fromUid, targetUid)
+    for _, row in ipairs(rows or {}) do
+        local value = row.value or row
+        if PendingRequestMatches(value, fromUid, targetUid) then return true end
+    end
+    return false
+end
+
+local function CollectPendingRequestDeletes(rows, leftUid, rightUid)
+    local deletes = {}
+    for _, row in ipairs(rows or {}) do
+        local value = row.value or row
+        if PendingRequestMatches(value, leftUid, rightUid) or PendingRequestMatches(value, rightUid, leftUid) then
+            deletes[#deletes + 1] = row
+        end
+    end
+    return deletes
+end
+
+local function AddDeleteRowsToCommit(commit, rows)
+    for _, row in ipairs(rows or {}) do
+        local listId = row.list_id or row.listId
+        if listId ~= nil then commit:ListDelete(listId) end
+    end
+end
+
 local function IsFriend(uid, targetUid, done)
     serverCloud.list:Get(uid, Shared().KEYS.FRIENDS, {
         ok = function(rows)
@@ -874,38 +905,56 @@ function SocialServer.SendFriendRequest(uid, targetUid, connection, requestId, r
             return
         end
         serverCloud.list:Get(toCloudUid, shared.KEYS.FRIEND_REQUESTS, {
-            ok = function(rows)
-                for _, row in ipairs(rows or {}) do
-                    local value = row.value or row
-                    if type(value) == "table" and SameUserId(value.fromUserId, fromUid) and (value.status == nil or value.status == "pending") then
-                        Send(connection, shared.EVENTS.SEND_FRIEND_REQUEST_RESPONSE, { success = false, message = "好友申请已发送，等待对方处理", requestId = requestId })
-                        return
-                    end
+            ok = function(targetRequestRows)
+                if HasPendingRequest(targetRequestRows, fromUid, toUid) then
+                    Send(connection, shared.EVENTS.SEND_FRIEND_REQUEST_RESPONSE, { success = false, message = "好友申请已发送，等待对方处理", requestId = requestId })
+                    return
                 end
-                local request = {
-                    fromUserId = fromUid,
-                    fromNickname = profile.nickname,
-                    avatar = NormalizeAvatar(profile.avatar),
-                    targetUserId = toUid,
-                    status = "pending",
-                    sentAt = Now(),
-                    time = Now(),
-                }
-                local response = { success = true, message = "好友申请已发送", requestId = requestId, targetUserId = toUid }
-                local c = serverCloud:BatchCommit("发送好友申请")
-                c:ListAdd(toCloudUid, shared.KEYS.FRIEND_REQUESTS, request)
-                c:ListAdd(fromCloudUid, shared.KEYS.SOCIAL_NOTICES, {
-                    type = "friend_request_sent",
-                    fromUserId = toUid,
-                    time = Now(),
-                })
-                if requestRecordKey ~= nil then deps_.RequestGuard.AddToCommit(c, uid, requestRecordKey, response) end
-                c:Commit({
-                    ok = function()
-                        Send(connection, shared.EVENTS.SEND_FRIEND_REQUEST_RESPONSE, response)
+                if HasPendingRequest(targetRequestRows, toUid, fromUid) then
+                    Send(connection, shared.EVENTS.SEND_FRIEND_REQUEST_RESPONSE, { success = false, message = "对方已向你发送好友申请，请先处理", requestId = requestId })
+                    return
+                end
+                serverCloud.list:Get(fromCloudUid, shared.KEYS.FRIEND_REQUESTS, {
+                    ok = function(selfRequestRows)
+                        if HasPendingRequest(selfRequestRows, toUid, fromUid) then
+                            Send(connection, shared.EVENTS.SEND_FRIEND_REQUEST_RESPONSE, { success = false, message = "对方已向你发送好友申请，请先处理", requestId = requestId })
+                            return
+                        end
+                        if HasPendingRequest(selfRequestRows, fromUid, toUid) then
+                            Send(connection, shared.EVENTS.SEND_FRIEND_REQUEST_RESPONSE, { success = false, message = "好友申请已发送，等待对方处理", requestId = requestId })
+                            return
+                        end
+                        local now = Now()
+                        local request = {
+                            fromUserId = fromUid,
+                            fromNickname = profile.nickname,
+                            avatar = NormalizeAvatar(profile.avatar),
+                            targetUserId = toUid,
+                            status = "pending",
+                            sentAt = now,
+                            time = now,
+                        }
+                        local response = { success = true, message = "好友申请已发送", requestId = requestId, targetUserId = toUid }
+                        local c = serverCloud:BatchCommit("发送好友申请")
+                        c:ListAdd(toCloudUid, shared.KEYS.FRIEND_REQUESTS, request)
+                        c:ListAdd(fromCloudUid, shared.KEYS.SOCIAL_NOTICES, {
+                            type = "friend_request_sent",
+                            targetUserId = toUid,
+                            fromUserId = toUid,
+                            time = now,
+                        })
+                        if requestRecordKey ~= nil then deps_.RequestGuard.AddToCommit(c, uid, requestRecordKey, response) end
+                        c:Commit({
+                            ok = function()
+                                Send(connection, shared.EVENTS.SEND_FRIEND_REQUEST_RESPONSE, response)
+                            end,
+                            error = function(_, reason)
+                                Send(connection, shared.EVENTS.SEND_FRIEND_REQUEST_RESPONSE, { success = false, message = "好友申请发送失败: " .. tostring(reason), requestId = requestId })
+                            end,
+                        })
                     end,
                     error = function(_, reason)
-                        Send(connection, shared.EVENTS.SEND_FRIEND_REQUEST_RESPONSE, { success = false, message = "好友申请发送失败: " .. tostring(reason), requestId = requestId })
+                        Send(connection, shared.EVENTS.SEND_FRIEND_REQUEST_RESPONSE, { success = false, message = "好友申请读取失败: " .. tostring(reason), requestId = requestId })
                     end,
                 })
             end,
@@ -947,53 +996,76 @@ function SocialServer.RespondFriendRequest(uid, friendRequestId, fromUserId, acc
             end
             local now = Now()
             local response = { success = true, requestId = requestId, accepted = accepted == true }
-            local function CommitResponse(targetProfile, requesterProfile)
-                targetProfile = targetProfile or {}
-                requesterProfile = requesterProfile or {}
-                requesterProfile.nickname = requesterProfile.nickname or requestRow.fromNickname
-                requesterProfile.avatar = NormalizeAvatar(requesterProfile.avatar or requestRow.avatar)
-                local c = serverCloud:BatchCommit(accepted and "同意好友申请" or "拒绝好友申请")
-                c:ListDelete(listId)
-                if accepted == true then
-                    c:ListAdd(targetCloudUid, shared.KEYS.FRIENDS, {
-                        userId = requesterUid,
-                        nickname = requesterProfile.nickname,
-                        avatar = NormalizeAvatar(requesterProfile.avatar),
-                        score = requesterProfile.score or 0,
-                        addedAt = now,
-                        time = now,
+            local targetRequestDeletes = CollectPendingRequestDeletes(rows, requesterUid, targetUid)
+            local function ContinueWithRequesterRequests(requesterRequestRows)
+                local requesterRequestDeletes = CollectPendingRequestDeletes(requesterRequestRows, requesterUid, targetUid)
+                local function CommitResponse(targetProfile, requesterProfile, alreadyFriend)
+                    targetProfile = targetProfile or {}
+                    requesterProfile = requesterProfile or {}
+                    requesterProfile.nickname = requesterProfile.nickname or requestRow.fromNickname
+                    requesterProfile.avatar = NormalizeAvatar(requesterProfile.avatar or requestRow.avatar)
+                    local c = serverCloud:BatchCommit(accepted and "同意好友申请" or "拒绝好友申请")
+                    AddDeleteRowsToCommit(c, targetRequestDeletes)
+                    AddDeleteRowsToCommit(c, requesterRequestDeletes)
+                    if accepted == true then
+                        if alreadyFriend == true then
+                            response.message = "已是好友，申请已清理"
+                        else
+                            c:ListAdd(targetCloudUid, shared.KEYS.FRIENDS, {
+                                userId = requesterUid,
+                                nickname = requesterProfile.nickname,
+                                avatar = NormalizeAvatar(requesterProfile.avatar),
+                                score = requesterProfile.score or 0,
+                                addedAt = now,
+                                time = now,
+                            })
+                            c:ListAdd(requesterCloudUid, shared.KEYS.FRIENDS, {
+                                userId = targetUid,
+                                nickname = targetProfile.nickname,
+                                avatar = NormalizeAvatar(targetProfile.avatar),
+                                score = targetProfile.score or 0,
+                                addedAt = now,
+                                time = now,
+                            })
+                            c:ListAdd(requesterCloudUid, shared.KEYS.SOCIAL_NOTICES, { type = "friend_request_accepted", fromUserId = targetUid, time = now })
+                            response.message = "已添加好友"
+                        end
+                    else
+                        c:ListAdd(requesterCloudUid, shared.KEYS.SOCIAL_NOTICES, { type = "friend_request_rejected", fromUserId = targetUid, time = now })
+                        response.message = "已拒绝好友申请"
+                    end
+                    if requestRecordKey ~= nil then deps_.RequestGuard.AddToCommit(c, uid, requestRecordKey, response) end
+                    c:Commit({
+                        ok = function()
+                            Send(connection, shared.EVENTS.RESPOND_FRIEND_REQUEST_RESPONSE, response)
+                        end,
+                        error = function(_, reason)
+                            Send(connection, shared.EVENTS.RESPOND_FRIEND_REQUEST_RESPONSE, { success = false, message = "处理好友申请失败: " .. tostring(reason), requestId = requestId })
+                        end,
                     })
-                    c:ListAdd(requesterCloudUid, shared.KEYS.FRIENDS, {
-                        userId = targetUid,
-                        nickname = targetProfile.nickname,
-                        avatar = NormalizeAvatar(targetProfile.avatar),
-                        score = targetProfile.score or 0,
-                        addedAt = now,
-                        time = now,
-                    })
-                    c:ListAdd(requesterCloudUid, shared.KEYS.SOCIAL_NOTICES, { type = "friend_request_accepted", fromUserId = targetUid, time = now })
-                    response.message = "已添加好友"
-                else
-                    c:ListAdd(requesterCloudUid, shared.KEYS.SOCIAL_NOTICES, { type = "friend_request_rejected", fromUserId = targetUid, time = now })
-                    response.message = "已拒绝好友申请"
                 end
-                if requestRecordKey ~= nil then deps_.RequestGuard.AddToCommit(c, uid, requestRecordKey, response) end
-                c:Commit({
-                    ok = function()
-                        Send(connection, shared.EVENTS.RESPOND_FRIEND_REQUEST_RESPONSE, response)
-                    end,
-                    error = function(_, reason)
-                        Send(connection, shared.EVENTS.RESPOND_FRIEND_REQUEST_RESPONSE, { success = false, message = "处理好友申请失败: " .. tostring(reason), requestId = requestId })
-                    end,
-                })
+                if accepted == true then
+                    IsFriend(targetCloudUid, requesterUid, function(alreadyFriend)
+                        if alreadyFriend == true then
+                            CommitResponse(nil, nil, true)
+                            return
+                        end
+                        FetchGardenProfiles({ targetUid, requesterUid }, function(profileMap)
+                            CommitResponse(profileMap[targetUid], profileMap[requesterUid], false)
+                        end)
+                    end)
+                else
+                    CommitResponse(nil, nil, false)
+                end
             end
-            if accepted == true then
-                FetchGardenProfiles({ targetUid, requesterUid }, function(profileMap)
-                    CommitResponse(profileMap[targetUid], profileMap[requesterUid])
-                end)
-            else
-                CommitResponse(nil, nil)
-            end
+            serverCloud.list:Get(requesterCloudUid, shared.KEYS.FRIEND_REQUESTS, {
+                ok = function(requesterRequestRows)
+                    ContinueWithRequesterRequests(requesterRequestRows)
+                end,
+                error = function()
+                    ContinueWithRequesterRequests({})
+                end,
+            })
         end,
         error = function(_, reason)
             Send(connection, shared.EVENTS.RESPOND_FRIEND_REQUEST_RESPONSE, { success = false, message = "好友申请读取失败: " .. tostring(reason), requestId = requestId })

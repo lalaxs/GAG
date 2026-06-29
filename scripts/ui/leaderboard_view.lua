@@ -249,15 +249,14 @@ end
 
 local function VisitPlayer(userId)
     if userId == nil then return false end
+    local ok = false
     if deps_.visitPlayer ~= nil then
-        LeaderboardView.Close()
-        return deps_.visitPlayer(userId)
+        ok = deps_.visitPlayer(userId) == true
+    elseif deps_.SocialGardenSystem ~= nil and deps_.SocialGardenSystem.VisitPlayer ~= nil then
+        ok = deps_.SocialGardenSystem.VisitPlayer(userId) == true
     end
-    if deps_.SocialGardenSystem ~= nil and deps_.SocialGardenSystem.VisitPlayer ~= nil then
-        LeaderboardView.Close()
-        return deps_.SocialGardenSystem.VisitPlayer(userId)
-    end
-    return false
+    if ok then LeaderboardView.Close() end
+    return ok
 end
 
 local function BuildVisitButton(entry)

@@ -107,6 +107,34 @@ local function BuildGiftClaimRecordKey(giftId)
     return "claimed_gift_" .. tostring(giftId or "unknown")
 end
 
+local function BuildGiftTargetRecordKey(targetUid, day)
+    return "gift_sent_target_" .. tostring(day or "unknown") .. "_" .. tostring(targetUid or "unknown")
+end
+
+local function SameUserId(left, right)
+    local leftId = NormalizeUserId(left)
+    local rightId = NormalizeUserId(right)
+    return leftId ~= nil and rightId ~= nil and leftId == rightId
+end
+
+local function CheckFriendship(uid, targetUid, done)
+    serverCloud.list:Get(uid, deps_.Shared.KEYS.FRIENDS, {
+        ok = function(rows)
+            for _, row in ipairs(rows or {}) do
+                local value = row.value or row
+                if type(value) == "table" and SameUserId(value.userId or value.friendUserId, targetUid) then
+                    done(true)
+                    return
+                end
+            end
+            done(false)
+        end,
+        error = function()
+            done(false)
+        end,
+    })
+end
+
 local function PickRandomGiftSeedId()
     if deps_.pickGiftSeedId ~= nil then
         return deps_.pickGiftSeedId()
@@ -167,58 +195,78 @@ function GiftServer.SendSeedGift(uid, targetUid, _seedId, count, connection, req
 
     local now = Now()
     local today = DayKey(now)
-    serverCloud.list:Get(uid, Shared.KEYS.GIFT_SENT_TARGETS, {
-        ok = function(rows)
-            for _, row in ipairs(rows or {}) do
-                local value = row.value or row
-                if type(value) == "table" and tostring(value.targetUserId) == tostring(targetUid) and tostring(value.day or today) == today then
+    local giftTargetRecordKey = BuildGiftTargetRecordKey(targetUid, today)
+    CheckFriendship(uid, targetUid, function(isFriend)
+        if isFriend ~= true then
+            SendError(connection, Shared.EVENTS.SEND_SEED_GIFT_RESPONSE, "NOT_FRIEND", "只能给好友赠送种子", { requestId = requestId, targetUserId = targetUid })
+            return
+        end
+        serverCloud.list:Get(uid, giftTargetRecordKey, {
+            ok = function(targetRows)
+                if targetRows ~= nil and #targetRows > 0 then
                     SendError(connection, Shared.EVENTS.SEND_SEED_GIFT_RESPONSE, "GIFT_ALREADY_SENT", "今天已经给这位好友送过礼了", { requestId = requestId, targetUserId = targetUid })
                     return
                 end
-            end
-            local gift = {
-                fromUserId = uid,
-                fromNickname = profile.nickname,
-                seedId = seedId,
-                count = count,
-                reward = BuildReward(seedId, count),
-                sentAt = now,
-                time = now,
-            }
-            local response = {
-                success = true,
-                message = "种子已送给好友",
-                requestId = requestId,
-                targetUserId = targetUid,
-                daily = { giftSentDelta = 1, limit = deps_.dailyGiftLimit },
-            }
-            local c = serverCloud:BatchCommit("发送种子礼物")
-            c:ListAdd(targetUid, Shared.KEYS.SEED_REWARDS, gift)
-            c:ListAdd(uid, Shared.KEYS.GIFT_SENT_TARGETS, { targetUserId = targetUid, seedId = seedId, time = now, day = today })
-            c:QuotaAdd(uid, "daily_seed_gift", 1, deps_.dailyGiftLimit, "day", 1)
-            deps_.RequestGuard.AddToCommit(c, uid, requestRecordKey, response)
-            c:Commit({
-                ok = function()
-                    serverCloud.quota:Get(uid, "daily_seed_gift", {
-                        ok = function(quotaRows)
-                            local row = quotaRows and quotaRows[1]
-                            response.daily.giftSentCount = math.max(0, math.floor(tonumber(row and row.value or 0) or 0))
-                            Send(connection, Shared.EVENTS.SEND_SEED_GIFT_RESPONSE, response)
-                        end,
-                        error = function()
-                            Send(connection, Shared.EVENTS.SEND_SEED_GIFT_RESPONSE, response)
-                        end,
-                    })
-                end,
-                error = function(_, reason)
-                    Send(connection, Shared.EVENTS.SEND_SEED_GIFT_RESPONSE, { success = false, message = "赠送失败: " .. tostring(reason), requestId = requestId, targetUserId = targetUid })
-                end,
-            })
-        end,
-        error = function(_, reason)
-            Send(connection, Shared.EVENTS.SEND_SEED_GIFT_RESPONSE, { success = false, message = "赠送记录读取失败: " .. tostring(reason), requestId = requestId, targetUserId = targetUid })
-        end,
-    })
+                serverCloud.list:Get(uid, Shared.KEYS.GIFT_SENT_TARGETS, {
+                    ok = function(rows)
+                        for _, row in ipairs(rows or {}) do
+                            local value = row.value or row
+                            if type(value) == "table" and tostring(value.targetUserId) == tostring(targetUid) and tostring(value.day or today) == today then
+                                SendError(connection, Shared.EVENTS.SEND_SEED_GIFT_RESPONSE, "GIFT_ALREADY_SENT", "今天已经给这位好友送过礼了", { requestId = requestId, targetUserId = targetUid })
+                                return
+                            end
+                        end
+                        local gift = {
+                            fromUserId = uid,
+                            fromNickname = profile.nickname,
+                            seedId = seedId,
+                            count = count,
+                            reward = BuildReward(seedId, count),
+                            sentAt = now,
+                            time = now,
+                        }
+                        local response = {
+                            success = true,
+                            message = "种子已送给好友",
+                            requestId = requestId,
+                            targetUserId = targetUid,
+                            daily = { giftSentDelta = 1, limit = deps_.dailyGiftLimit },
+                        }
+                        local sentRecord = { targetUserId = targetUid, seedId = seedId, time = now, day = today }
+                        local c = serverCloud:BatchCommit("发送种子礼物")
+                        c:ListAdd(targetUid, Shared.KEYS.SEED_REWARDS, gift)
+                        c:ListAdd(uid, giftTargetRecordKey, sentRecord)
+                        c:ListAdd(uid, Shared.KEYS.GIFT_SENT_TARGETS, sentRecord)
+                        c:QuotaAdd(uid, "daily_seed_gift", 1, deps_.dailyGiftLimit, "day", 1)
+                        deps_.RequestGuard.AddToCommit(c, uid, requestRecordKey, response)
+                        c:Commit({
+                            ok = function()
+                                serverCloud.quota:Get(uid, "daily_seed_gift", {
+                                    ok = function(quotaRows)
+                                        local row = quotaRows and quotaRows[1]
+                                        response.daily.giftSentCount = math.max(0, math.floor(tonumber(row and row.value or 0) or 0))
+                                        Send(connection, Shared.EVENTS.SEND_SEED_GIFT_RESPONSE, response)
+                                    end,
+                                    error = function()
+                                        Send(connection, Shared.EVENTS.SEND_SEED_GIFT_RESPONSE, response)
+                                    end,
+                                })
+                            end,
+                            error = function(_, reason)
+                                Send(connection, Shared.EVENTS.SEND_SEED_GIFT_RESPONSE, { success = false, message = "赠送失败: " .. tostring(reason), requestId = requestId, targetUserId = targetUid })
+                            end,
+                        })
+                    end,
+                    error = function(_, reason)
+                        Send(connection, Shared.EVENTS.SEND_SEED_GIFT_RESPONSE, { success = false, message = "赠送记录读取失败: " .. tostring(reason), requestId = requestId, targetUserId = targetUid })
+                    end,
+                })
+            end,
+            error = function(_, reason)
+                Send(connection, Shared.EVENTS.SEND_SEED_GIFT_RESPONSE, { success = false, message = "赠送记录读取失败: " .. tostring(reason), requestId = requestId, targetUserId = targetUid })
+            end,
+        })
+    end)
 end
 
 function GiftServer.RequestGifts(uid, connection)
@@ -280,17 +328,7 @@ function GiftServer.ClaimGift(uid, giftId, fallbackSeedId, fallbackCount, connec
                         end
                     end
                     if found == nil or listId == nil then
-                        local reward = BuildReward(fallbackSeedId, fallbackCount or 1)
-                        local response = {
-                            success = true,
-                            alreadyClaimed = true,
-                            message = reward ~= nil and ("礼物已处理：" .. reward.description) or "礼物已处理",
-                            requestId = requestId,
-                            giftId = giftId,
-                            gift = reward,
-                        }
-                        deps_.RequestGuard.Record(uid, requestRecordKey, response)
-                        Send(connection, Shared.EVENTS.CLAIM_GIFT_RESPONSE, response)
+                        SendError(connection, Shared.EVENTS.CLAIM_GIFT_RESPONSE, "GIFT_NOT_FOUND", "礼物不存在或已领取", { requestId = requestId, giftId = giftId })
                         return
                     end
                     local seedId = deps_.normalizePlantIndex(found.seedId)
@@ -309,6 +347,7 @@ function GiftServer.ClaimGift(uid, giftId, fallbackSeedId, fallbackCount, connec
                             local reward = BuildReward(seedId, count)
                             local response = { success = true, message = "已领取" .. reward.description, requestId = requestId, giftId = giftId, gift = reward, state = state }
                             local c = serverCloud:BatchCommit("领取种子礼物")
+                            c:QuotaAdd(uid, claimRecordKey, 1, 1)
                             c:ScoreSet(uid, Shared.KEYS.ECONOMY_STATE, state)
                             c:ListAdd(uid, claimRecordKey, { giftId = giftId, reward = reward, claimedAt = Now() })
                             c:ListDelete(listId)

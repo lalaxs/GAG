@@ -1783,8 +1783,9 @@ function Start()
         getMyNickname = function() return PlayerSystem.GetDisplayName() end,
         getMyAvatar = function() return PlayerSystem.GetSelectedAvatarProfile() end,
         visitPlayer = function(userId)
-            ActivityView.Close()
-            return SocialGardenSystem.VisitPlayer(userId)
+            local ok = SocialGardenSystem.VisitPlayer(userId)
+            if ok then ActivityView.Close() end
+            return ok
         end,
         suppressWorldTap = RequestSuppressWorldTap,
     })
