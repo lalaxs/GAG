@@ -301,7 +301,7 @@ local function FetchGardenProfiles(userIds, done)
                     profiles[userId] = {
                         nickname = garden.nickname,
                         avatar = NormalizeAvatar(garden.avatar),
-                        score = garden.bestTourValue or garden.tourValue or 0,
+                        score = garden.tourValue or 0,
                     }
                 end
                 nextOne()
@@ -324,7 +324,7 @@ local function SaveCanonicalGardenSnapshot(uid, snapshot, farmState, connection,
     canonical.nickname = snapshot.nickname or canonical.nickname
     canonical.avatar = NormalizeAvatar(snapshot.avatar or canonical.avatar)
     canonical.unlockedPlotCount = math.max(1, tonumber(snapshot.unlockedPlotCount or canonical.unlockedPlotCount or 1) or 1)
-    local score = math.max(0, math.floor(tonumber(canonical.bestTourValue or canonical.tourValue or 0) or 0))
+    local score = math.max(0, math.floor(tonumber(canonical.tourValue or 0) or 0))
     serverCloud:BatchSet(uid)
         :Set(shared.KEYS.GARDEN_SNAPSHOT, canonical)
         :SetInt(shared.KEYS.TOUR_RANK, score)
@@ -540,7 +540,7 @@ function SocialServer.RequestRank(count, connection, requesterUid)
 end
 
 local function FetchDailyQuota(uid, done)
-    local daily = { stealCount = 0, giftSentCount = 0, stealAdCount = 0, stealLimit = deps_.dailyStealLimit or 5, seedPackAdCount = 0, seedPackAdLimit = deps_.dailySeedPackAdLimit or 3 }
+    local daily = { stealCount = 0, giftSentCount = 0, stealAdCount = 0, stealLimit = deps_.dailyStealLimit or 5, seedPackAdCount = 0, seedPackAdLimit = deps_.dailySeedPackAdLimit or 5, matureAdCount = 0, matureAdLimit = deps_.dailyMatureAdLimit or 5 }
     serverCloud.quota:Get(uid, "daily_steal", {
         ok = function(stealRows)
             local row = stealRows and stealRows[1]
@@ -558,11 +558,20 @@ local function FetchDailyQuota(uid, done)
                                 ok = function(packRows)
                                     local packRow = packRows and packRows[1]
                                     daily.seedPackAdCount = math.max(0, math.floor(tonumber(packRow and packRow.value or 0) or 0))
-                                    serverCloud.quota:Get(uid, "daily_seed_gift", {
-                                        ok = function(giftRows)
-                                            local giftRow = giftRows and giftRows[1]
-                                            daily.giftSentCount = math.max(0, math.floor(tonumber(giftRow and giftRow.value or 0) or 0))
-                                            done(daily)
+                                    serverCloud.quota:Get(uid, "daily_mature_ad", {
+                                        ok = function(matureRows)
+                                            local matureRow = matureRows and matureRows[1]
+                                            daily.matureAdCount = math.max(0, math.floor(tonumber(matureRow and matureRow.value or 0) or 0))
+                                            serverCloud.quota:Get(uid, "daily_seed_gift", {
+                                                ok = function(giftRows)
+                                                    local giftRow = giftRows and giftRows[1]
+                                                    daily.giftSentCount = math.max(0, math.floor(tonumber(giftRow and giftRow.value or 0) or 0))
+                                                    done(daily)
+                                                end,
+                                                error = function()
+                                                    done(daily)
+                                                end,
+                                            })
                                         end,
                                         error = function()
                                             done(daily)
@@ -616,6 +625,10 @@ local function FetchGiftTargets(uid, done)
             done({})
         end,
     })
+end
+
+function SocialServer.FetchGardenProfiles(userIds, done)
+    return FetchGardenProfiles(userIds, done)
 end
 
 function SocialServer.RequestSocialState(uid, connection)

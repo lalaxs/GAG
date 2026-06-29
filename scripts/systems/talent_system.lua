@@ -231,6 +231,16 @@ function TalentSystem.CanUnlockTalent(talentId)
     return true
 end
 
+function TalentSystem.HasUnlockableTalent()
+    if state_.talentPoints <= 0 then return false end
+    for _, talent in ipairs(TalentSystem.TALENTS) do
+        if TalentSystem.CanUnlockTalent(talent.id) then
+            return true
+        end
+    end
+    return false
+end
+
 function TalentSystem.FindTalent(talentId)
     for _, t in ipairs(TalentSystem.TALENTS) do
         if t.id == talentId then return t end

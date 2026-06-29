@@ -12,6 +12,7 @@ local FloatingToast = require("ui.floating_toast")
 local ProfileView = require("ui.profile_view")
 local SocialView = require("ui.social_view")
 local ActivityView = require("ui.activity_view")
+local LeaderboardView = require("ui.leaderboard_view")
 local ModelPreviewView = require("ui.model_preview_view")
 local ModalAnim = require("ui.modal_anim")
 
@@ -361,6 +362,8 @@ end
 local function BuildVisitControls()
     local stealing = deps_.isStealingMode and deps_.isStealingMode()
     local liked = deps_.hasLikedVisitGarden and deps_.hasLikedVisitGarden()
+    local garden = deps_.getVisitGarden and deps_.getVisitGarden() or {}
+    local canAddFriend = garden.userId ~= nil and deps_.sendFriendRequestToVisitGarden ~= nil
     return UI.Panel {
         position = "absolute",
         left = 16, right = 16, bottom = 60,
@@ -388,6 +391,21 @@ local function BuildVisitControls()
                 gap = 10,
                 marginRight = 18,
                 children = {
+                    UI.Button {
+                        text = "加好友",
+                        width = 116,
+                        height = 64,
+                        fontSize = 20,
+                        fontWeight = "bold",
+                        disabled = not canAddFriend,
+                        backgroundColor = canAddFriend and {80, 135, 185, 255} or {190, 170, 150, 255},
+                        fontColor = {92, 62, 62, 255},
+                        borderRadius = 20,
+                        onClick = function()
+                            deps_.suppressWorldTap()
+                            if canAddFriend then deps_.sendFriendRequestToVisitGarden() end
+                        end,
+                    },
                     UI.Button {
                         text = stealing and "退出" or "偷取",
                         width = 116,
@@ -760,6 +778,7 @@ local function BuildTalentButton(labels)
         borderColor = {255, 255, 255, 255},
         justifyContent = "center",
         alignItems = "center",
+        visible = false,
         display = "none",
         children = {
             UI.Label { text = "!", fontSize = 10, fontWeight = "bold", fontColor = {255, 255, 255, 255} },
@@ -812,6 +831,7 @@ local function BuildTalentButton(labels)
                 end,
             } or nil,
             SocialView.BuildButton(),
+            LeaderboardView.BuildButton(),
             UI.Button {
                 text = "图鉴",
                 width = 69,
@@ -874,10 +894,11 @@ local function BuildGuideBubble(text, subText, style)
             UI.Panel {
                 width = style.width or 315,
                 maxWidth = style.maxWidth or 330,
-                paddingTop = 14,
-                paddingBottom = 14,
-                paddingLeft = 18,
-                paddingRight = 18,
+                minHeight = style.minHeight,
+                paddingTop = style.paddingTop or 14,
+                paddingBottom = style.paddingBottom or 14,
+                paddingLeft = style.paddingLeft or 18,
+                paddingRight = style.paddingRight or 18,
                 backgroundColor = {255, 252, 240, 248},
                 borderRadius = 18,
                 borderWidth = 3,
@@ -973,14 +994,14 @@ local function BuildPlantGuideOverlay()
         zIndex = 940,
         pointerEvents = "none",
         children = {
-            BuildGuideBubble("第二步：点击土地播种", "把种子点到土地空位上，播种后等待成熟即可收获。", { top = 215 }),
+            BuildGuideBubble("第二步：点击土地播种", "把种子点到土地空位上，播种后等待成熟即可收获。", { top = 205, width = 360, maxWidth = 370, minHeight = 104, paddingTop = 18, paddingBottom = 18, paddingLeft = 24, paddingRight = 24 }),
             UI.Panel {
                 position = "absolute",
-                left = 42,
-                right = 42,
-                top = 300,
-                height = 210,
-                borderRadius = 28,
+                left = 24,
+                right = 24,
+                top = 275,
+                height = 245,
+                borderRadius = 30,
                 borderWidth = 4,
                 borderColor = {255, 215, 86, 210},
                 backgroundColor = {255, 215, 86, 22},

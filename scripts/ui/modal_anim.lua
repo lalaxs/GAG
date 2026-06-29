@@ -107,7 +107,7 @@ function ModalAnim.Apply(modal, opts)
         end
 
         local modalX = (screenWidth - modalWidth) / 2
-        local modalY = (screenHeight - modalHeight) / 2
+        local modalY = (screenHeight - modalHeight) / 2 + (opts.offsetY or 0)
 
         nvgSave(nvg)
 

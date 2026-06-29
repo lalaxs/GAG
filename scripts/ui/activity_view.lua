@@ -292,6 +292,43 @@ local function BuildTabBar(selectedId, activeId)
     }
 end
 
+local function BuildActivityRankButton(activityId)
+    return LeaderboardView.BuildButton({
+        text = "活动排行",
+        width = 88,
+        height = 34,
+        fontSize = 12,
+        tab = "activity",
+        mode = "activity",
+        backgroundColor = GetTheme(activityId).accent,
+        fontColor = {255, 255, 255, 255},
+        borderRadius = 16,
+    })
+end
+
+local function BuildHeroTitleRow(title, activityId, theme)
+    return UI.Panel {
+        width = "100%",
+        height = 42,
+        flexDirection = "row",
+        alignItems = "center",
+        children = {
+            UI.Panel { width = 88, height = 34, flexShrink = 0 },
+            UI.Label {
+                text = title,
+                flexGrow = 1,
+                flexShrink = 1,
+                fontSize = 34,
+                fontWeight = "bold",
+                fontColor = theme.accentDark,
+                textAlign = "center",
+                maxLines = 1,
+            },
+            BuildActivityRankButton(activityId),
+        },
+    }
+end
+
 local function BuildSweetHero(activity, state, isActive)
     return UI.Panel {
         width = "100%",
@@ -299,13 +336,7 @@ local function BuildSweetHero(activity, state, isActive)
         gap = 9,
         paddingTop = 4,
         children = {
-            UI.Label {
-                text = "甜蜜蜜",
-                fontSize = 34,
-                fontWeight = "bold",
-                fontColor = COLORS.orangeDark,
-                textAlign = "center",
-            },
+            BuildHeroTitleRow("甜蜜蜜", "sweet", GetTheme("sweet")),
             UI.Label {
                 text = "收集糖果/蜂蜜变异作物，兑换限定甜蜜种子",
                 fontSize = 15,
@@ -346,7 +377,7 @@ local function BuildSweetHero(activity, state, isActive)
     }
 end
 
-local function BuildActivityHero(title, subtitle, statItems, theme, isActive)
+local function BuildActivityHero(title, subtitle, statItems, theme, isActive, activityId)
     local stats = {}
     for _, item in ipairs(statItems or {}) do
         table.insert(stats, UI.Label {
@@ -364,13 +395,7 @@ local function BuildActivityHero(title, subtitle, statItems, theme, isActive)
         gap = 9,
         paddingTop = 4,
         children = {
-            UI.Label {
-                text = title,
-                fontSize = 34,
-                fontWeight = "bold",
-                fontColor = theme.accentDark,
-                textAlign = "center",
-            },
+            BuildHeroTitleRow(title, activityId or "sweet", theme),
             UI.Label {
                 text = subtitle,
                 fontSize = 15,
@@ -991,7 +1016,7 @@ local function BuildAlienPrototype(activity, state, isActive)
                 "可用基因 " .. tostring(state.genes),
                 "累计基因 " .. tostring(state.totalGenes),
                 "抽取次数 " .. tostring(state.drawCount),
-            }, theme, isActive),
+            }, theme, isActive, "alien"),
             BuildDivider(),
             BuildInfoCards(infoItems, theme, 2),
             BuildDrawPoolRow(activity, theme),
@@ -1028,7 +1053,7 @@ local function BuildDarkPrototype(activity, state, isActive)
                 "吞噬收获 " .. tostring(state.devourHarvestCount),
                 "种子掉落 " .. tostring(state.darkSeedDrops),
                 "虚空加成 " .. FormatPercent(activity.extraVoidChance),
-            }, theme, isActive),
+            }, theme, isActive, "dark"),
             BuildDivider(),
             BuildInfoCards(infoItems, theme, 2),
             BuildLimitedSeedRow(activity, theme),
@@ -1057,23 +1082,6 @@ BuildMainContent = function(activityId, activity, state, isActive, activeId, con
         paddingBottom = 4,
         gap = 8,
         children = {
-            UI.Panel {
-                width = "100%",
-                flexDirection = "row",
-                justifyContent = "flex-end",
-                children = {
-                    LeaderboardView.BuildButton({
-                        text = "活动排行",
-                        width = 118,
-                        height = 42,
-                        fontSize = 14,
-                        tab = "activity",
-                        backgroundColor = GetTheme(activityId).accent,
-                        fontColor = {255, 255, 255, 255},
-                        borderRadius = 18,
-                    }),
-                },
-            },
             activityId == "sweet" and BuildSweetPrototype(activity, state, isActive)
                 or activityId == "alien" and BuildAlienPrototype(activity, state, isActive)
                 or BuildDarkPrototype(activity, state, isActive),
@@ -1204,6 +1212,21 @@ end
 
 function ActivityView.IsOpen()
     return modal_ ~= nil or submitModal_ ~= nil or alienResultModal_ ~= nil
+end
+
+function ActivityView.Close()
+    if modal_ ~= nil then
+        modal_:Close()
+        modal_ = nil
+    end
+    if submitModal_ ~= nil then
+        submitModal_:Close()
+        submitModal_ = nil
+    end
+    if alienResultModal_ ~= nil then
+        alienResultModal_:Close()
+        alienResultModal_ = nil
+    end
 end
 
 function ActivityView.RefreshContent()

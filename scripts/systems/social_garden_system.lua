@@ -40,6 +40,13 @@ local state_ = {
     daily = {
         stealCount = 0,
         giftSentCount = 0,
+        stealLimit = DAILY_STEAL_LIMIT,
+        stealAdCount = 0,
+        stealAdLimit = 5,
+        seedPackAdCount = 0,
+        seedPackAdLimit = 5,
+        matureAdCount = 0,
+        matureAdLimit = 5,
     },
     lastSyncText = "未同步",
     serverEnabled = false,
@@ -235,7 +242,7 @@ local function BuildDemoGarden(userId, nickname, score, seedOffset, isFallback)
             cropId = string.format("demo_%s_%d", tostring(userId), i),
             plantIndex = plantIndex,
             name = plant.name,
-            price = plant.fruitPrice or 10,
+            price = plant.seedPrice or plant.fruitPrice or 10,
             sightValue = plant.sightBase or 10,
             weight = plant.baseWeight or 1.0,
             baseWeight = plant.baseWeight or 1.0,
@@ -489,7 +496,7 @@ function SocialGardenSystem.UploadSnapshot()
     if clientCloud ~= nil then
         clientCloud:BatchSet()
             :Set(Shared.KEYS.GARDEN_SNAPSHOT, snapshot)
-            :SetInt(Shared.KEYS.TOUR_RANK, snapshot.bestTourValue or snapshot.tourValue or 0)
+            :SetInt(Shared.KEYS.TOUR_RANK, snapshot.tourValue or 0)
             :Save("同步花园", {
                 ok = function()
                     state_.lastSyncText = "已同步"
@@ -809,9 +816,18 @@ function SocialGardenSystem.SendSeedGift(targetUserId, seedId)
         if deps_.showToast then deps_.showToast("今日赠送次数已用完") end
         return false
     end
-    local payload = BeginRequest("gift", { targetUserId = targetUserId, seedId = seedId, count = 1 })
+    local payload = BeginRequest("gift", {
+        targetUserId = targetUserId,
+        seedId = 0,
+        count = 1,
+        profile = {
+            nickname = GetDisplayName(),
+            avatar = GetAvatarProfile(),
+        },
+    })
     if SendRequest(Shared.EVENTS.SEND_SEED_GIFT, payload) then
         MarkGiftTarget(targetUserId, true)
+        ShowToastMessage("正在赠送种子...", true)
         EmitSocialChanged("updated")
         return true
     end
@@ -838,9 +854,41 @@ function SocialGardenSystem.GetGifts()
     return state_.gifts
 end
 
+local function RemoveGiftById(giftId)
+    if giftId == nil then return false, nil end
+    state_.gifts = state_.gifts or {}
+    local removed = false
+    local removedGift = nil
+    for i = #state_.gifts, 1, -1 do
+        if tostring(state_.gifts[i].giftId or state_.gifts[i].listId) == tostring(giftId) then
+            removedGift = removedGift or state_.gifts[i]
+            table.remove(state_.gifts, i)
+            removed = true
+        end
+    end
+    return removed, removedGift
+end
+
+local function GetRewardDescription(reward)
+    if type(reward) ~= "table" then return nil end
+    if reward.description ~= nil and reward.description ~= "" then return tostring(reward.description) end
+    local count = math.max(1, math.floor(tonumber(reward.count or 1) or 1))
+    if reward.type == "seed" or reward.seedId ~= nil or reward.plantIndex ~= nil then
+        local seedId = tonumber(reward.seedId or reward.plantIndex or 1) or 1
+        local plants = deps_.getPlants and deps_.getPlants() or {}
+        local plant = plants[seedId]
+        local name = plant and plant.name or reward.name or "神秘"
+        return tostring(name) .. "种子 x" .. tostring(count)
+    end
+    if reward.type == "seed_pack" or reward.packId ~= nil then
+        return tostring(reward.name or "随机种子包") .. " x" .. tostring(count)
+    end
+    return tostring(reward.name or "礼物") .. " x" .. tostring(count)
+end
+
 function SocialGardenSystem.ClaimGift(gift)
     if gift == nil then return false end
-    local payload = BeginRequest("claimGift", { giftId = gift.giftId })
+    local payload = BeginRequest("claimGift", { giftId = gift.giftId, seedId = gift.seedId, count = gift.count })
     if SendRequest(Shared.EVENTS.CLAIM_GIFT, payload) then
         return true
     end
@@ -1088,6 +1136,19 @@ function SocialGardenSystem.HandleStealResponse(data)
     end
 end
 
+function SocialGardenSystem.ApplyAdRewardDaily(daily)
+    if type(daily) ~= "table" then return false end
+    if daily.stealAdCount ~= nil then state_.daily.stealAdCount = daily.stealAdCount end
+    if daily.stealAdLimit ~= nil then state_.daily.stealAdLimit = daily.stealAdLimit end
+    if daily.limit ~= nil then state_.daily.stealLimit = daily.limit end
+    if daily.seedPackAdCount ~= nil then state_.daily.seedPackAdCount = daily.seedPackAdCount end
+    if daily.seedPackAdLimit ~= nil then state_.daily.seedPackAdLimit = daily.seedPackAdLimit end
+    if daily.matureAdCount ~= nil then state_.daily.matureAdCount = daily.matureAdCount end
+    if daily.matureAdLimit ~= nil then state_.daily.matureAdLimit = daily.matureAdLimit end
+    EmitSocialChanged("updated")
+    return true
+end
+
 function SocialGardenSystem.HandleSocialStateResponse(data)
     FinishRequest(data.requestId, "socialState")
     if data.success then
@@ -1103,6 +1164,13 @@ function SocialGardenSystem.HandleSocialStateResponse(data)
             local nextGiftSentCount = tonumber(data.daily.giftSentCount or 0) or 0
             state_.daily.stealCount = math.max(tonumber(state_.daily.stealCount or 0) or 0, nextStealCount)
             state_.daily.giftSentCount = math.max(tonumber(state_.daily.giftSentCount or 0) or 0, nextGiftSentCount)
+            if data.daily.stealLimit ~= nil then state_.daily.stealLimit = data.daily.stealLimit end
+            if data.daily.stealAdCount ~= nil then state_.daily.stealAdCount = data.daily.stealAdCount end
+            if data.daily.stealAdLimit ~= nil then state_.daily.stealAdLimit = data.daily.stealAdLimit end
+            if data.daily.seedPackAdCount ~= nil then state_.daily.seedPackAdCount = data.daily.seedPackAdCount end
+            if data.daily.seedPackAdLimit ~= nil then state_.daily.seedPackAdLimit = data.daily.seedPackAdLimit end
+            if data.daily.matureAdCount ~= nil then state_.daily.matureAdCount = data.daily.matureAdCount end
+            if data.daily.matureAdLimit ~= nil then state_.daily.matureAdLimit = data.daily.matureAdLimit end
         end
         EmitSocialChanged("updated")
     elseif deps_.showToast then
@@ -1125,8 +1193,7 @@ function SocialGardenSystem.HandleSendSeedGiftResponse(data)
         end
         if data.targetUserId ~= nil then MarkGiftTarget(data.targetUserId, true) end
         local message = data.message or "种子已送出"
-        if deps_.showToast then deps_.showToast(message) end
-        if deps_.showFloatingToast then deps_.showFloatingToast(message) end
+        ShowToastMessage(message, true)
         SocialGardenSystem.RequestSocialState()
         if deps_.markDirty then deps_.markDirty() end
         EmitSocialChanged("updated")
@@ -1139,8 +1206,7 @@ function SocialGardenSystem.HandleSendSeedGiftResponse(data)
             EmitSocialChanged("updated")
         end
         local message = data.message or "赠送失败"
-        deps_.showToast(message)
-        if deps_.showFloatingToast then deps_.showFloatingToast(message) end
+        ShowToastMessage(message, true)
     end
 end
 
@@ -1223,6 +1289,7 @@ function SocialGardenSystem.HandleGiftsResponse(data)
     FinishRequest(data.requestId, "gifts")
     if data.success and type(data.gifts) == "table" then
         state_.gifts = data.gifts
+        EmitSocialChanged("updated")
     elseif deps_.showToast then
         deps_.showToast(data.message or "礼物读取失败")
     end
@@ -1231,14 +1298,25 @@ end
 function SocialGardenSystem.HandleClaimGiftResponse(data)
     FinishRequest(data.requestId, "claimGift")
     if data.success then
+        local removed, removedGift = RemoveGiftById(data.giftId)
+        local reward = data.gift or data.reward or (removedGift and (removedGift.reward or removedGift)) or nil
+        local rewardText = GetRewardDescription(reward)
         if data.state ~= nil and deps_.applyEconomyState ~= nil then
             deps_.applyEconomyState(data.state)
-        else
-            ApplyGiftReward(data.gift or data.reward)
+        elseif data.alreadyClaimed ~= true then
+            ApplyGiftReward(reward)
         end
         local message = data.message or "礼物已领取"
+        if rewardText ~= nil and string.find(message, rewardText, 1, true) == nil then
+            if data.alreadyClaimed == true then
+                message = "礼物已处理：" .. rewardText
+            else
+                message = "已领取" .. rewardText
+            end
+        end
         if deps_.showToast then deps_.showToast(message) end
         if deps_.showFloatingToast then deps_.showFloatingToast(message) end
+        if removed then EmitSocialChanged("updated") end
         SocialGardenSystem.RequestGifts()
         if deps_.markDirty then deps_.markDirty() end
     else
@@ -1246,14 +1324,7 @@ function SocialGardenSystem.HandleClaimGiftResponse(data)
         if deps_.showToast then deps_.showToast(message) end
         if deps_.showFloatingToast then deps_.showFloatingToast(message) end
         if data.code == "GIFT_ALREADY_CLAIMED" or data.code == "GIFT_NOT_FOUND" or data.code == "INVALID_GIFT_CONTENT" then
-            local giftId = data.giftId
-            if giftId ~= nil then
-                for i = #state_.gifts, 1, -1 do
-                    if tostring(state_.gifts[i].giftId or state_.gifts[i].listId) == tostring(giftId) then
-                        table.remove(state_.gifts, i)
-                    end
-                end
-            end
+            RemoveGiftById(data.giftId)
             SocialGardenSystem.RequestGifts()
             EmitSocialChanged("updated")
         end

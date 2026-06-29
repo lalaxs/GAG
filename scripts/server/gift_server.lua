@@ -12,6 +12,58 @@ local function Now()
     return os and os.time and os.time() or 0
 end
 
+local function NormalizeUserId(userId)
+    if userId == nil or userId == 0 or userId == "" then return nil end
+    local text = tostring(userId)
+    text = string.gsub(text, "^%s+", "")
+    text = string.gsub(text, "%s+$", "")
+    if text == "" or text == "0" then return nil end
+    local integerText = string.match(text, "^(%-?%d+)%.0+$")
+    if integerText ~= nil then return integerText end
+    local numericId = tonumber(text)
+    if numericId ~= nil and numericId == math.floor(numericId) and math.abs(numericId) < 9007199254740992 then
+        return string.format("%.0f", numericId)
+    end
+    return text
+end
+
+local function GetNicknameMap(userIds, done)
+    local map = {}
+    local clean = {}
+    local seen = {}
+    for _, uid in ipairs(userIds or {}) do
+        local normalized = NormalizeUserId(uid)
+        if normalized ~= nil and not seen[normalized] then
+            seen[normalized] = true
+            clean[#clean + 1] = normalized
+        end
+    end
+    if GetUserNickname == nil or #clean <= 0 then
+        done(map)
+        return
+    end
+    GetUserNickname({
+        userIds = clean,
+        onSuccess = function(response)
+            local rows = response
+            if type(response) == "table" and type(response.nicknames) == "table" then
+                rows = response.nicknames
+            end
+            for _, info in ipairs(rows or {}) do
+                local normalized = NormalizeUserId(info.userId)
+                local nickname = info.nickname or "Tap玩家"
+                if normalized ~= nil then map[normalized] = nickname end
+                map[info.userId] = nickname
+                map[tostring(info.userId)] = nickname
+            end
+            done(map)
+        end,
+        onError = function()
+            done(map)
+        end,
+    })
+end
+
 local function Send(connection, eventName, data)
     deps_.Shared.SendToClient(connection, eventName, data)
 end
@@ -31,8 +83,35 @@ local function NormalizePositiveCount(value, maxValue)
     return count
 end
 
+local function GetSeedName(seedId)
+    if deps_.getSeedName ~= nil then
+        return deps_.getSeedName(seedId)
+    end
+    return "种子"
+end
+
+local function BuildReward(seedId, count)
+    seedId = deps_.normalizePlantIndex(seedId)
+    count = NormalizePositiveCount(count or 1)
+    if seedId == nil then return nil end
+    return {
+        type = "seed",
+        seedId = seedId,
+        count = count,
+        name = GetSeedName(seedId),
+        description = GetSeedName(seedId) .. "种子 x" .. tostring(count),
+    }
+end
+
 local function BuildGiftClaimRecordKey(giftId)
     return "claimed_gift_" .. tostring(giftId or "unknown")
+end
+
+local function PickRandomGiftSeedId()
+    if deps_.pickGiftSeedId ~= nil then
+        return deps_.pickGiftSeedId()
+    end
+    return deps_.normalizePlantIndex(1)
 end
 
 local function DayKey(time)
@@ -48,8 +127,10 @@ local function NormalizeGiftRows(rows)
                 giftId = row.list_id or row.listId or value.giftId,
                 listId = row.list_id or row.listId or value.listId,
                 fromUserId = value.fromUserId,
+                fromNickname = value.fromNickname,
                 seedId = value.seedId,
                 count = value.count or 1,
+                reward = value.reward or BuildReward(value.seedId, value.count or 1),
                 sentAt = value.sentAt or value.time,
                 claimed = false,
             }
@@ -65,10 +146,11 @@ function GiftServer.Init(deps)
     deps_ = deps or {}
 end
 
-function GiftServer.SendSeedGift(uid, targetUid, seedId, count, connection, requestId, requestRecordKey)
+function GiftServer.SendSeedGift(uid, targetUid, _seedId, count, connection, requestId, requestRecordKey, profile)
     local Shared = deps_.Shared
+    profile = type(profile) == "table" and profile or {}
     targetUid = tonumber(targetUid or 0) or 0
-    seedId = deps_.normalizePlantIndex(seedId)
+    local seedId = PickRandomGiftSeedId()
     count = NormalizePositiveCount(count, deps_.maxGiftCount)
     if targetUid <= 0 then
         SendError(connection, Shared.EVENTS.SEND_SEED_GIFT_RESPONSE, "INVALID_TARGET", "好友玩家 ID 无效", { requestId = requestId })
@@ -96,8 +178,10 @@ function GiftServer.SendSeedGift(uid, targetUid, seedId, count, connection, requ
             end
             local gift = {
                 fromUserId = uid,
+                fromNickname = profile.nickname,
                 seedId = seedId,
                 count = count,
+                reward = BuildReward(seedId, count),
                 sentAt = now,
                 time = now,
             }
@@ -141,7 +225,18 @@ function GiftServer.RequestGifts(uid, connection)
     local Shared = deps_.Shared
     serverCloud.list:Get(uid, Shared.KEYS.SEED_REWARDS, {
         ok = function(rows)
-            Send(connection, Shared.EVENTS.GIFTS_RESPONSE, { success = true, gifts = NormalizeGiftRows(rows) })
+            local gifts = NormalizeGiftRows(rows)
+            local userIds = {}
+            for _, gift in ipairs(gifts) do
+                userIds[#userIds + 1] = gift.fromUserId
+            end
+            GetNicknameMap(userIds, function(nickMap)
+                for _, gift in ipairs(gifts) do
+                    local normalized = NormalizeUserId(gift.fromUserId)
+                    gift.fromNickname = gift.fromNickname or nickMap[normalized] or nickMap[gift.fromUserId] or nickMap[tostring(gift.fromUserId)] or "Tap玩家"
+                end
+                Send(connection, Shared.EVENTS.GIFTS_RESPONSE, { success = true, gifts = gifts })
+            end)
         end,
         error = function(_, reason)
             Send(connection, Shared.EVENTS.GIFTS_RESPONSE, { success = false, message = "礼物读取失败: " .. tostring(reason) })
@@ -149,7 +244,7 @@ function GiftServer.RequestGifts(uid, connection)
     })
 end
 
-function GiftServer.ClaimGift(uid, giftId, _seedId, _count, connection, requestId, requestRecordKey)
+function GiftServer.ClaimGift(uid, giftId, fallbackSeedId, fallbackCount, connection, requestId, requestRecordKey)
     local Shared = deps_.Shared
     if giftId == nil or giftId == "" then
         SendError(connection, Shared.EVENTS.CLAIM_GIFT_RESPONSE, "INVALID_GIFT", "礼物不存在", { requestId = requestId, giftId = giftId })
@@ -159,7 +254,17 @@ function GiftServer.ClaimGift(uid, giftId, _seedId, _count, connection, requestI
     serverCloud.list:Get(uid, claimRecordKey, {
         ok = function(claimRows)
             if claimRows ~= nil and #claimRows > 0 then
-                SendError(connection, Shared.EVENTS.CLAIM_GIFT_RESPONSE, "GIFT_ALREADY_CLAIMED", "礼物已领取", { requestId = requestId, giftId = giftId })
+                local record = claimRows[1].value or claimRows[1]
+                local response = {
+                    success = true,
+                    alreadyClaimed = true,
+                    message = "礼物已领取",
+                    requestId = requestId,
+                    giftId = giftId,
+                    gift = record and record.reward or nil,
+                }
+                deps_.RequestGuard.Record(uid, requestRecordKey, response)
+                Send(connection, Shared.EVENTS.CLAIM_GIFT_RESPONSE, response)
                 return
             end
             serverCloud.list:Get(uid, Shared.KEYS.SEED_REWARDS, {
@@ -175,7 +280,17 @@ function GiftServer.ClaimGift(uid, giftId, _seedId, _count, connection, requestI
                         end
                     end
                     if found == nil or listId == nil then
-                        SendError(connection, Shared.EVENTS.CLAIM_GIFT_RESPONSE, "GIFT_NOT_FOUND", "礼物不存在或已领取", { requestId = requestId, giftId = giftId })
+                        local reward = BuildReward(fallbackSeedId, fallbackCount or 1)
+                        local response = {
+                            success = true,
+                            alreadyClaimed = true,
+                            message = reward ~= nil and ("礼物已处理：" .. reward.description) or "礼物已处理",
+                            requestId = requestId,
+                            giftId = giftId,
+                            gift = reward,
+                        }
+                        deps_.RequestGuard.Record(uid, requestRecordKey, response)
+                        Send(connection, Shared.EVENTS.CLAIM_GIFT_RESPONSE, response)
                         return
                     end
                     local seedId = deps_.normalizePlantIndex(found.seedId)
@@ -191,8 +306,8 @@ function GiftServer.ClaimGift(uid, giftId, _seedId, _count, connection, requestI
                             state.seedBag[seedId] = owned + count
                             state.updatedAt = Now()
                             deps_.nextRevision(state)
-                            local reward = { type = "seed", seedId = seedId, count = count }
-                            local response = { success = true, message = "好友种子已领取", requestId = requestId, gift = reward, state = state }
+                            local reward = BuildReward(seedId, count)
+                            local response = { success = true, message = "已领取" .. reward.description, requestId = requestId, giftId = giftId, gift = reward, state = state }
                             local c = serverCloud:BatchCommit("领取种子礼物")
                             c:ScoreSet(uid, Shared.KEYS.ECONOMY_STATE, state)
                             c:ListAdd(uid, claimRecordKey, { giftId = giftId, reward = reward, claimedAt = Now() })

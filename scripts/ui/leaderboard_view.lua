@@ -1,7 +1,9 @@
 -- ============================================================================
 -- 排行榜 UI
 -- ============================================================================
--- 延续现有动物森友会风格：柔和纸张底色、圆角卡片、粗边框与轻阴影。
+-- 主页入口：收入 / 观光 / 点赞。
+-- 活动入口：只显示当前活动榜，不能切换到其他排行榜。
+-- 风格保持主 UI 的动森纸张、圆角、柔和边框和简洁按钮。
 -- ============================================================================
 
 local UI = require("urhox-libs/UI")
@@ -15,27 +17,37 @@ local deps_ = {}
 local modal_ = nil
 local unsubscribeLeaderboardChanged_ = nil
 local activeTab_ = "income"
+local sourceMode_ = "home"
 
 local COLORS = {
-    paper = {255, 250, 240, 250},
+    cream = {255, 250, 240, 250},
     raised = {255, 252, 242, 255},
-    soft = {232, 245, 233, 245},
+    empty = {248, 243, 232, 235},
     text = {74, 55, 38, 255},
     muted = {120, 96, 68, 225},
-    border = {212, 169, 106, 160},
-    borderStrong = {180, 140, 80, 220},
+    border = {224, 196, 150, 170},
+    borderStrong = {204, 156, 88, 225},
     green = {78, 172, 110, 255},
     greenDeep = {50, 130, 82, 255},
-    blue = {80, 135, 185, 255},
-    orange = {224, 154, 70, 255},
-    purple = {126, 98, 164, 255},
+    greenSoft = {226, 245, 226, 255},
+    orange = {224, 126, 72, 255},
+    orangeDark = {150, 80, 48, 255},
+    orangeSoft = {255, 229, 204, 255},
+    pink = {224, 105, 105, 255},
+    pinkSoft = {255, 226, 226, 255},
     disabled = {178, 166, 148, 200},
 }
 
 local ACTIVITY_COLORS = {
-    sweet = { accent = COLORS.orange, soft = {255, 229, 204, 255}, title = "甜蜜蜜" },
-    alien = { accent = COLORS.green, soft = {220, 247, 230, 255}, title = "外星基因" },
-    dark = { accent = COLORS.purple, soft = {236, 226, 246, 255}, title = "黑暗来临" },
+    sweet = { accent = COLORS.orange, soft = COLORS.orangeSoft, title = "甜蜜蜜" },
+    alien = { accent = COLORS.green, soft = COLORS.greenSoft, title = "外星基因" },
+    dark = { accent = {126, 98, 164, 255}, soft = {236, 226, 246, 255}, title = "黑暗来临" },
+}
+
+local HOME_TABS = {
+    { id = "income", text = "收入" },
+    { id = "tour", text = "观光" },
+    { id = "like", text = "点赞" },
 }
 
 local function Suppress()
@@ -46,31 +58,36 @@ local function GetSystem()
     return deps_.LeaderboardSystem
 end
 
-local function CardShadow()
-    return {
-        { x = 0, y = 5, blur = 0, spread = 0, color = {106, 72, 32, 38} },
-    }
-end
-
-local function FormatScore(value)
-    value = math.max(0, math.floor(tonumber(value or 0) or 0))
-    if value >= 100000000 then return string.format("%.1f亿", value / 100000000) end
-    if value >= 10000 then return string.format("%.1f万", value / 10000) end
-    return tostring(value)
-end
-
 local function GetActiveActivityId()
     if deps_.getActiveActivityId then return deps_.getActiveActivityId() end
     return "sweet"
 end
 
-local function GetActivityTitle(activityId)
-    local theme = ACTIVITY_COLORS[activityId or "sweet"] or ACTIVITY_COLORS.sweet
-    return theme.title
-end
-
 local function GetActivityTheme(activityId)
     return ACTIVITY_COLORS[activityId or "sweet"] or ACTIVITY_COLORS.sweet
+end
+
+local function GetAllowedTabs()
+    if sourceMode_ == "activity" then
+        local theme = GetActivityTheme(GetActiveActivityId())
+        return {
+            { id = "activity", text = theme.title },
+        }
+    end
+    return HOME_TABS
+end
+
+local function IsTabAllowed(tab)
+    for _, item in ipairs(GetAllowedTabs()) do
+        if item.id == tab then return true end
+    end
+    return false
+end
+
+local function NormalizeActiveTab(tab)
+    if sourceMode_ == "activity" then return "activity" end
+    if tab == "activity" or not IsTabAllowed(tab) then return "income" end
+    return tab or "income"
 end
 
 local function GetCurrentList()
@@ -100,296 +117,440 @@ local function RefreshCurrent()
     return system.Request(activeTab_)
 end
 
+local function FormatScore(value)
+    value = math.max(0, math.floor(tonumber(value or 0) or 0))
+    if value >= 100000000 then return string.format("%.1f亿", value / 100000000) end
+    if value >= 10000 then return string.format("%.1f万", value / 10000) end
+    return tostring(value)
+end
+
+local function GetScoreLabel()
+    if activeTab_ == "income" then return "收入" end
+    if activeTab_ == "tour" then return "观光值" end
+    if activeTab_ == "like" then return "点赞" end
+    return "活动分"
+end
+
+local function GetHintText()
+    if activeTab_ == "income" then return "每 7 天重置该榜" end
+    if activeTab_ == "tour" then return "永久榜，统计当前观光值" end
+    if activeTab_ == "like" then return "永久榜，统计花园累计点赞" end
+    return "本期活动榜，底部可领取上期排行奖励"
+end
+
+local function GetAccentColor()
+    if activeTab_ == "income" then return COLORS.orange end
+    if activeTab_ == "tour" then return COLORS.green end
+    if activeTab_ == "like" then return COLORS.pink end
+    return GetActivityTheme(GetActiveActivityId()).accent
+end
+
+local function GetAccentSoftColor()
+    if activeTab_ == "income" then return COLORS.orangeSoft end
+    if activeTab_ == "tour" then return COLORS.greenSoft end
+    if activeTab_ == "like" then return COLORS.pinkSoft end
+    return GetActivityTheme(GetActiveActivityId()).soft
+end
+
 local RebuildContent
 
-local function BuildTabButton(tab, text, color)
-    local selected = activeTab_ == tab
-    return UI.Panel {
-        width = 132,
-        height = 46,
-        borderRadius = 18,
-        borderWidth = 3,
-        borderColor = selected and color or COLORS.border,
-        backgroundColor = selected and color or COLORS.raised,
-        alignItems = "center",
-        justifyContent = "center",
-        onTap = function()
+local function BuildTabButton(tab)
+    local selected = activeTab_ == tab.id
+    return UI.Button {
+        text = tab.text,
+        flexGrow = 1,
+        flexBasis = 0,
+        height = 44,
+        fontSize = 16,
+        fontWeight = "bold",
+        backgroundColor = selected and COLORS.orange or {255, 250, 240, 245},
+        hoverBackgroundColor = selected and COLORS.orange or {255, 252, 242, 255},
+        pressedBackgroundColor = selected and COLORS.orangeDark or {245, 238, 220, 255},
+        textColor = selected and {255, 255, 255, 255} or COLORS.greenDeep,
+        fontColor = selected and {255, 255, 255, 255} or COLORS.greenDeep,
+        borderWidth = selected and 0 or 2,
+        borderColor = COLORS.border,
+        borderRadius = 12,
+        onClick = function()
             Suppress()
-            activeTab_ = tab
+            activeTab_ = tab.id
             RefreshCurrent()
             RebuildContent()
         end,
-        children = {
-            UI.Label {
-                text = text,
-                fontSize = 15,
-                fontWeight = "bold",
-                fontColor = selected and {255, 255, 255, 255} or COLORS.text,
-                maxLines = 1,
-            },
-        },
     }
 end
 
-local function BuildRankBadge(rank)
-    local color = COLORS.soft
-    local textColor = COLORS.text
-    if rank == 1 then color = {255, 225, 140, 255}; textColor = {138, 91, 24, 255}
-    elseif rank == 2 then color = {224, 232, 238, 255}; textColor = {92, 106, 116, 255}
-    elseif rank == 3 then color = {232, 188, 146, 255}; textColor = {128, 72, 36, 255} end
+local function BuildTabBar()
+    local children = {}
+    for _, tab in ipairs(GetAllowedTabs()) do
+        children[#children + 1] = BuildTabButton(tab)
+    end
     return UI.Panel {
-        width = 48,
-        height = 48,
+        width = "100%",
+        flexDirection = "row",
+        gap = 10,
+        children = children,
+    }
+end
+
+local function GetAvatarImagePath(avatar)
+    if type(avatar) ~= "table" then return nil end
+    if avatar.image ~= nil and avatar.image ~= "" then return avatar.image end
+    local plantIndex = tonumber(avatar.plantIndex or avatar.selectedAvatar or avatar.index)
+    if plantIndex ~= nil then
+        return string.format("image/plants/plants (%d).png", math.floor(plantIndex))
+    end
+    return nil
+end
+
+local function ResolveAvatar(entry)
+    if entry ~= nil and entry.isMe == true and deps_.getMyAvatar ~= nil then
+        return deps_.getMyAvatar() or entry.avatar
+    end
+    return entry and entry.avatar or nil
+end
+
+local function BuildAvatar(entry, size)
+    size = size or 72
+    local avatar = ResolveAvatar(entry)
+    local avatarImage = GetAvatarImagePath(avatar)
+    local bgColor = type(avatar) == "table" and avatar.color or COLORS.greenSoft
+    local children = {}
+    if avatarImage ~= nil and avatarImage ~= "" then
+        children[#children + 1] = UI.Panel {
+            width = math.floor(size * 0.76),
+            height = math.floor(size * 0.76),
+            backgroundImage = avatarImage,
+            backgroundFit = "contain",
+        }
+    else
+        children[#children + 1] = UI.Label {
+            text = "头像",
+            fontSize = math.max(12, math.floor(size * 0.18)),
+            fontColor = COLORS.text,
+            textAlign = "center",
+            maxLines = 1,
+        }
+    end
+    return UI.Panel {
+        width = size,
+        height = size,
         borderRadius = 999,
-        backgroundColor = color,
         borderWidth = 3,
-        borderColor = {255, 252, 242, 255},
+        borderColor = {255, 252, 235, 255},
+        backgroundColor = bgColor,
         alignItems = "center",
         justifyContent = "center",
         flexShrink = 0,
-        children = {
-            UI.Label { text = "#" .. tostring(rank or "-"), fontSize = 14, fontWeight = "bold", fontColor = textColor },
-        },
+        boxShadow = { { x = 0, y = 2, blur = 0, spread = 0, color = {106, 72, 32, 45} } },
+        children = children,
+    }
+end
+
+local function VisitPlayer(userId)
+    if userId == nil then return false end
+    if deps_.visitPlayer ~= nil then
+        LeaderboardView.Close()
+        return deps_.visitPlayer(userId)
+    end
+    if deps_.SocialGardenSystem ~= nil and deps_.SocialGardenSystem.VisitPlayer ~= nil then
+        LeaderboardView.Close()
+        return deps_.SocialGardenSystem.VisitPlayer(userId)
+    end
+    return false
+end
+
+local function BuildVisitButton(entry)
+    if entry == nil or entry.userId == nil or entry.isMe == true then
+        return UI.Panel { width = 72, height = 40 }
+    end
+    return UI.Button {
+        text = "拜访",
+        width = 72,
+        height = 40,
+        fontSize = 14,
+        fontWeight = "bold",
+        backgroundColor = COLORS.green,
+        hoverBackgroundColor = {94, 194, 131, 255},
+        pressedBackgroundColor = COLORS.greenDeep,
+        textColor = {255, 255, 255, 255},
+        fontColor = {255, 255, 255, 255},
+        borderRadius = 14,
+        onClick = function()
+            Suppress()
+            VisitPlayer(entry.userId)
+        end,
+    }
+end
+
+local function BuildRankLabel(rank)
+    return UI.Label {
+        text = tostring(rank or "-"),
+        width = 42,
+        fontSize = 20,
+        fontWeight = "bold",
+        fontColor = COLORS.text,
+        textAlign = "center",
+        maxLines = 1,
+        flexShrink = 0,
     }
 end
 
 local function BuildLeaderboardRow(entry)
-    local accent = activeTab_ == "income" and COLORS.orange or activeTab_ == "tour" and COLORS.green or GetActivityTheme(GetActiveActivityId()).accent
+    local accent = GetAccentColor()
     return UI.Panel {
         width = "100%",
-        minHeight = 66,
+        height = 88,
         flexDirection = "row",
         alignItems = "center",
         gap = 12,
-        paddingTop = 8,
-        paddingBottom = 8,
-        paddingLeft = 10,
+        paddingLeft = 14,
         paddingRight = 12,
+        backgroundColor = entry.isMe and {255, 248, 222, 255} or {255, 252, 242, 248},
         borderRadius = 18,
         borderWidth = entry.isMe and 3 or 2,
-        borderColor = entry.isMe and accent or COLORS.border,
-        backgroundColor = entry.isMe and {255, 248, 222, 255} or COLORS.raised,
+        borderColor = entry.isMe and COLORS.borderStrong or COLORS.border,
         children = {
-            BuildRankBadge(entry.rank),
+            BuildRankLabel(entry.rank),
+            BuildAvatar(entry, 68),
             UI.Panel {
                 flexGrow = 1,
                 flexShrink = 1,
-                gap = 4,
+                gap = 5,
                 children = {
                     UI.Label {
                         text = entry.isMe and ((entry.nickname or "你") .. "  我") or (entry.nickname or tostring(entry.userId or "Tap玩家")),
-                        fontSize = 15,
+                        fontSize = 18,
                         fontWeight = "bold",
                         fontColor = COLORS.text,
                         maxLines = 1,
                     },
                     UI.Label {
-                        text = "ID " .. tostring(entry.userId or "--"),
-                        fontSize = 10,
-                        fontColor = COLORS.muted,
+                        text = GetScoreLabel() .. " " .. FormatScore(entry.score),
+                        fontSize = 12,
+                        fontWeight = "bold",
+                        fontColor = accent,
                         maxLines = 1,
                     },
                 },
             },
-            UI.Panel {
-                alignItems = "flex-end",
-                gap = 2,
-                flexShrink = 0,
-                children = {
-                    UI.Label { text = FormatScore(entry.score), fontSize = 18, fontWeight = "bold", fontColor = accent, textAlign = "right" },
-                    UI.Label { text = activeTab_ == "income" and "收入" or activeTab_ == "tour" and "观光值" or "活动分", fontSize = 10, fontColor = COLORS.muted, textAlign = "right" },
-                },
-            },
+            BuildVisitButton(entry),
         },
     }
 end
 
-local function BuildMyRankCard(data)
-    local rank = data.myRank or data.userRank
-    local score = data.myScore or 0
-    local text = rank ~= nil and ("我的排名 #" .. tostring(rank)) or "我的排名 暂未上榜"
+local function BuildEmptyPanel()
     return UI.Panel {
         width = "100%",
-        minHeight = 58,
-        flexDirection = "row",
+        flexGrow = 1,
+        flexBasis = 0,
+        minHeight = 380,
+        backgroundColor = COLORS.empty,
+        borderRadius = 18,
         alignItems = "center",
-        gap = 12,
-        paddingLeft = 16,
-        paddingRight = 16,
-        borderRadius = 20,
-        borderWidth = 3,
-        borderColor = COLORS.borderStrong,
-        backgroundColor = {255, 248, 222, 255},
+        justifyContent = "center",
         children = {
-            UI.Label { text = text, flexGrow = 1, flexShrink = 1, fontSize = 15, fontWeight = "bold", fontColor = COLORS.text, maxLines = 1 },
-            UI.Label { text = FormatScore(score), fontSize = 18, fontWeight = "bold", fontColor = COLORS.greenDeep, maxLines = 1 },
-        },
-    }
-end
-
-local function BuildActivityRewardPanel(data)
-    if activeTab_ ~= "activity" then return nil end
-    local eligible = data.rewardEligible == true
-    local claimed = data.rewardClaimed == true
-    local rewardText = claimed and "本期头像奖励已领取" or eligible and "前20名可领取随机未解锁头像" or "活动榜前20名可获得随机头像解锁"
-    return UI.Panel {
-        width = "100%",
-        minHeight = 76,
-        flexDirection = "row",
-        alignItems = "center",
-        gap = 12,
-        paddingLeft = 16,
-        paddingRight = 16,
-        borderRadius = 22,
-        borderWidth = 3,
-        borderColor = GetActivityTheme(data.activityId).accent,
-        backgroundColor = GetActivityTheme(data.activityId).soft,
-        children = {
-            UI.Panel {
-                flexGrow = 1,
-                flexShrink = 1,
-                gap = 4,
-                children = {
-                    UI.Label { text = "活动排行奖励", fontSize = 16, fontWeight = "bold", fontColor = COLORS.text, maxLines = 1 },
-                    UI.Label { text = rewardText, fontSize = 12, fontColor = COLORS.muted, maxLines = 2 },
-                },
-            },
-            UI.Button {
-                text = claimed and "已领取" or "领取",
-                width = 92,
-                height = 42,
-                fontSize = 14,
+            UI.Label {
+                text = IsCurrentLoading() and "排行榜加载中..." or "暂无排行榜数据",
+                fontSize = 16,
                 fontWeight = "bold",
-                disabled = (not eligible) or claimed,
-                backgroundColor = eligible and (not claimed) and GetActivityTheme(data.activityId).accent or COLORS.disabled,
-                fontColor = {255, 255, 255, 255},
-                borderRadius = 16,
-                onClick = function()
-                    Suppress()
-                    local system = GetSystem()
-                    if system ~= nil then system.ClaimActivityRankReward(data.activityId) end
-                end,
+                fontColor = COLORS.muted,
+                textAlign = "center",
             },
         },
     }
 end
 
-local function BuildContentPanel()
-    local data = GetCurrentList()
+local function BuildListPanel(data)
     local rows = {}
     for _, entry in ipairs(data.list or {}) do
         rows[#rows + 1] = BuildLeaderboardRow(entry)
     end
     if #rows == 0 then
-        rows[#rows + 1] = UI.Panel {
-            height = 160,
-            alignItems = "center",
-            justifyContent = "center",
-            borderRadius = 22,
-            borderWidth = 3,
-            borderColor = COLORS.border,
-            backgroundColor = COLORS.raised,
+        return BuildEmptyPanel()
+    end
+    return UI.ScrollView {
+        width = "100%",
+        flexGrow = 1,
+        flexBasis = 0,
+        minHeight = 380,
+        scrollY = true,
+        showScrollbar = false,
+        backgroundColor = COLORS.empty,
+        borderRadius = 18,
+        children = {
+            UI.Panel {
+                width = "100%",
+                gap = 8,
+                paddingTop = 8,
+                paddingBottom = 8,
+                paddingLeft = 8,
+                paddingRight = 8,
+                children = rows,
+            },
+        },
+    }
+end
+
+local function GetPreviousRewardButtonState(data)
+    if data.previousCycleId == nil then
+        return "暂无上期", true, "暂无已结算的上期活动奖励"
+    end
+    if data.previousRewardClaimed == true then
+        return "上期已领", true, string.format("上期排名 #%s，奖励已领取", tostring(data.previousRank or "--"))
+    end
+    if data.previousRewardEligible == true then
+        return "领取上期奖励", false, string.format("上期排名 #%s，可领取头像奖励", tostring(data.previousRank or "--"))
+    end
+    return "未达成", true, "上期未进入前20，暂无奖励"
+end
+
+local function BuildMyRankCard(data)
+    local accent = GetAccentColor()
+    local rank = data.myRank or data.userRank
+    local rankText = rank ~= nil and tostring(rank) or "--"
+    local score = data.myScore or 0
+    local name = deps_.getMyNickname and deps_.getMyNickname() or "我的昵称"
+    local children = {
+        BuildRankLabel(rankText),
+        BuildAvatar({ isMe = true }, 70),
+        UI.Panel {
+            flexGrow = 1,
+            flexShrink = 1,
+            gap = 5,
             children = {
-                UI.Label { text = IsCurrentLoading() and "排行榜加载中..." or "暂无排行榜数据", fontSize = 16, fontWeight = "bold", fontColor = COLORS.text },
+                UI.Label { text = name, fontSize = 18, fontWeight = "bold", fontColor = COLORS.text, maxLines = 1 },
+                UI.Label { text = GetScoreLabel() .. " " .. FormatScore(score), fontSize = 12, fontWeight = "bold", fontColor = accent, maxLines = 1 },
+            },
+        },
+    }
+
+    if activeTab_ == "activity" then
+        local buttonText, disabled, rewardHint = GetPreviousRewardButtonState(data)
+        children[#children + 1] = UI.Panel {
+            width = 138,
+            flexShrink = 0,
+            gap = 5,
+            children = {
+                UI.Button {
+                    text = buttonText,
+                    width = 138,
+                    height = 40,
+                    fontSize = 13,
+                    fontWeight = "bold",
+                    disabled = disabled,
+                    backgroundColor = disabled and COLORS.disabled or accent,
+                    textColor = {255, 255, 255, 255},
+                    fontColor = {255, 255, 255, 255},
+                    borderRadius = 14,
+                    onClick = function()
+                        Suppress()
+                        if disabled then return end
+                        local system = GetSystem()
+                        if system ~= nil and system.ClaimPreviousActivityRankReward ~= nil then
+                            system.ClaimPreviousActivityRankReward()
+                        elseif system ~= nil and system.ClaimActivityRankReward ~= nil then
+                            system.ClaimActivityRankReward()
+                        end
+                    end,
+                },
+                UI.Label {
+                    text = rewardHint,
+                    width = 138,
+                    fontSize = 10,
+                    fontColor = COLORS.muted,
+                    textAlign = "center",
+                    maxLines = 2,
+                },
             },
         }
     end
 
-    local title = activeTab_ == "income" and "收入排行榜" or activeTab_ == "tour" and "观光排行榜" or (GetActivityTitle(GetActiveActivityId()) .. "排行榜")
-    local subtitle = activeTab_ == "income" and "每7天刷新一次，统计本周累计出售收入"
-        or activeTab_ == "tour" and "永久榜，不刷新，统计历史最佳观光值"
-        or "统计本期活动累计成绩，前20名可领取头像奖励"
-    local rewardPanel = BuildActivityRewardPanel(data)
-    local scrollPanel = UI.ScrollView {
-        flexGrow = 1,
-        flexBasis = 0,
-        scrollY = true,
-        showScrollbar = false,
-        children = {
-            UI.Panel { width = "100%", gap = 8, paddingBottom = 8, children = rows },
-        },
+    return UI.Panel {
+        width = "100%",
+        height = activeTab_ == "activity" and 104 or 92,
+        flexDirection = "row",
+        alignItems = "center",
+        gap = 12,
+        paddingLeft = 14,
+        paddingRight = 14,
+        backgroundColor = COLORS.raised,
+        borderRadius = 18,
+        borderWidth = 3,
+        borderColor = COLORS.borderStrong,
+        children = children,
     }
-    local children = {
-        UI.Panel {
-            flexDirection = "row",
-            alignItems = "center",
-            gap = 12,
-            children = {
-                UI.Panel {
-                    flexGrow = 1,
-                    flexShrink = 1,
-                    gap = 5,
-                    children = {
-                        UI.Label { text = title, fontSize = 22, fontWeight = "bold", fontColor = COLORS.text, maxLines = 1 },
-                        UI.Label { text = subtitle, fontSize = 12, fontColor = COLORS.muted, maxLines = 2 },
-                    },
-                },
-                UI.Button {
-                    text = IsCurrentLoading() and "读取中" or "刷新",
-                    width = 82,
-                    height = 40,
-                    fontSize = 13,
-                    fontWeight = "bold",
-                    backgroundColor = COLORS.blue,
-                    fontColor = {255, 255, 255, 255},
-                    borderRadius = 16,
-                    onClick = function()
-                        Suppress()
-                        RefreshCurrent()
-                        RebuildContent()
-                    end,
-                },
-            },
-        },
-        BuildMyRankCard(data),
-        scrollPanel,
-    }
-    if rewardPanel ~= nil then children[#children + 1] = rewardPanel end
+end
+
+local function BuildContentPanel()
+    local data = GetCurrentList()
     return UI.Panel {
         width = "100%",
         flexGrow = 1,
         flexBasis = 0,
-        gap = 12,
-        paddingTop = 14,
-        paddingBottom = 14,
-        paddingLeft = 14,
-        paddingRight = 14,
-        borderRadius = 24,
-        borderWidth = 3,
-        borderColor = COLORS.border,
-        backgroundColor = COLORS.paper,
-        children = children,
+        gap = 10,
+        children = {
+            UI.Panel {
+                width = "100%",
+                flexDirection = "row",
+                alignItems = "center",
+                gap = 12,
+                children = {
+                    UI.Label {
+                        text = GetHintText(),
+                        flexGrow = 1,
+                        flexShrink = 1,
+                        fontSize = 17,
+                        fontWeight = "bold",
+                        fontColor = COLORS.text,
+                        maxLines = 1,
+                    },
+                    UI.Button {
+                        text = IsCurrentLoading() and "刷新中" or "刷新",
+                        width = 86,
+                        height = 34,
+                        fontSize = 13,
+                        fontWeight = "bold",
+                        backgroundColor = COLORS.green,
+                        hoverBackgroundColor = {94, 194, 131, 255},
+                        pressedBackgroundColor = COLORS.greenDeep,
+                        textColor = {255, 255, 255, 255},
+                        fontColor = {255, 255, 255, 255},
+                        borderRadius = 14,
+                        onClick = function()
+                            Suppress()
+                            RefreshCurrent()
+                            RebuildContent()
+                        end,
+                    },
+                },
+            },
+            BuildListPanel(data),
+            BuildMyRankCard(data),
+        },
     }
 end
 
 local function BuildModalContent()
     return UI.Panel {
         width = "100%",
-        height = 610,
-        paddingTop = 18,
-        paddingBottom = 12,
-        paddingLeft = 16,
-        paddingRight = 16,
+        height = 700,
+        paddingTop = 4,
+        paddingBottom = 8,
+        paddingLeft = 10,
+        paddingRight = 10,
         gap = 12,
         children = {
-            UI.Panel {
-                flexDirection = "row",
-                alignItems = "center",
-                gap = 10,
-                children = {
-                    UI.Label { text = "花园排行榜", flexGrow = 1, fontSize = 26, fontWeight = "bold", fontColor = COLORS.text },
-                },
+            UI.Label {
+                text = "排行榜",
+                width = "100%",
+                fontSize = 24,
+                fontWeight = "bold",
+                fontColor = COLORS.text,
+                textAlign = "center",
+                marginBottom = 0,
             },
-            UI.Panel {
-                flexDirection = "row",
-                justifyContent = "center",
-                gap = 10,
-                children = {
-                    BuildTabButton("income", "收入榜", COLORS.orange),
-                    BuildTabButton("tour", "观光榜", COLORS.green),
-                    BuildTabButton("activity", "活动榜", GetActivityTheme(GetActiveActivityId()).accent),
-                },
-            },
+            BuildTabBar(),
             BuildContentPanel(),
         },
     }
@@ -414,8 +575,16 @@ function LeaderboardView.IsOpen()
     return modal_ ~= nil
 end
 
-function LeaderboardView.Open(tab)
-    if tab ~= nil then activeTab_ = tab end
+function LeaderboardView.Open(tabOrOptions, mode)
+    local tab = tabOrOptions
+    if type(tabOrOptions) == "table" then
+        tab = tabOrOptions.tab
+        mode = tabOrOptions.mode or mode
+    end
+    if mode == nil and tab == "activity" then mode = "activity" end
+    sourceMode_ = mode == "activity" and "activity" or "home"
+    activeTab_ = NormalizeActiveTab(tab)
+
     if modal_ ~= nil then
         modal_:Close()
         modal_ = nil
@@ -424,11 +593,14 @@ function LeaderboardView.Open(tab)
         size = "lg",
         closeOnOverlay = true,
         showCloseButton = true,
-        contentPadding = {4, 8, 8, 8},
+        contentPadding = {6, 10, 10, 10},
+        borderRadius = 24,
+        borderWidth = 3,
+        borderColor = COLORS.borderStrong,
         onClose = function() modal_ = nil end,
     }
     modal_:AddContent(BuildModalContent())
-    ModalAnim.Apply(modal_, { fixedHeight = 675, widthRatio = 0.94, maxWidthRatio = 0.98, maxHeightRatio = 0.98 })
+    ModalAnim.Apply(modal_, { fixedHeight = 770, widthRatio = 0.92, maxWidthRatio = 0.98, maxHeightRatio = 0.98, offsetY = -42 })
     modal_:Open()
     RefreshCurrent()
 end
@@ -453,11 +625,13 @@ function LeaderboardView.BuildButton(options)
         fontSize = options.fontSize or 15,
         fontWeight = "bold",
         backgroundColor = options.backgroundColor or {255, 250, 240, 245},
+        textColor = options.fontColor or COLORS.greenDeep,
         fontColor = options.fontColor or COLORS.greenDeep,
         borderRadius = options.borderRadius or 14,
         onClick = function()
             Suppress()
-            LeaderboardView.Open(options.tab or "income")
+            local mode = options.mode or (options.tab == "activity" and "activity" or "home")
+            LeaderboardView.Open({ tab = options.tab or (mode == "activity" and "activity" or "income"), mode = mode })
         end,
     }
 end

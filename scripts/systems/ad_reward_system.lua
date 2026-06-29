@@ -11,7 +11,11 @@ local AdRewardSystem = {}
 
 local deps_ = {}
 local pending_ = false
+local pendingTimer_ = 0
+local activeSession_ = nil
+local sessionSeq_ = 0
 local confirmModal_ = nil
+local AD_TIMEOUT_SECONDS = 120
 
 local function ShowToast(text)
     if deps_.showToast ~= nil then deps_.showToast(text) end
@@ -27,11 +31,23 @@ end
 function AdRewardSystem.Init(deps)
     deps_ = deps or {}
     pending_ = false
+    pendingTimer_ = 0
+    activeSession_ = nil
     confirmModal_ = nil
 end
 
 function AdRewardSystem.IsPending()
     return pending_ == true
+end
+
+function AdRewardSystem.Update(dt)
+    if not pending_ then return end
+    pendingTimer_ = pendingTimer_ + (dt or 0)
+    if pendingTimer_ < AD_TIMEOUT_SECONDS then return end
+    pending_ = false
+    pendingTimer_ = 0
+    activeSession_ = nil
+    ShowToast("广告响应超时，请稍后重试")
 end
 
 function AdRewardSystem.Show(options)
@@ -47,8 +63,15 @@ function AdRewardSystem.Show(options)
         return false
     end
     pending_ = true
+    pendingTimer_ = 0
+    sessionSeq_ = sessionSeq_ + 1
+    activeSession_ = sessionSeq_
+    local session = activeSession_
     sdkApi:ShowRewardVideoAd(function(result)
+        if session ~= activeSession_ then return end
         pending_ = false
+        pendingTimer_ = 0
+        activeSession_ = nil
         result = result or { success = false, msg = "unknown" }
         if result.success == true then
             if options.onSuccess ~= nil then options.onSuccess(result) end

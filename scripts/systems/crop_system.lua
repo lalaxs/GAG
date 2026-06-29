@@ -204,6 +204,21 @@ local function BuildCropName(plant, mutation)
     return table.concat(prefixes, "") .. plant.name
 end
 
+local function CalculateCropPrice(plant, weightMultiplier, mutation, yieldMultiplier, sellBonus)
+    local priceBase = math.max(1, tonumber(plant.seedPrice or plant.fruitPrice or 1) or 1)
+    local mutationMultiplier = mutation and mutation.priceMultiplier or 1.0
+    local rawPrice = priceBase * (yieldMultiplier or 1.0) * (weightMultiplier or 1.0) * mutationMultiplier * (sellBonus or 1.0)
+    return math.floor(math.min(rawPrice, priceBase * 200) + 0.5)
+end
+
+local function RecalculateCropPrice(plant, weight, baseWeight, mutation, yieldMultiplier, sellBonus)
+    local safeBaseWeight = math.max(0.001, tonumber(baseWeight or plant.baseWeight or 1.0) or 1.0)
+    local safeWeight = tonumber(weight or safeBaseWeight) or safeBaseWeight
+    local weightRatio = safeWeight / safeBaseWeight
+    local weightMultiplier = math.min(math.max(weightRatio * weightRatio, 0.4), 12.0)
+    return CalculateCropPrice(plant, weightMultiplier, mutation, yieldMultiplier, sellBonus), weightMultiplier
+end
+
 local function ClampToPlot(localPos)
     local half = cfg_.CONFIG.PlantableHalf or 0.60
     return Vector3(Clamp(localPos.x, -half, half), 0, Clamp(localPos.z, -half, half))
@@ -259,6 +274,15 @@ local function CreateCropFromSave(plot, data)
     mutation.timeMultiplier = mutation.timeMultiplier or 1.0
     mutation.sizeScale = mutation.sizeScale or 1.0
 
+    local cropPrice, cropWeightMultiplier = RecalculateCropPrice(
+        plant,
+        tonumber(data.weight or plant.baseWeight or 1.0) or 1.0,
+        tonumber(data.baseWeight or plant.baseWeight or 1.0) or 1.0,
+        mutation,
+        1.0,
+        1.0
+    )
+
     local root = plot.node:CreateChild("PlantRoot")
     root.position = Vector3(localPos.x, cfg_.CONFIG.SeedVisualY, localPos.z)
     root.rotation = Quaternion(tonumber(data.rotationYaw or 0) or 0, Vector3.UP)
@@ -280,14 +304,14 @@ local function CreateCropFromSave(plot, data)
         mutation = mutation,
         effectNodes = {},
         name = data.name or BuildCropName(plant, mutation),
-        price = tonumber(data.price or plant.fruitPrice) or plant.fruitPrice,
+        price = cropPrice,
         sightValue = tonumber(data.sightValue or 0) or 0,
         weight = tonumber(data.weight or plant.baseWeight or 1.0) or 1.0,
         baseWeight = tonumber(data.baseWeight or plant.baseWeight or 1.0) or 1.0,
         weightScale = tonumber(data.weightScale or 1.0) or 1.0,
         weightTier = data.weightTier or "Normal",
         weightBonus = tonumber(data.weightBonus or 1.0) or 1.0,
-        weightMultiplier = tonumber(data.weightMultiplier or 1.0) or 1.0,
+        weightMultiplier = cropWeightMultiplier,
         elapsed = tonumber(data.elapsed or 0) or 0,
         growTime = math.max(0.1, tonumber(data.growTime or plant.growTime or 1.0) or 1.0),
         mature = data.mature == true,
@@ -716,9 +740,7 @@ function CropSystem.PlantSeedAt(plots, plotIndex, plantIndex, centerLocalPos, op
     local weightMultiplier = math.min(math.max(weightRatio * weightRatio, 0.4), 12.0)
     local yieldMultiplier = GetPlotModifier(plotIndex).yieldMultiplier or 1.0
     local sellBonus = 1.0 + GetTalentBonus("sellBonus")
-    local rawPrice = plant.fruitPrice * yieldMultiplier * weightMultiplier * mutation.priceMultiplier * sellBonus
-    local priceCap = plant.fruitPrice * 200
-    local price = math.floor(math.min(rawPrice, priceCap) + 0.5)
+    local price = CalculateCropPrice(plant, weightMultiplier, mutation, yieldMultiplier, sellBonus)
     local growTimeMultiplier = GetPlotModifier(plotIndex).growTimeMultiplier or 1.0
     local growSpeedReduction = 1.0 - math.min(GetTalentBonus("growSpeed"), 0.75)
     local growTime = plant.growTime * mutation.timeMultiplier * growTimeMultiplier * growSpeedReduction

@@ -310,6 +310,99 @@ CloseFriendDetailModal = function()
     end
 end
 
+local function OpenStealAdConfirmModal()
+    CloseFriendDetailModal()
+    local root = UI.GetRoot()
+    if root == nil then return end
+    local system = GetSystem()
+    local state = system.GetState and system.GetState() or {}
+    local daily = state.daily or {}
+    local stealAdCount = math.max(0, math.floor(tonumber(daily.stealAdCount or 0) or 0))
+    local stealAdLimit = math.max(5, math.floor(tonumber(daily.stealAdLimit or 5) or 5))
+    local canWatchStealAd = stealAdCount < stealAdLimit
+    friendDetailModal_ = UI.Panel {
+        position = "absolute",
+        left = 0,
+        top = 0,
+        right = 0,
+        bottom = 0,
+        zIndex = 1300,
+        backgroundColor = {0, 0, 0, 135},
+        alignItems = "center",
+        justifyContent = "center",
+        onTap = function()
+            Suppress()
+            CloseFriendDetailModal()
+        end,
+        children = {
+            UI.Panel {
+                width = 390,
+                backgroundColor = COLORS.surfaceRaised,
+                borderRadius = 24,
+                borderWidth = 4,
+                borderColor = COLORS.borderStrong,
+                paddingTop = 24,
+                paddingLeft = 22,
+                paddingRight = 22,
+                paddingBottom = 22,
+                gap = 16,
+                onTap = function(event)
+                    if event and event.StopPropagation then event:StopPropagation() end
+                    Suppress()
+                end,
+                children = {
+                    UI.Label { text = "增加偷取次数", fontSize = 22, fontWeight = "bold", fontColor = COLORS.text, textAlign = "center" },
+                    UI.Label { text = "观看广告后获得 5 次偷取次数。", fontSize = 15, fontColor = COLORS.textMuted, textAlign = "center", whiteSpace = "normal" },
+                    UI.Label { text = string.format("今日广告次数：%d/%d", stealAdCount, stealAdLimit), fontSize = 14, fontWeight = "bold", fontColor = COLORS.secondary, textAlign = "center" },
+                    UI.Panel {
+                        flexDirection = "row",
+                        gap = 10,
+                        children = {
+                            UI.Button {
+                                text = "取消",
+                                height = 42,
+                                flexGrow = 1,
+                                fontSize = 15,
+                                fontWeight = "bold",
+                                backgroundColor = {245, 238, 220, 255},
+                                fontColor = {92, 72, 48, 255},
+                                borderRadius = 16,
+                                onClick = function(self, event)
+                                    if event and event.StopPropagation then event:StopPropagation() end
+                                    CloseFriendDetailModal()
+                                end,
+                            },
+                            UI.Button {
+                                text = canWatchStealAd and "看广告" or "已达上限",
+                                height = 42,
+                                flexGrow = 1,
+                                fontSize = 15,
+                                fontWeight = "bold",
+                                disabled = not canWatchStealAd,
+                                backgroundColor = canWatchStealAd and {94, 194, 131, 255} or {180, 170, 155, 200},
+                                fontColor = {255, 255, 255, 255},
+                                borderRadius = 16,
+                                onClick = function(self, event)
+                                    if event and event.StopPropagation then event:StopPropagation() end
+                                    if not canWatchStealAd then
+                                        if deps_.showToast then deps_.showToast("今日偷取次数广告已达上限") end
+                                        return
+                                    end
+                                    CloseFriendDetailModal()
+                                    if deps_.requestStealAttemptsAdReward then
+                                        deps_.requestStealAttemptsAdReward()
+                                    end
+                                end,
+                            },
+                        },
+                    },
+                },
+            },
+        },
+    }
+    root:AddChild(friendDetailModal_)
+end
+
 local function OpenFriendDetailModal(entry)
     local system = GetSystem()
     CloseFriendDetailModal()
@@ -576,7 +669,11 @@ local function BuildQuickActionPanel()
     local system = GetSystem()
     local state = system.GetState and system.GetState() or {}
     local daily = state.daily or {}
-    local stealLeft = math.max(0, 10 - (daily.stealCount or 0))
+    local stealLimit = math.max(5, math.floor(tonumber(daily.stealLimit or 5) or 5))
+    local stealLeft = math.max(0, stealLimit - (tonumber(daily.stealCount or 0) or 0))
+    local stealAdCount = math.max(0, math.floor(tonumber(daily.stealAdCount or 0) or 0))
+    local stealAdLimit = math.max(5, math.floor(tonumber(daily.stealAdLimit or 5) or 5))
+    local canWatchStealAd = stealAdCount < stealAdLimit
     local giftLeft = math.max(0, 5 - (daily.giftSentCount or 0))
     return UI.Panel {
         flexDirection = "row",
@@ -608,16 +705,18 @@ local function BuildQuickActionPanel()
                                 height = 24,
                                 fontSize = 14,
                                 fontWeight = "bold",
-                                backgroundColor = {255, 255, 255, 245},
+                                backgroundColor = canWatchStealAd and {255, 255, 255, 245} or {190, 180, 165, 180},
                                 fontColor = COLORS.text,
                                 borderRadius = 12,
                                 borderWidth = 1,
                                 borderColor = COLORS.border,
                                 onClick = function()
                                     Suppress()
-                                    if deps_.showToast then
-                                        deps_.showToast("该功能暂未开放")
+                                    if not canWatchStealAd then
+                                        if deps_.showToast then deps_.showToast("今日偷取次数广告已达上限") end
+                                        return
                                     end
+                                    OpenStealAdConfirmModal()
                                 end,
                             },
                         },
@@ -851,6 +950,21 @@ local function BuildSocialNoticeText(notice)
     return name .. " 有一条新消息"
 end
 
+local function GetGiftDescription(gift)
+    if type(gift) ~= "table" then return "种子礼物" end
+    local reward = gift.reward
+    if type(reward) == "table" and reward.description ~= nil and reward.description ~= "" then
+        return tostring(reward.description)
+    end
+    if type(reward) == "table" and reward.name ~= nil and reward.name ~= "" then
+        return tostring(reward.name) .. " x" .. tostring(reward.count or gift.count or 1)
+    end
+    if gift.seedId ~= nil then
+        return "种子" .. tostring(gift.seedId) .. " x" .. tostring(gift.count or 1)
+    end
+    return "种子礼物"
+end
+
 local function BuildMessagesSection()
     local system = GetSystem()
     local rows = {}
@@ -896,7 +1010,8 @@ local function BuildMessagesSection()
     end
 
     for _, gift in ipairs(system.GetGifts()) do
-        rows[#rows + 1] = BuildMessageRow(string.format("%s给你送来了种子礼物", tostring(gift.fromUserId or "好友")), {
+        local fromName = tostring(gift.fromNickname or gift.fromUserId or "好友")
+        rows[#rows + 1] = BuildMessageRow(string.format("%s给你送来了%s", fromName, GetGiftDescription(gift)), {
             BuildMessageActionButton("领取", COLORS.info, function()
                 system.ClaimGift(gift)
             end),
@@ -1038,7 +1153,7 @@ local function BuildGiftSection()
             alignItems = "center",
             gap = 8,
             children = {
-                UI.Label { text = string.format("来自 %s 的种子%d x%d", tostring(gift.fromUserId or "好友"), gift.seedId or 1, gift.count or 1), flexGrow = 1, fontSize = 12, fontColor = {70, 55, 38, 255} },
+                UI.Label { text = string.format("来自 %s 的%s", tostring(gift.fromNickname or gift.fromUserId or "好友"), GetGiftDescription(gift)), flexGrow = 1, fontSize = 12, fontColor = {70, 55, 38, 255} },
                 UI.Button {
                     text = "领取",
                     width = 58,

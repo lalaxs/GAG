@@ -102,13 +102,17 @@ function LeaderboardSystem.Request(kind, activityId)
     return false
 end
 
-function LeaderboardSystem.ClaimActivityRankReward(activityId)
+function LeaderboardSystem.ClaimPreviousActivityRankReward()
     local unlocked = deps_.getUnlockedAvatarMap and deps_.getUnlockedAvatarMap() or {}
-    local payload = BeginRequest("claimActivityRankReward", { activityId = activityId, unlockedAvatars = unlocked })
+    local payload = BeginRequest("claimActivityRankReward", { unlockedAvatars = unlocked })
     if SendRequest(Shared.EVENTS.CLAIM_ACTIVITY_RANK_REWARD, payload) then return true end
     FinishRequest(payload.requestId, "claimActivityRankReward")
     if deps_.showToast then deps_.showToast("服务器尚未就绪，无法领取奖励") end
     return false
+end
+
+function LeaderboardSystem.ClaimActivityRankReward()
+    return LeaderboardSystem.ClaimPreviousActivityRankReward()
 end
 
 function LeaderboardSystem.HandleLeaderboardResponse(data)
@@ -127,6 +131,12 @@ function LeaderboardSystem.HandleLeaderboardResponse(data)
     EmitChanged("response")
 end
 
+local function ShowRewardToast(message)
+    message = message or "活动排行奖励领取失败"
+    if deps_.showToast then deps_.showToast(message) end
+    if deps_.showFloatingToast then deps_.showFloatingToast(message) end
+end
+
 function LeaderboardSystem.HandleClaimActivityRankRewardResponse(data)
     FinishRequest(data.requestId, "claimActivityRankReward")
     if data.success then
@@ -138,10 +148,10 @@ function LeaderboardSystem.HandleClaimActivityRankRewardResponse(data)
         end
         state_.rewards[tostring(data.cycleId or data.activityId or "current")] = data.reward or { type = "none" }
         local message = data.message or "活动排行奖励已领取"
-        if deps_.showFloatingToast then deps_.showFloatingToast(message) elseif deps_.showToast then deps_.showToast(message) end
-        LeaderboardSystem.Request("activity", data.activityId)
+        ShowRewardToast(message)
+        LeaderboardSystem.Request("activity", state_.activeActivityId)
     else
-        if deps_.showToast then deps_.showToast(data.message or "活动排行奖励领取失败") end
+        ShowRewardToast(data.message or "活动排行奖励领取失败")
     end
     EmitChanged("reward")
 end

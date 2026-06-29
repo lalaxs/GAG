@@ -589,7 +589,7 @@ local function ShowBuyConfirm(seedData)
                 },
             },
             UI.Label { text = "种子单价: " .. price .. " 金币", fontSize = 14, fontWeight = "bold", fontColor = {80, 60, 40, 255} },
-            UI.Label { text = "作物基础售价: " .. seedData.plant.fruitPrice .. " 金币", fontSize = 13, fontColor = {95, 75, 45, 255} },
+            UI.Label { text = "收益基准价: " .. price .. " 金币", fontSize = 13, fontColor = {95, 75, 45, 255} },
             UI.Label { text = "库存: " .. stock .. "  |  持有: " .. currentMoney .. " 金币", fontSize = 12, fontColor = {120, 100, 80, 200} },
             UI.Panel {
                 flexDirection = "row", gap = 8, marginTop = 4,
@@ -620,8 +620,8 @@ local function ShowSeedDetail(seedData)
         children = {
             UI.Label { text = "稀有度: " .. seedData.rarity, fontSize = 14, fontWeight = "bold", fontColor = RARITY_COLORS[seedData.rarity] or {100,100,100,255} },
             UI.Label { text = "成熟时长: " .. plant.growTime .. " 秒", fontSize = 13, fontColor = {80, 60, 40, 255} },
-            UI.Label { text = "基础售价: " .. plant.fruitPrice .. " 金币", fontSize = 13, fontColor = {80, 60, 40, 255} },
-            UI.Label { text = "种子价格: " .. plant.seedPrice .. " 金币", fontSize = 13, fontColor = {80, 60, 40, 255} },
+            UI.Label { text = "收益基准价: " .. plant.seedPrice .. " 金币", fontSize = 13, fontColor = {80, 60, 40, 255} },
+            UI.Label { text = "成熟售价会随重量和变异波动", fontSize = 12, fontColor = {120, 100, 80, 200} },
             UI.Label { text = "变异规则: 颜色约9%，特殊约2.5%，天赋可相对提升", fontSize = 12, fontColor = {120, 100, 80, 200} },
         },
     })

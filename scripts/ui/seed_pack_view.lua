@@ -212,8 +212,141 @@ local function GetPackSortOrder(cfg)
     return deps_.rarityOrder[cfg.packRarity or "普通"] or 0
 end
 
+local function GetAdSeedPackDaily()
+    if deps_.getAdSeedPackDaily ~= nil then
+        return deps_.getAdSeedPackDaily()
+    end
+    return { count = 0, limit = 3 }
+end
+
+local function BuildAdRarePackBanner()
+    local daily = GetAdSeedPackDaily()
+    local count = math.max(0, math.floor(tonumber(daily.count or 0) or 0))
+    local limit = math.max(3, math.floor(tonumber(daily.limit or 3) or 3))
+    local canWatch = count < limit
+    return UI.Panel {
+        height = 42,
+        marginLeft = 6,
+        marginRight = 6,
+        marginTop = 4,
+        marginBottom = 8,
+        paddingLeft = 10,
+        paddingRight = 8,
+        borderRadius = 12,
+        borderWidth = 2,
+        borderColor = {255, 204, 86, 235},
+        backgroundColor = {255, 246, 216, 255},
+        flexDirection = "row",
+        alignItems = "center",
+        gap = 8,
+        children = {
+            UI.Label { text = "▶AD 稀有包x5", flexGrow = 1, flexShrink = 1, fontSize = 13, fontWeight = "bold", fontColor = {120, 82, 36, 255} },
+            UI.Label { text = string.format("%d/%d", count, limit), fontSize = 11, fontColor = {120, 96, 68, 230} },
+            UI.Button {
+                text = canWatch and "看广告" or "已领完",
+                width = 76,
+                height = 30,
+                fontSize = 12,
+                fontWeight = "bold",
+                disabled = not canWatch,
+                backgroundColor = canWatch and {255, 176, 64, 255} or {180, 170, 155, 200},
+                fontColor = {255, 255, 255, 255},
+                borderRadius = 10,
+                onClick = function()
+                    deps_.suppressWorldTap()
+                    if not canWatch then
+                        if deps_.showToast then deps_.showToast("今日广告种子包已领取完") end
+                        return
+                    end
+                    if deps_.requestRareSeedPackAdReward then
+                        deps_.requestRareSeedPackAdReward()
+                    end
+                end,
+            },
+        },
+    }
+end
+
+local function BuildAdRarePackCard()
+    local cfg = deps_.seedPackConfig and deps_.seedPackConfig.pack_rare or nil
+    if cfg == nil then return nil end
+    local daily = GetAdSeedPackDaily()
+    local count = math.max(0, math.floor(tonumber(daily.count or 0) or 0))
+    local limit = math.max(3, math.floor(tonumber(daily.limit or 3) or 3))
+    local canWatch = count < limit
+    local iconPath = cfg.packIcon or "image/seedpack_icon/seedpack_2.png"
+    return UI.Panel {
+        width = 130,
+        alignItems = "center",
+        marginBottom = 14,
+        marginRight = 10,
+        children = {
+            UI.Panel {
+                width = 124,
+                height = 148,
+                justifyContent = "center",
+                alignItems = "center",
+                borderRadius = 18,
+                backgroundColor = {255, 246, 216, 255},
+                borderWidth = 2,
+                borderColor = {255, 204, 86, 235},
+                children = {
+                    UI.Panel {
+                        width = 114,
+                        height = 136,
+                        backgroundImage = iconPath,
+                        backgroundFit = "contain",
+                    },
+                    UI.Label { position = "absolute", top = 8, right = 8, text = "AD", fontSize = 10, fontWeight = "bold", fontColor = {120, 82, 36, 255} },
+                    UI.Panel {
+                        position = "absolute",
+                        right = 2,
+                        bottom = 2,
+                        minWidth = 24,
+                        height = 24,
+                        paddingLeft = 5,
+                        paddingRight = 5,
+                        borderRadius = 12,
+                        backgroundColor = {50, 50, 50, 210},
+                        justifyContent = "center",
+                        alignItems = "center",
+                        children = {
+                            UI.Label { text = "5", fontSize = 12, fontWeight = "bold", fontColor = {255, 255, 255, 255} },
+                        },
+                    },
+                },
+            },
+            UI.Button {
+                text = canWatch and "看广告" or "已领完",
+                width = 104,
+                height = 30,
+                marginTop = 4,
+                fontSize = 12,
+                fontWeight = "bold",
+                disabled = not canWatch,
+                backgroundColor = canWatch and {255, 176, 64, 255} or {180, 170, 155, 200},
+                fontColor = {255, 255, 255, 255},
+                borderRadius = 10,
+                onClick = function()
+                    deps_.suppressWorldTap()
+                    if not canWatch then
+                        if deps_.showToast then deps_.showToast("今日广告种子包已领取完") end
+                        return
+                    end
+                    if deps_.requestRareSeedPackAdReward then
+                        deps_.requestRareSeedPackAdReward()
+                    end
+                end,
+            },
+            UI.Label { text = string.format("今日 %d/%d", count, limit), fontSize = 10, fontColor = {120, 96, 68, 220}, textAlign = "center" },
+        },
+    }
+end
+
 local function BuildPackCardGrid()
     local cards = {}
+    local adCard = BuildAdRarePackCard()
+    if adCard ~= nil then table.insert(cards, adCard) end
     local seedPacks = deps_.seedPacks
     local sortedPacks = {}
     for packId, cfg in pairs(deps_.seedPackConfig) do

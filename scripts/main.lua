@@ -20,6 +20,7 @@ local InteractionSystem = require("systems.interaction_system")
 local AudioSystem = require("systems.audio_system")
 local SeedPackSystem = require("systems.seed_pack_system")
 local CommissionSystem = require("systems.commission_system")
+AdRewardSystem = require("systems.ad_reward_system")
 local SeedPackOpeningController = require("controllers.seed_pack_opening_controller")
 local ExpansionController = require("controllers.expansion_controller")
 local PlotDisplayController = require("controllers.plot_display_controller")
@@ -555,6 +556,60 @@ local function OpenAllSeedPacks(packId)
     SeedPackOpeningController.OpenAllPacks(packId)
 end
 
+ShowAdRewardPrompt = function(title, message, rewardType, extra)
+    return AdRewardSystem.ConfirmAndShow({
+        title = title,
+        message = message,
+        onSuccess = function()
+            if EconomyCloudSystem.RequestAdReward(rewardType, extra or {}) then
+                ShowToast("广告观看完成，正在发放奖励...")
+            end
+        end,
+    })
+end
+
+RequestStealAttemptsAdReward = function()
+    return AdRewardSystem.Show({
+        onSuccess = function()
+            if EconomyCloudSystem.RequestAdReward("steal_attempts", {}) then
+                ShowToast("广告观看完成，正在发放奖励...")
+            end
+        end,
+    })
+end
+
+RequestRareSeedPackAdReward = function()
+    return ShowAdRewardPrompt("领取稀有种子包", "观看广告后，获得稀有种子包 x5。", "rare_seed_pack")
+end
+
+RequestMaturePlotAdReward = function()
+    local socialState = SocialGardenSystem.GetState and SocialGardenSystem.GetState() or {}
+    local daily = socialState.daily or {}
+    local matureAdCount = math.max(0, math.floor(tonumber(daily.matureAdCount or 0) or 0))
+    local matureAdLimit = math.max(5, math.floor(tonumber(daily.matureAdLimit or 5) or 5))
+    if matureAdCount >= matureAdLimit then
+        ShowToast("今日快速成熟广告已达上限")
+        return false
+    end
+    local plot = plots_[selectedPlot_]
+    if plot == nil or plot.plants == nil or #plot.plants == 0 then
+        ShowToast("当前地块没有作物")
+        return false
+    end
+    local hasImmature = false
+    for _, crop in ipairs(plot.plants) do
+        if crop.mature ~= true and crop.harvested ~= true then
+            hasImmature = true
+            break
+        end
+    end
+    if not hasImmature then
+        ShowToast("该地块作物已经成熟")
+        return false
+    end
+    return ShowAdRewardPrompt("全部成熟", "观看广告后，当前地块作物将全部成熟。", "mature_plot", { plotIndex = selectedPlot_ })
+end
+
 local function IsInitialUiBlocked()
     if initialUiReady_ then return false end
     if ShowToast ~= nil then ShowToast("正在同步服务器数据，请稍后") end
@@ -888,8 +943,7 @@ UpdateCurrentTourValue = function()
 end
 
 local function UpdatePlants(dt)
-    local rotateMaturePlants = GetViewMode() == ViewMode.PLANT
-    local maturedThisFrame = CropSystem.UpdatePlants(plots_, dt, rotateMaturePlants)
+    local maturedThisFrame = CropSystem.UpdatePlants(plots_, dt, PlayerSystem.IsMatureCropRotationEnabled())
     UpdateCurrentTourValue()
     if plantTab_ == "harvest" and GetViewMode() == ViewMode.PLANT then
         harvestPanelRefreshTimer_ = harvestPanelRefreshTimer_ + dt
@@ -917,6 +971,7 @@ function HandleUpdate(eventType, eventData)
     if not initialUiReady_ then
         PlayerSystem.Update(dt)
         EconomyCloudSystem.Update(dt)
+        AdRewardSystem.Update(dt)
         SocialGardenSystem.Update(dt)
         LeaderboardSystem.Update(dt)
         EnsureInitialUiReady()
@@ -937,6 +992,7 @@ function HandleUpdate(eventType, eventData)
     Shop.Update(dt)
     PlayerSystem.Update(dt)
     EconomyCloudSystem.Update(dt)
+    AdRewardSystem.Update(dt)
     SocialGardenSystem.Update(dt)
     LeaderboardSystem.Update(dt)
     CommissionSystem.Update(dt)
@@ -1046,6 +1102,7 @@ function Start()
         getTourValue = function() return ProgressionSystem.GetTourValue() end,
         getTalentLevel = function() return TalentSystem.GetLevel() end,
         getTalentPoints = function() return TalentSystem.GetTalentPoints() end,
+        hasUnlockableTalent = function() return TalentSystem.HasUnlockableTalent() end,
         isFarmView = function() return GetViewMode() == ViewMode.FARM end,
         isPlantView = function() return GetViewMode() == ViewMode.PLANT end,
         isVisitMode = function() return SocialGardenSystem.IsVisitMode() end,
@@ -1104,6 +1161,9 @@ function Start()
             FloatingToast.Show(text, { fontSize = 20, duration = 1.5, yRatio = 0.38, priority = 5 })
         end,
     })
+    AdRewardSystem.Init({
+        showToast = ShowToast,
+    })
     CommissionSystem.Init(GameConfig, InventorySystem, {
         allowLocalMutations = false,
         showToast = ShowToast,
@@ -1141,6 +1201,12 @@ function Start()
         getFirstAvailablePackId = GetFirstAvailablePackId,
         openSeedPack = OpenSeedPack,
         openAllSeedPacks = OpenAllSeedPacks,
+        requestRareSeedPackAdReward = RequestRareSeedPackAdReward,
+        getAdSeedPackDaily = function()
+            local state = SocialGardenSystem.GetState and SocialGardenSystem.GetState() or {}
+            local daily = state.daily or {}
+            return { count = daily.seedPackAdCount or 0, limit = daily.seedPackAdLimit or 3 }
+        end,
         suppressWorldTap = RequestSuppressWorldTap,
         closePackPanel = function() SeedPackOpeningController.ClosePanel() end,
         skipOpening = function() SeedPackOpeningController.SkipOpening() end,
@@ -1216,6 +1282,8 @@ function Start()
         SocialGardenSystem = SocialGardenSystem,
         suppressWorldTap = RequestSuppressWorldTap,
         getSelectedPlotIndex = function() return selectedPlot_ end,
+        requestStealAttemptsAdReward = RequestStealAttemptsAdReward,
+        showToast = ShowToast,
         onClosed = FlushPendingRebuildUI,
     })
 
@@ -1323,6 +1391,7 @@ function Start()
         isPlantView = function() return GetViewMode() == ViewMode.PLANT end,
         isVisitMode = function() return SocialGardenSystem.IsVisitMode() end,
         isStealingMode = function() return SocialGardenSystem.IsStealingMode() end,
+        getVisitGarden = function() return SocialGardenSystem.GetVisitGarden() end,
         countStealableCrops = function() return SocialGardenSystem.CountStealableCrops() end,
         getMatureVisitCrops = function() return SocialGardenSystem.GetMatureVisitCrops() end,
         getStealChanceText = function(crop) return SocialGardenSystem.GetStealChanceText(crop) end,
@@ -1331,6 +1400,14 @@ function Start()
         getVisitLikeCount = function() return SocialGardenSystem.GetVisitLikeCount() end,
         hasLikedVisitGarden = function() return SocialGardenSystem.HasLikedVisitGarden() end,
         likeVisitGarden = function() SocialGardenSystem.LikeVisitGarden(); if RebuildUI ~= nil then RebuildUI() end end,
+        sendFriendRequestToVisitGarden = function()
+            local garden = SocialGardenSystem.GetVisitGarden()
+            if garden == nil or garden.userId == nil then
+                ShowToast("当前花园玩家 ID 无效")
+                return false
+            end
+            return SocialGardenSystem.SendFriendRequest(garden.userId)
+        end,
         beginStealingMode = function() SocialGardenSystem.BeginStealingMode() end,
         endStealingMode = function() SocialGardenSystem.EndStealingMode() end,
         getPlantTab = function() return plantTab_ end,
@@ -1372,6 +1449,7 @@ function Start()
             return not ProgressionSystem.CanUnlockNextPlot()
         end,
         getPlantGuideStep = GetPlantGuideStep,
+        requestMaturePlotAdReward = RequestMaturePlotAdReward,
     })
 
     PlayerSystem.Init({
@@ -1421,6 +1499,12 @@ function Start()
         getPlotDisplayMode = function()
             return PlotDisplayController.GetDisplayMode()
         end,
+        isPowerSaveMode = function()
+            return PlayerSystem.IsPowerSaveMode()
+        end,
+        setPowerSaveMode = function(enabled)
+            return PlayerSystem.SetPowerSaveMode(enabled)
+        end,
         isPlantView = function()
             return GetViewMode() == ViewMode.PLANT
         end,
@@ -1439,6 +1523,7 @@ function Start()
         switchNextPlot = function()
             SwitchNextFocusedPlot()
         end,
+        requestMaturePlotAdReward = RequestMaturePlotAdReward,
         onClearSaveSuccess = function()
             SettingsView.Close()
         end,
@@ -1589,6 +1674,24 @@ function Start()
         onAuthFarmReceived = function(farm)
             ApplyAuthoritativeFarmState(farm)
         end,
+        onAdRewardGranted = function(data)
+            if data ~= nil and data.daily ~= nil then
+                SocialGardenSystem.ApplyAdRewardDaily(data.daily)
+            end
+            if data ~= nil and data.rewardType == "steal_attempts" then
+                SocialGardenSystem.RequestSocialState()
+            elseif data ~= nil and data.rewardType == "rare_seed_pack" then
+                EventBus.Emit(UIEvents.SEEDPACK_CHANGED, { reason = "ad_reward" })
+            elseif data ~= nil and data.rewardType == "mature_plot" then
+                RefreshSelection()
+                UIController.RefreshPlantContent()
+            end
+        end,
+        onAdRewardFailed = function(data)
+            if data ~= nil and data.daily ~= nil then
+                SocialGardenSystem.ApplyAdRewardDaily(data.daily)
+            end
+        end,
         onClearSaveCompleted = function(success)
             if HandleClearSaveCompleted ~= nil then
                 HandleClearSaveCompleted(success)
@@ -1675,7 +1778,14 @@ function Start()
 
     LeaderboardView.Init({
         LeaderboardSystem = LeaderboardSystem,
+        SocialGardenSystem = SocialGardenSystem,
         getActiveActivityId = function() return ActivitySystem.GetActiveActivityId() end,
+        getMyNickname = function() return PlayerSystem.GetDisplayName() end,
+        getMyAvatar = function() return PlayerSystem.GetSelectedAvatarProfile() end,
+        visitPlayer = function(userId)
+            ActivityView.Close()
+            return SocialGardenSystem.VisitPlayer(userId)
+        end,
         suppressWorldTap = RequestSuppressWorldTap,
     })
 

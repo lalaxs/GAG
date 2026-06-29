@@ -17,8 +17,9 @@ local connections_ = {}
 local connectionUsers_ = {}
 
 local DAILY_STEAL_LIMIT = 5
-local DAILY_STEAL_AD_LIMIT = 10
-local DAILY_SEED_PACK_AD_LIMIT = 3
+local DAILY_STEAL_AD_LIMIT = 5
+local DAILY_SEED_PACK_AD_LIMIT = 5
+local DAILY_MATURE_AD_LIMIT = 5
 local AD_STEAL_BONUS = 5
 local AD_RARE_PACK_COUNT = 5
 local DAILY_GIFT_LIMIT = 5
@@ -634,6 +635,26 @@ local function BuildAuthCropName(plant, mutation)
     return table.concat(prefixes, "") .. plant.name
 end
 
+local function CalculateAuthoritativeCropPrice(plant, weightMultiplier, mutation)
+    local priceBase = math.max(1, tonumber(plant.seedPrice or plant.fruitPrice or 1) or 1)
+    local mutationMultiplier = mutation and mutation.priceMultiplier or 1.0
+    return math.floor(math.min(priceBase * (weightMultiplier or 1.0) * mutationMultiplier, priceBase * 200) + 0.5)
+end
+
+local function RecalculateAuthoritativeItemPrice(item)
+    if type(item) ~= "table" then return end
+    local plant = GameConfig.PLANTS[tonumber(item.plantIndex or 0) or 0]
+    if plant == nil then return end
+    local baseWeight = math.max(0.001, tonumber(item.baseWeight or plant.baseWeight or 1.0) or 1.0)
+    local weight = tonumber(item.weight or baseWeight) or baseWeight
+    local weightRatio = weight / baseWeight
+    local weightMultiplier = math.min(math.max(weightRatio * weightRatio, 0.4), 12.0)
+    item.baseWeight = baseWeight
+    item.weight = weight
+    item.weightMultiplier = weightMultiplier
+    item.price = CalculateAuthoritativeCropPrice(plant, weightMultiplier, item.mutation)
+end
+
 local function BuildAuthoritativeCrop(uid, payload, seedBuff)
     local now = Now()
     local plantIndex = NormalizePlantIndex(payload.plantIndex)
@@ -647,7 +668,7 @@ local function BuildAuthoritativeCrop(uid, payload, seedBuff)
     local weightRatio = weight / baseWeight
     local weightMultiplier = math.min(math.max(weightRatio * weightRatio, 0.4), 12.0)
     mutation.sizeScale = mutation.sizeScale * naturalScale * (weightScale ^ 0.35)
-    local price = math.floor(math.min((plant.fruitPrice or 1) * weightMultiplier * mutation.priceMultiplier, (plant.fruitPrice or 1) * 200) + 0.5)
+    local price = CalculateAuthoritativeCropPrice(plant, weightMultiplier, mutation)
     local growTime = math.max(1, (tonumber(plant.growTime or 1) or 1) * mutation.timeMultiplier)
     local localPos = NormalizeLocalPos(payload.localPos)
     local plotIndex = NormalizePlotIndex(payload.plotIndex)
@@ -687,6 +708,12 @@ local function NormalizeFarmState(state)
     state = type(state) == "table" and state or {}
     state.version = 1
     state.plots = type(state.plots) == "table" and state.plots or {}
+    for _, plot in pairs(state.plots) do
+        plot.plants = type(plot.plants) == "table" and plot.plants or {}
+        for _, crop in ipairs(plot.plants) do
+            RecalculateAuthoritativeItemPrice(crop)
+        end
+    end
     state.updatedAt = Now()
     return state
 end
@@ -830,6 +857,9 @@ local function NormalizeEconomyState(state)
     state.seedBag = CopyNumericKeyMap(state.seedBag)
     state.seedBagBuffs = CopyNumericKeyMap(state.seedBagBuffs)
     state.harvested = type(state.harvested) == "table" and state.harvested or {}
+    for _, item in ipairs(state.harvested) do
+        RecalculateAuthoritativeItemPrice(item)
+    end
     state.seedPacks = type(state.seedPacks) == "table" and state.seedPacks or {}
     state.collectedPlants = CopyNumericKeyMap(state.collectedPlants)
     state.tutorial = type(state.tutorial) == "table" and state.tutorial or {}
@@ -910,6 +940,27 @@ NormalizeTalentState = function(talent)
     return talent
 end
 
+local DEFAULT_HARVEST_BAG_CAPACITY = 20
+local MAX_HARVEST_BAG_CAPACITY = 100
+local BAG_CAPACITY_BONUSES = {
+    bag_capacity_1 = 15,
+    bag_capacity_2 = 15,
+    bag_capacity_3 = 15,
+    bag_capacity_4 = 15,
+    bag_capacity_5 = 20,
+}
+
+local function GetHarvestBagCapacityFromState(state)
+    local talent = NormalizeTalentState(state and state.talent)
+    local bonus = 0
+    for talentId, value in pairs(BAG_CAPACITY_BONUSES) do
+        if talent.unlockedTalents[talentId] == true then
+            bonus = bonus + value
+        end
+    end
+    return math.min(MAX_HARVEST_BAG_CAPACITY, DEFAULT_HARVEST_BAG_CAPACITY + bonus)
+end
+
 NormalizeProgressionState = function(progression)
     progression = type(progression) == "table" and progression or {}
     progression.unlockedPlotCount = Clamp(math.floor(tonumber(progression.unlockedPlotCount or 1) or 1), 1, (GameConfig.CONFIG.GridCols or 1) * (GameConfig.CONFIG.GridRows or 1))
@@ -930,7 +981,7 @@ end
 
 local function AddTourRankCommit(commit, uid, state)
     local progression = NormalizeProgressionState(state and state.progression)
-    local score = math.max(0, math.floor(tonumber(progression.bestTourValue or progression.currentTourValue or 0) or 0))
+    local score = math.max(0, math.floor(tonumber(progression.currentTourValue or 0) or 0))
     commit:ScoreSetInt(uid, Shared.KEYS.TOUR_RANK, score)
 end
 
@@ -1042,7 +1093,18 @@ local function GetCurrentActivityCycleInfo()
     if GameConfig.GetActivityCycleInfo then
         return GameConfig.GetActivityCycleInfo(Now())
     end
-    return { activityId = GetActiveActivityId(), cycleId = "sweet_0", timeLeft = 0 }
+    return { activityId = GetActiveActivityId(), cycleId = "sweet_0", cycleIndex = 0, timeLeft = 0 }
+end
+
+local function GetPreviousActivityCycleInfo()
+    local current = GetCurrentActivityCycleInfo()
+    local duration = math.max(1, math.floor(tonumber(current.duration or ((GameConfig.ACTIVITY_CONFIG and GameConfig.ACTIVITY_CONFIG.cycleDays or 3) * 86400)) or 1))
+    local previousTime = math.max(0, math.floor(tonumber(current.cycleStart or Now()) or Now()) - 1)
+    if previousTime <= 0 then return nil end
+    if GameConfig.GetActivityCycleInfo then
+        return GameConfig.GetActivityCycleInfo(previousTime)
+    end
+    return { activityId = GetActiveActivityId(previousTime), cycleId = "sweet_0", cycleIndex = 0, timeLeft = duration }
 end
 
 local function GetActivityConfig(activityId)
@@ -1066,10 +1128,10 @@ local function GetSweetSubmitValue(item)
     if item == nil then return 0 end
     if not HasSpecialMutation(item, "candy") and not HasSpecialMutation(item, "honey") then return 0 end
     local rarityOrder = GetRarityOrder(item.rarity)
-    local base = 8 + rarityOrder * 6 + math.floor((tonumber(item.price or 0) or 0) / 900)
-    if HasSpecialMutation(item, "honey") then base = math.floor(base * 1.3 + 0.5) end
-    if item.weightTier == "Giant" then base = math.floor(base * 1.2 + 0.5) end
-    return math.max(5, base)
+    local base = 5 + rarityOrder * 4 + math.floor((tonumber(item.price or 0) or 0) / 1300)
+    if HasSpecialMutation(item, "honey") then base = math.floor(base * 1.2 + 0.5) end
+    if item.weightTier == "Giant" then base = math.floor(base * 1.12 + 0.5) end
+    return math.max(3, base)
 end
 
 local function FindSweetReward(rewardId)
@@ -1133,14 +1195,18 @@ local function ApplyActivityHarvestReward(state, crop)
 end
 
 local function BuildExpansionRequirement(plotIndex)
+    local requirements = GameConfig.CONFIG and GameConfig.CONFIG.LAND_UNLOCK_REQUIREMENTS or nil
+    if requirements ~= nil and requirements[plotIndex] ~= nil then
+        return requirements[plotIndex]
+    end
     local sightReq = GameConfig.CONFIG and GameConfig.CONFIG.LAND_UNLOCK_SIGHT_REQUIREMENTS or nil
     local tableReq = {
-        [2] = { level = 1, gold = 80, tour = sightReq and sightReq[2] or 80 }, [3] = { level = 2, gold = 250, tour = sightReq and sightReq[3] or 220 },
-        [4] = { level = 3, gold = 800, tour = sightReq and sightReq[4] or 520 }, [5] = { level = 5, gold = 3500, tour = sightReq and sightReq[5] or 1100 },
-        [6] = { level = 8, gold = 15000, tour = sightReq and sightReq[6] or 2200 }, [7] = { level = 11, gold = 60000, tour = sightReq and sightReq[7] or 4200 },
-        [8] = { level = 15, gold = 220000, tour = sightReq and sightReq[8] or 7600 }, [9] = { level = 19, gold = 800000, tour = sightReq and sightReq[9] or 12500 },
+        [2] = { level = 2, gold = 600, tour = sightReq and sightReq[2] or 180 }, [3] = { level = 4, gold = 2200, tour = sightReq and sightReq[3] or 550 },
+        [4] = { level = 6, gold = 7500, tour = sightReq and sightReq[4] or 1300 }, [5] = { level = 9, gold = 25000, tour = sightReq and sightReq[5] or 3000 },
+        [6] = { level = 12, gold = 85000, tour = sightReq and sightReq[6] or 6500 }, [7] = { level = 16, gold = 260000, tour = sightReq and sightReq[7] or 13000 },
+        [8] = { level = 21, gold = 780000, tour = sightReq and sightReq[8] or 25000 }, [9] = { level = 26, gold = 2200000, tour = sightReq and sightReq[9] or 45000 },
     }
-    return tableReq[plotIndex] or { level = math.max(1, plotIndex), gold = 500 * plotIndex * plotIndex, tour = 30 * plotIndex * plotIndex }
+    return tableReq[plotIndex] or { level = math.max(1, plotIndex), gold = 3000 * plotIndex * plotIndex, tour = 600 * plotIndex * plotIndex }
 end
 
 local function RequestAuthFarmState(uid, connection)
@@ -1455,8 +1521,16 @@ local function HarvestCropAuthority(uid, payload, connection)
                 ok = function(scores)
                     local state = NormalizeEconomyState(scores[Shared.KEYS.ECONOMY_STATE] or BuildInitialEconomyState())
                     state.harvested = state.harvested or {}
-                    if #(state.harvested) >= 100 then
-                        SendHarvestFailure("背包已满", { state = state, cropId = crop.cropId or crop.serverCropId, plotIndex = plotIndex, cropIndex = cropIndex })
+                    local harvestBagCapacity = GetHarvestBagCapacityFromState(state)
+                    if #(state.harvested) >= harvestBagCapacity then
+                        SendHarvestFailure("背包已满，出售作物或点天赋扩容", {
+                            state = state,
+                            cropId = crop.cropId or crop.serverCropId,
+                            plotIndex = plotIndex,
+                            cropIndex = cropIndex,
+                            bagCount = #state.harvested,
+                            bagCapacity = harvestBagCapacity,
+                        })
                         return
                     end
 
@@ -2048,6 +2122,7 @@ local function GrantAdReward(uid, payload, connection)
                 local c = serverCloud:BatchCommit("广告奖励：偷取次数")
                 c:QuotaAdd(uid, "daily_steal_ad", 1, DAILY_STEAL_AD_LIMIT, "day", 1)
                 c:QuotaAdd(uid, "daily_steal_ad_bonus", AD_STEAL_BONUS, DAILY_STEAL_AD_LIMIT * AD_STEAL_BONUS, "day", 1)
+                RequestGuard.AddToCommit(c, uid, payload._requestRecordKey, response)
                 c:Commit({
                     ok = function() Send(connection, Shared.EVENTS.AD_REWARD_RESPONSE, response); SocialServer.RequestSocialState(uid, connection) end,
                     error = function(_, reason) Send(connection, Shared.EVENTS.AD_REWARD_RESPONSE, { success = false, message = "奖励发放失败: " .. tostring(reason), requestId = payload.requestId, rewardType = rewardType }) end,
@@ -2070,19 +2145,14 @@ local function GrantAdReward(uid, payload, connection)
                 serverCloud:Get(uid, Shared.KEYS.ECONOMY_STATE, {
                     ok = function(scores)
                         local state = NormalizeEconomyState(scores[Shared.KEYS.ECONOMY_STATE] or BuildInitialEconomyState())
-                        local results = {}
-                        for _ = 1, AD_RARE_PACK_COUNT do
-                            local seedId = RollRareSeedId()
-                            state.seedBag[seedId] = (tonumber(state.seedBag[seedId] or 0) or 0) + 1
-                            state.collectedPlants[seedId] = true
-                            results[#results + 1] = { seedId = seedId, count = 1, rarity = "稀有" }
-                        end
+                        state.seedPacks.pack_rare = (tonumber(state.seedPacks.pack_rare or 0) or 0) + AD_RARE_PACK_COUNT
                         state.updatedAt = Now()
                         NextRevision(state)
-                        local response = { success = true, message = "获得稀有种子 x" .. tostring(AD_RARE_PACK_COUNT), requestId = payload.requestId, rewardType = rewardType, state = state, results = results, daily = { seedPackAdCount = watched + 1, seedPackAdLimit = DAILY_SEED_PACK_AD_LIMIT } }
-                        local c = serverCloud:BatchCommit("广告奖励：稀有种子")
+                        local response = { success = true, message = "获得稀有种子包 x" .. tostring(AD_RARE_PACK_COUNT), requestId = payload.requestId, rewardType = rewardType, state = state, rewards = { { packId = "pack_rare", count = AD_RARE_PACK_COUNT } }, daily = { seedPackAdCount = watched + 1, seedPackAdLimit = DAILY_SEED_PACK_AD_LIMIT } }
+                        local c = serverCloud:BatchCommit("广告奖励：稀有种子包")
                         c:ScoreSet(uid, Shared.KEYS.ECONOMY_STATE, state)
                         c:QuotaAdd(uid, "daily_seed_pack_ad", 1, DAILY_SEED_PACK_AD_LIMIT, "day", 1)
+                        RequestGuard.AddToCommit(c, uid, payload._requestRecordKey, response)
                         c:Commit({
                             ok = function() Send(connection, Shared.EVENTS.AD_REWARD_RESPONSE, response); SocialServer.RequestSocialState(uid, connection) end,
                             error = function(_, reason) Send(connection, Shared.EVENTS.AD_REWARD_RESPONSE, { success = false, message = "奖励发放失败: " .. tostring(reason), requestId = payload.requestId, rewardType = rewardType, state = state }) end,
@@ -2098,36 +2168,49 @@ local function GrantAdReward(uid, payload, connection)
 
     if rewardType == "mature_plot" then
         local plotIndex = NormalizePlotIndex(payload.plotIndex)
-        serverCloud:Get(uid, Shared.KEYS.AUTH_FARM_STATE, {
-            ok = function(farmScores)
-                local farmState = NormalizeFarmState(farmScores[Shared.KEYS.AUTH_FARM_STATE])
-                local changed = MatureAllCropsInPlot(farmState, plotIndex)
-                if changed <= 0 then
-                    Send(connection, Shared.EVENTS.AD_REWARD_RESPONSE, { success = false, message = "该地块没有可加速成熟的作物", requestId = payload.requestId, rewardType = rewardType, farm = farmState })
+        serverCloud.quota:Get(uid, "daily_mature_ad", {
+            ok = function(rows)
+                local row = rows and rows[1]
+                local watched = math.max(0, math.floor(tonumber(row and row.value or 0) or 0))
+                if watched >= DAILY_MATURE_AD_LIMIT then
+                    Send(connection, Shared.EVENTS.AD_REWARD_RESPONSE, { success = false, code = "AD_LIMIT_REACHED", message = "今日快速成熟广告已达上限", requestId = payload.requestId, rewardType = rewardType, daily = { matureAdCount = watched, matureAdLimit = DAILY_MATURE_AD_LIMIT } })
                     return
                 end
-                serverCloud:Get(uid, Shared.KEYS.ECONOMY_STATE, {
-                    ok = function(scores)
-                        local state = NormalizeEconomyState(scores[Shared.KEYS.ECONOMY_STATE] or BuildInitialEconomyState())
-                        SyncProgressionTourValueFromFarm(state, farmState)
-                        farmState.updatedAt = Now()
-                        NextRevision(farmState)
-                        state.updatedAt = Now()
-                        NextRevision(state)
-                        local response = { success = true, message = "地块作物已全部成熟", requestId = payload.requestId, rewardType = rewardType, plotIndex = plotIndex, maturedCount = changed, farm = farmState, state = state }
-                        local c = serverCloud:BatchCommit("广告奖励：快速成熟")
-                        c:ScoreSet(uid, Shared.KEYS.AUTH_FARM_STATE, farmState)
-                        c:ScoreSet(uid, Shared.KEYS.ECONOMY_STATE, state)
-                        AddTourRankCommit(c, uid, state)
-                        c:Commit({
-                            ok = function() Send(connection, Shared.EVENTS.AD_REWARD_RESPONSE, response) end,
-                            error = function(_, reason) Send(connection, Shared.EVENTS.AD_REWARD_RESPONSE, { success = false, message = "快速成熟失败: " .. tostring(reason), requestId = payload.requestId, rewardType = rewardType, farm = farmState }) end,
+                serverCloud:Get(uid, Shared.KEYS.AUTH_FARM_STATE, {
+                    ok = function(farmScores)
+                        local farmState = NormalizeFarmState(farmScores[Shared.KEYS.AUTH_FARM_STATE])
+                        local changed = MatureAllCropsInPlot(farmState, plotIndex)
+                        if changed <= 0 then
+                            Send(connection, Shared.EVENTS.AD_REWARD_RESPONSE, { success = false, message = "该地块没有可加速成熟的作物", requestId = payload.requestId, rewardType = rewardType, farm = farmState, daily = { matureAdCount = watched, matureAdLimit = DAILY_MATURE_AD_LIMIT } })
+                            return
+                        end
+                        serverCloud:Get(uid, Shared.KEYS.ECONOMY_STATE, {
+                            ok = function(scores)
+                                local state = NormalizeEconomyState(scores[Shared.KEYS.ECONOMY_STATE] or BuildInitialEconomyState())
+                                SyncProgressionTourValueFromFarm(state, farmState)
+                                farmState.updatedAt = Now()
+                                NextRevision(farmState)
+                                state.updatedAt = Now()
+                                NextRevision(state)
+                                local response = { success = true, message = "地块作物已全部成熟", requestId = payload.requestId, rewardType = rewardType, plotIndex = plotIndex, maturedCount = changed, farm = farmState, state = state, daily = { matureAdCount = watched + 1, matureAdLimit = DAILY_MATURE_AD_LIMIT } }
+                                local c = serverCloud:BatchCommit("广告奖励：快速成熟")
+                                c:ScoreSet(uid, Shared.KEYS.AUTH_FARM_STATE, farmState)
+                                c:ScoreSet(uid, Shared.KEYS.ECONOMY_STATE, state)
+                                c:QuotaAdd(uid, "daily_mature_ad", 1, DAILY_MATURE_AD_LIMIT, "day", 1)
+                                AddTourRankCommit(c, uid, state)
+                                RequestGuard.AddToCommit(c, uid, payload._requestRecordKey, response)
+                                c:Commit({
+                                    ok = function() Send(connection, Shared.EVENTS.AD_REWARD_RESPONSE, response) end,
+                                    error = function(_, reason) Send(connection, Shared.EVENTS.AD_REWARD_RESPONSE, { success = false, message = "快速成熟失败: " .. tostring(reason), requestId = payload.requestId, rewardType = rewardType, farm = farmState }) end,
+                                })
+                            end,
+                            error = function(_, reason) Send(connection, Shared.EVENTS.AD_REWARD_RESPONSE, { success = false, message = "经济数据读取失败: " .. tostring(reason), requestId = payload.requestId, rewardType = rewardType, farm = farmState }) end,
                         })
                     end,
-                    error = function(_, reason) Send(connection, Shared.EVENTS.AD_REWARD_RESPONSE, { success = false, message = "经济数据读取失败: " .. tostring(reason), requestId = payload.requestId, rewardType = rewardType, farm = farmState }) end,
+                    error = function(_, reason) Send(connection, Shared.EVENTS.AD_REWARD_RESPONSE, { success = false, message = "读取农场失败: " .. tostring(reason), requestId = payload.requestId, rewardType = rewardType }) end,
                 })
             end,
-            error = function(_, reason) Send(connection, Shared.EVENTS.AD_REWARD_RESPONSE, { success = false, message = "读取农场失败: " .. tostring(reason), requestId = payload.requestId, rewardType = rewardType }) end,
+            error = function(_, reason) Send(connection, Shared.EVENTS.AD_REWARD_RESPONSE, { success = false, message = "广告次数读取失败: " .. tostring(reason), requestId = payload.requestId, rewardType = rewardType }) end,
         })
         return
     end
@@ -2300,6 +2383,8 @@ local function ResolveLeaderboardInfo(kind, activityId)
     kind = tostring(kind or "income")
     if kind == "tour" then
         return { kind = "tour", key = Shared.KEYS.TOUR_RANK, title = "观光排行榜", resetMode = "never" }
+    elseif kind == "like" then
+        return { kind = "like", key = Shared.KEYS.LIKE_COUNT, title = "点赞排行榜", resetMode = "never" }
     elseif kind == "activity" then
         local cycleInfo = GetCurrentActivityCycleInfo()
         local info = GetActivityRankInfo(activityId or cycleInfo.activityId, cycleInfo)
@@ -2323,11 +2408,55 @@ local function GetRankItemScore(item, key)
     return math.max(0, math.floor(tonumber(item.score or item.value or 0) or 0))
 end
 
+local function AddPreviousActivityRewardStatus(uid, data, done)
+    if data.kind ~= "activity" then
+        done(data)
+        return
+    end
+    local previousCycleInfo = GetPreviousActivityCycleInfo()
+    if previousCycleInfo == nil then
+        data.previousRewardEligible = false
+        data.previousRewardClaimed = false
+        done(data)
+        return
+    end
+    local previousInfo = GetActivityRankInfo(previousCycleInfo.activityId, previousCycleInfo)
+    data.previousActivityId = previousInfo.activityId
+    data.previousCycleId = previousInfo.cycleId
+    data.previousCycleStart = previousInfo.cycleStart
+    data.previousCycleEnd = previousInfo.cycleEnd
+    serverCloud:GetUserRank(uid, previousInfo.key, {
+        ok = function(previousRank, previousScore)
+            previousScore = math.max(0, math.floor(tonumber(previousScore or 0) or 0))
+            data.previousRank = previousRank
+            data.previousScore = previousScore
+            data.previousRewardEligible = previousRank ~= nil and previousRank <= ACTIVITY_RANK_REWARD_TOP and previousScore > 0
+            serverCloud:Get(uid, previousInfo.rewardKey, {
+                ok = function(scores)
+                    data.previousRewardClaimed = type(scores[previousInfo.rewardKey]) == "table"
+                    done(data)
+                end,
+                error = function()
+                    data.previousRewardClaimed = false
+                    done(data)
+                end,
+            })
+        end,
+        error = function()
+            data.previousRank = nil
+            data.previousScore = 0
+            data.previousRewardEligible = false
+            data.previousRewardClaimed = false
+            done(data)
+        end,
+    })
+end
+
 local function SendLeaderboardWithMyRank(uid, connection, requestId, info, list)
     serverCloud:GetUserRank(uid, info.key, {
         ok = function(myRank, myScore)
             local function SendWithRewardStatus(rewardClaimed)
-                Send(connection, Shared.EVENTS.LEADERBOARD_RESPONSE, {
+                local data = {
                     success = true,
                     requestId = requestId,
                     kind = info.kind,
@@ -2343,7 +2472,10 @@ local function SendLeaderboardWithMyRank(uid, connection, requestId, info, list)
                     myScore = math.max(0, math.floor(tonumber(myScore or 0) or 0)),
                     rewardEligible = info.kind == "activity" and myRank ~= nil and myRank <= ACTIVITY_RANK_REWARD_TOP,
                     rewardClaimed = rewardClaimed == true,
-                })
+                }
+                AddPreviousActivityRewardStatus(uid, data, function(response)
+                    Send(connection, Shared.EVENTS.LEADERBOARD_RESPONSE, response)
+                end)
             end
             if info.kind ~= "activity" then
                 SendWithRewardStatus(false)
@@ -2359,7 +2491,10 @@ local function SendLeaderboardWithMyRank(uid, connection, requestId, info, list)
             })
         end,
         error = function()
-            Send(connection, Shared.EVENTS.LEADERBOARD_RESPONSE, { success = true, requestId = requestId, kind = info.kind, activityId = info.activityId, cycleId = info.cycleId, resetMode = info.resetMode, title = info.title, list = list, myRank = nil, myScore = 0 })
+            local data = { success = true, requestId = requestId, kind = info.kind, activityId = info.activityId, cycleId = info.cycleId, resetMode = info.resetMode, title = info.title, list = list, myRank = nil, myScore = 0 }
+            AddPreviousActivityRewardStatus(uid, data, function(response)
+                Send(connection, Shared.EVENTS.LEADERBOARD_RESPONSE, response)
+            end)
         end,
     })
 end
@@ -2386,10 +2521,14 @@ local function RequestLeaderboardAuthority(uid, payload, connection)
                 end
             end
             GetNicknameMap(userIds, function(nickMap)
-                for _, entry in ipairs(result) do
-                    entry.nickname = nickMap[entry.userId] or nickMap[tostring(entry.userId)] or entry.nickname
-                end
-                SendLeaderboardWithMyRank(uid, connection, payload.requestId, info, result)
+                SocialServer.FetchGardenProfiles(userIds, function(profileMap)
+                    for _, entry in ipairs(result) do
+                        local profile = profileMap[tostring(entry.userId)] or {}
+                        entry.nickname = profile.nickname or nickMap[entry.userId] or nickMap[tostring(entry.userId)] or entry.nickname
+                        entry.avatar = profile.avatar
+                    end
+                    SendLeaderboardWithMyRank(uid, connection, payload.requestId, info, result)
+                end)
             end)
         end,
         error = function(_, reason)
@@ -2413,24 +2552,28 @@ end
 
 local function ClaimActivityRankRewardAuthority(uid, payload, connection)
     payload = payload or {}
-    local cycleInfo = GetCurrentActivityCycleInfo()
-    local info = GetActivityRankInfo(payload.activityId or cycleInfo.activityId, cycleInfo)
+    local cycleInfo = GetPreviousActivityCycleInfo()
+    if cycleInfo == nil then
+        Send(connection, Shared.EVENTS.CLAIM_ACTIVITY_RANK_REWARD_RESPONSE, { success = false, requestId = payload.requestId, message = "没有上期活动奖励可领" })
+        return
+    end
+    local info = GetActivityRankInfo(cycleInfo.activityId, cycleInfo)
     serverCloud:GetUserRank(uid, info.key, {
         ok = function(rank, score)
             score = math.max(0, math.floor(tonumber(score or 0) or 0))
             if rank == nil or rank > ACTIVITY_RANK_REWARD_TOP or score <= 0 then
-                Send(connection, Shared.EVENTS.CLAIM_ACTIVITY_RANK_REWARD_RESPONSE, { success = false, requestId = payload.requestId, activityId = info.activityId, cycleId = info.cycleId, message = "未进入活动榜前20" })
+                Send(connection, Shared.EVENTS.CLAIM_ACTIVITY_RANK_REWARD_RESPONSE, { success = false, requestId = payload.requestId, activityId = info.activityId, cycleId = info.cycleId, message = "上期没有进入活动榜前20，没有奖励可领" })
                 return
             end
             serverCloud:Get(uid, info.rewardKey, {
                 ok = function(rewardRows)
                     if type(rewardRows[info.rewardKey]) == "table" then
-                        Send(connection, Shared.EVENTS.CLAIM_ACTIVITY_RANK_REWARD_RESPONSE, { success = false, requestId = payload.requestId, activityId = info.activityId, cycleId = info.cycleId, message = "本期活动排行奖励已领取" })
+                        Send(connection, Shared.EVENTS.CLAIM_ACTIVITY_RANK_REWARD_RESPONSE, { success = false, requestId = payload.requestId, activityId = info.activityId, cycleId = info.cycleId, message = "上期活动排行奖励已领取" })
                         return
                     end
                     local avatarIndex = PickLockedAvatar(payload.unlockedAvatars)
                     local reward = avatarIndex ~= nil and { type = "avatar", avatarIndex = avatarIndex, avatarId = "plant_" .. tostring(avatarIndex) } or { type = "none" }
-                    local message = avatarIndex ~= nil and "活动排行奖励：解锁随机头像" or "已拥有全部头像，本次不发放头像奖励"
+                    local message = avatarIndex ~= nil and "上期活动排行奖励：解锁头像" or "已拥有全部头像，本次不发放头像奖励"
                     serverCloud:Set(uid, info.rewardKey, { claimedAt = Now(), rank = rank, score = score, reward = reward }, {
                         ok = function()
                             local response = { success = true, requestId = payload.requestId, activityId = info.activityId, cycleId = info.cycleId, rank = rank, score = score, reward = reward, message = message }
@@ -2448,7 +2591,7 @@ local function ClaimActivityRankRewardAuthority(uid, payload, connection)
             })
         end,
         error = function(_, reason)
-            Send(connection, Shared.EVENTS.CLAIM_ACTIVITY_RANK_REWARD_RESPONSE, { success = false, requestId = payload.requestId, activityId = info.activityId, cycleId = info.cycleId, message = "排名读取失败: " .. tostring(reason) })
+            Send(connection, Shared.EVENTS.CLAIM_ACTIVITY_RANK_REWARD_RESPONSE, { success = false, requestId = payload.requestId, activityId = info.activityId, cycleId = info.cycleId, message = "上期排名读取失败: " .. tostring(reason) })
         end,
     })
 end
@@ -2813,7 +2956,15 @@ function HandleGardenRequestAdReward(eventType, eventData)
     local uid = GetConnectionUserId(connection)
     local data = ReadRequest(eventData)
     if uid ~= nil then
-        GrantAdReward(uid, data, connection)
+        RequestGuard.Check(uid, "ad_reward", data.requestId, function(recordKey)
+            data._requestRecordKey = recordKey
+            GrantAdReward(uid, data, connection)
+        end, function(record)
+            local response = record.response or record
+            Send(connection, Shared.EVENTS.AD_REWARD_RESPONSE, response)
+        end, function(reason)
+            Send(connection, Shared.EVENTS.AD_REWARD_RESPONSE, { success = false, message = "请求去重检查失败: " .. tostring(reason), requestId = data.requestId })
+        end)
     end
 end
 
@@ -2997,7 +3148,7 @@ function HandleGardenSendSeedGift(eventType, eventData)
     local data = ReadRequest(eventData)
     if uid ~= nil then
         RequestGuard.Check(uid, "gift", data.requestId, function(recordKey)
-            GiftServer.SendSeedGift(uid, data.targetUserId, data.seedId, data.count, connection, data.requestId, recordKey)
+            GiftServer.SendSeedGift(uid, data.targetUserId, data.seedId, data.count, connection, data.requestId, recordKey, data.profile)
         end, function(record)
             local response = record.response or record
             Send(connection, Shared.EVENTS.SEND_SEED_GIFT_RESPONSE, response)
@@ -3110,6 +3261,18 @@ function HandleGardenClaimGift(eventType, eventData)
     end
 end
 
+local function PickGiftSeedId()
+    local pool = {}
+    local allowed = { ["普通"] = true, ["罕见"] = true, ["稀有"] = true, ["史诗"] = true }
+    for seedId, plant in ipairs(GameConfig.PLANTS or {}) do
+        if plant ~= nil and allowed[plant.rarity] == true then
+            pool[#pool + 1] = seedId
+        end
+    end
+    if #pool <= 0 then return 1 end
+    return pool[math.random(1, #pool)]
+end
+
 function Start()
     math.randomseed(os.time())
     scene_ = Scene()
@@ -3119,16 +3282,25 @@ function Start()
         dailyGiftLimit = DAILY_GIFT_LIMIT,
         dailyStealLimit = DAILY_STEAL_LIMIT,
         dailySeedPackAdLimit = DAILY_SEED_PACK_AD_LIMIT,
+        dailyMatureAdLimit = DAILY_MATURE_AD_LIMIT,
         maxGiftCount = MAX_GIFT_COUNT,
         normalizePlantIndex = NormalizePlantIndex,
         normalizeEconomyState = NormalizeEconomyState,
         buildInitialEconomyState = BuildInitialEconomyState,
         nextRevision = NextRevision,
+        pickGiftSeedId = PickGiftSeedId,
+        getSeedName = function(seedId)
+            local plant = GameConfig.PLANTS[tonumber(seedId or 0) or 0]
+            return plant and plant.name or "神秘"
+        end,
     })
     SocialServer.Init({
         Shared = Shared,
         RequestGuard = RequestGuard,
         maxSocialRows = MAX_SOCIAL_ROWS,
+        dailyStealLimit = DAILY_STEAL_LIMIT,
+        dailySeedPackAdLimit = DAILY_SEED_PACK_AD_LIMIT,
+        dailyMatureAdLimit = DAILY_MATURE_AD_LIMIT,
         normalizePositiveCount = NormalizePositiveCount,
         buildVisitGardenFromAuthFarm = BuildVisitGardenFromAuthFarm,
     })

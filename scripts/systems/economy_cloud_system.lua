@@ -98,6 +98,9 @@ local function ApplyState(cloudState, options)
         ReplaceTable(deps_.InventorySystem.GetSeedBag(), cloudState.seedBag)
         ReplaceTable(deps_.InventorySystem.GetSeedBagBuffs(), cloudState.seedBagBuffs)
         ReplaceTable(deps_.InventorySystem.GetHarvested(), cloudState.harvested)
+        if deps_.InventorySystem.NormalizeHarvestedPrices ~= nil then
+            deps_.InventorySystem.NormalizeHarvestedPrices()
+        end
         ReplaceTable(deps_.InventorySystem.GetSeedPacks(), cloudState.seedPacks)
         if deps_.InventorySystem.GetCollectedPlants ~= nil then
             ReplaceTable(deps_.InventorySystem.GetCollectedPlants(), cloudState.collectedPlants)
@@ -405,11 +408,19 @@ end
 
 function EconomyCloudSystem.RequestAdReward(rewardType, extra)
     if BlockIfAuthoritativeNotReady(rewardType == "mature_plot") then return false end
-    local payload = extra or {}
+    if requests_:IsPending("adReward") then
+        if deps_.showToast then deps_.showToast("广告奖励发放中，请稍后") end
+        return true
+    end
+    local payload = {}
+    if type(extra) == "table" then
+        for key, value in pairs(extra) do payload[key] = value end
+    end
     payload.rewardType = rewardType
     payload = BeginRequest("adReward", payload)
     if SendRequest(Shared.EVENTS.REQUEST_AD_REWARD, payload) then return true end
     FinishRequest(payload.requestId, "adReward")
+    if deps_.showToast then deps_.showToast("奖励请求发送失败，请稍后重试") end
     return false
 end
 
@@ -516,7 +527,9 @@ function EconomyCloudSystem.HandleHarvestCropResponse(data)
         else
             EconomyCloudSystem.RequestAuthFarm({ force = true, reason = "harvest_failed" })
         end
-        if deps_.showToast then deps_.showToast(data.message or "收获失败") end
+        local message = data.message or "收获失败"
+        if deps_.showToast then deps_.showToast(message) end
+        if deps_.showFloatingToast then deps_.showFloatingToast(message) end
     end
 end
 

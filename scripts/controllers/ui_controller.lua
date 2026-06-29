@@ -93,8 +93,8 @@ function UIController.Refresh(force)
         labels_.plotLabel:SetText("LV" .. deps_.getTalentLevel())
     end
     if labels_.talentBadge ~= nil then
-        local hasPoints = deps_.getTalentPoints() > 0
-        labels_.talentBadge:SetStyle({ display = hasPoints and "flex" or "none" })
+        local hasUnlockableTalent = deps_.hasUnlockableTalent ~= nil and deps_.hasUnlockableTalent()
+        labels_.talentBadge:SetVisible(hasUnlockableTalent == true)
     end
 
     if labels_.helpLabel ~= nil then

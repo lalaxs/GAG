@@ -186,6 +186,27 @@ local function CopyTable(source, fallback)
     return fallback or {}
 end
 
+local function RecalculateHarvestItemPrice(item)
+    if type(item) ~= "table" or cfg_ == nil or cfg_.PLANTS == nil then return end
+    local plant = cfg_.PLANTS[tonumber(item.plantIndex or 0) or 0]
+    if plant == nil then return end
+    local baseWeight = math.max(0.001, tonumber(item.baseWeight or plant.baseWeight or 1.0) or 1.0)
+    local weight = tonumber(item.weight or baseWeight) or baseWeight
+    local weightRatio = weight / baseWeight
+    local weightMultiplier = math.min(math.max(weightRatio * weightRatio, 0.4), 12.0)
+    local mutation = item.mutation or {}
+    local mutationMultiplier = tonumber(mutation.priceMultiplier or 1.0) or 1.0
+    local priceBase = math.max(1, tonumber(plant.seedPrice or plant.fruitPrice or 1) or 1)
+    item.weightMultiplier = weightMultiplier
+    item.price = math.floor(math.min(priceBase * weightMultiplier * mutationMultiplier, priceBase * 200) + 0.5)
+end
+
+local function NormalizeHarvestedPrices()
+    for _, item in ipairs(state_.harvested or {}) do
+        RecalculateHarvestItemPrice(item)
+    end
+end
+
 local function ReplaceTable(target, source)
     for key in pairs(target) do
         target[key] = nil
@@ -217,6 +238,7 @@ function InventorySystem.LoadSaveData(data)
     ReplaceTable(state_.seedBag, CopyNumericKeyMap(data.seedBag))
     ReplaceTable(state_.seedBagBuffs, CopyNumericKeyMap(data.seedBagBuffs))
     ReplaceTable(state_.harvested, CopyTable(data.harvested))
+    NormalizeHarvestedPrices()
     ReplaceTable(state_.seedPacks, CopyTable(data.seedPacks))
     ReplaceTable(state_.collectedPlants, CopyNumericKeyMap(data.collectedPlants))
     ReplaceTable(state_.codexStats, CopyNumericKeyMap(data.codexStats))
@@ -237,7 +259,12 @@ function InventorySystem.GetSeedBagBuffs()
 end
 
 function InventorySystem.GetHarvested()
+    NormalizeHarvestedPrices()
     return state_.harvested
+end
+
+function InventorySystem.NormalizeHarvestedPrices()
+    NormalizeHarvestedPrices()
 end
 
 function InventorySystem.GetSeedPacks()

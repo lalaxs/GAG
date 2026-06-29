@@ -185,17 +185,17 @@ function ActivitySystem.ApplyPlantingMutation(plant, mutation)
 
     local added = nil
     if id == "sweet" then
-        if math.random() <= (activity.candyChance or 0.08) then
+        if math.random() <= (activity.candyChance or 0.045) then
             added = AddSpecial(mutation, "candy") and "candy" or added
         end
-        if math.random() <= (activity.honeyChance or 0.055) then
+        if math.random() <= (activity.honeyChance or 0.025) then
             added = AddSpecial(mutation, "honey") and "honey" or added
         end
     elseif id == "dark" then
-        if math.random() <= (activity.devourChance or 0.05) then
+        if math.random() <= (activity.devourChance or 0.035) then
             added = AddSpecial(mutation, "devour") and "devour" or added
         end
-        if math.random() <= (activity.extraVoidChance or 0.035) then
+        if math.random() <= (activity.extraVoidChance or 0.022) then
             added = AddSpecial(mutation, "void") and "void" or added
         end
     end
@@ -212,14 +212,9 @@ function ActivitySystem.OnCropHarvested(crop)
 
     if id == "alien" then
         local rarityOrder = GetRarityOrder(crop.config and crop.config.rarity)
-        local chance = ({ 0.30, 0.40, 0.55, 0.70, 1.0 })[rarityOrder] or 0.30
+        local chance = ({ 0.18, 0.28, 0.42, 0.58, 0.85 })[rarityOrder] or 0.18
         if math.random() <= chance then
-            local minValue = math.max(1, rarityOrder)
-            local maxValue = math.max(minValue, rarityOrder + 2)
-            local amount = math.random(minValue, maxValue)
-            if crop.mutation ~= nil and crop.mutation.specials ~= nil and #crop.mutation.specials > 0 then
-                amount = amount + 1
-            end
+            local amount = 1
             state_.alien.genes = state_.alien.genes + amount
             state_.alien.totalGenes = state_.alien.totalGenes + amount
             local text = "获得外星基因 x" .. amount
@@ -231,8 +226,8 @@ function ActivitySystem.OnCropHarvested(crop)
     elseif id == "dark" and (HasSpecial(crop.mutation, "devour") or HasSpecial(crop.mutation, "void")) then
         state_.dark.devourHarvestCount = state_.dark.devourHarvestCount + 1
         local rarityOrder = GetRarityOrder(crop.config and crop.config.rarity)
-        local rates = activity.darkSeedDropRates or { 0.08, 0.12, 0.18, 0.28, 0.45 }
-        if math.random() <= (rates[rarityOrder] or 0.08) then
+        local rates = activity.darkSeedDropRates or { 0.035, 0.06, 0.10, 0.17, 0.28 }
+        if math.random() <= (rates[rarityOrder] or 0.035) then
             local plantIndex = RollDarkSeed(activity)
             inventory_.AddSeedToBag(plantIndex, 1, 0)
             state_.dark.darkSeedDrops = state_.dark.darkSeedDrops + 1
@@ -253,10 +248,10 @@ function ActivitySystem.GetSweetSubmitValue(item)
     local mutation = item.mutation
     if not HasSpecial(mutation, "candy") and not HasSpecial(mutation, "honey") then return 0 end
     local rarityOrder = GetRarityOrder(item.rarity)
-    local base = 8 + rarityOrder * 6 + math.floor((item.price or 0) / 900)
-    if HasSpecial(mutation, "honey") then base = math.floor(base * 1.3 + 0.5) end
-    if item.weightTier == "Giant" then base = math.floor(base * 1.2 + 0.5) end
-    return math.max(5, base)
+    local base = 5 + rarityOrder * 4 + math.floor((item.price or 0) / 1300)
+    if HasSpecial(mutation, "honey") then base = math.floor(base * 1.2 + 0.5) end
+    if item.weightTier == "Giant" then base = math.floor(base * 1.12 + 0.5) end
+    return math.max(3, base)
 end
 
 function ActivitySystem.GetSweetSubmitItems()

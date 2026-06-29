@@ -48,6 +48,13 @@ local function GetPlotDisplayMode()
     return "all"
 end
 
+local function IsPowerSaveMode()
+    if deps_.isPowerSaveMode then
+        return deps_.isPowerSaveMode()
+    end
+    return false
+end
+
 local function BuildVolumeSection(title, value, soundType)
     return UI.Panel {
         gap = 8,
@@ -167,10 +174,64 @@ local function BuildPlotDisplaySection()
     }
 end
 
+local function BuildPowerSaveSection()
+    local enabled = IsPowerSaveMode()
+    return UI.Panel {
+        paddingTop = 14,
+        paddingBottom = 14,
+        paddingLeft = 14,
+        paddingRight = 14,
+        borderRadius = 18,
+        backgroundColor = enabled and {235, 248, 230, 255} or {255, 250, 236, 255},
+        borderWidth = 2,
+        borderColor = enabled and {94, 194, 131, 210} or {224, 199, 158, 170},
+        gap = 10,
+        children = {
+            UI.Panel {
+                flexDirection = "row",
+                justifyContent = "space-between",
+                alignItems = "center",
+                gap = 12,
+                children = {
+                    UI.Panel {
+                        flexGrow = 1,
+                        flexShrink = 1,
+                        gap = 4,
+                        children = {
+                            UI.Label {
+                                text = "省电模式",
+                                fontSize = 15,
+                                fontWeight = "bold",
+                                fontColor = {75, 55, 40, 255},
+                            },
+                            UI.Label {
+                                text = enabled and "已关闭成熟作物旋转，降低发热" or "关闭后成熟作物会持续旋转",
+                                fontSize = 12,
+                                fontColor = {120, 100, 75, 220},
+                            },
+                        },
+                    },
+                    UI.Toggle {
+                        value = enabled,
+                        onChange = function(_, value)
+                            if deps_.setPowerSaveMode then deps_.setPowerSaveMode(value == true) end
+                            if deps_.showToast then
+                                deps_.showToast(value and "省电模式已开启" or "省电模式已关闭")
+                            end
+                            SettingsView.RebuildContent()
+                        end,
+                    },
+                },
+            },
+        },
+    }
+end
+
 local function BuildContent()
     return UI.Panel {
         gap = 20,
         children = {
+            BuildPowerSaveSection(),
             BuildVolumeSection("音乐音量", musicVolume_, SOUND_MUSIC),
             BuildVolumeSection("音效音量", sfxVolume_, SOUND_EFFECT),
         },
@@ -352,16 +413,37 @@ end
 function SettingsView.BuildPlotDisplayButtons()
     local isPlantView = deps_.isPlantView and deps_.isPlantView() or false
     local showNextPlot = isPlantView or GetPlotDisplayMode() == "single"
-    local children = {
-        BuildModeButton("全部", GetPlotDisplayMode() ~= "single", function()
-            if deps_.suppressWorldTap then deps_.suppressWorldTap() end
-            if deps_.setPlotDisplayMode then deps_.setPlotDisplayMode("all") end
-        end),
-        BuildModeButton("单个", GetPlotDisplayMode() == "single", function()
-            if deps_.suppressWorldTap then deps_.suppressWorldTap() end
-            if deps_.setPlotDisplayMode then deps_.setPlotDisplayMode("single") end
-        end),
-        showNextPlot and UI.Button {
+    local children = {}
+    if isPlantView then
+        table.insert(children, UI.Button {
+            text = "▶成熟",
+            height = 40,
+            fontSize = 13,
+            fontWeight = "bold",
+            backgroundColor = {255, 236, 160, 255},
+            fontColor = {120, 82, 36, 255},
+            borderRadius = 14,
+            borderWidth = 2,
+            borderColor = {255, 204, 86, 255},
+            onClick = function()
+                if deps_.suppressWorldTap then deps_.suppressWorldTap() end
+                if deps_.requestMaturePlotAdReward then
+                    deps_.requestMaturePlotAdReward()
+                elseif deps_.showToast then
+                    deps_.showToast("快速成熟广告入口已点击")
+                end
+            end,
+        })
+    end
+    table.insert(children, BuildModeButton("全部", GetPlotDisplayMode() ~= "single", function()
+        if deps_.suppressWorldTap then deps_.suppressWorldTap() end
+        if deps_.setPlotDisplayMode then deps_.setPlotDisplayMode("all") end
+    end))
+    table.insert(children, BuildModeButton("单个", GetPlotDisplayMode() == "single", function()
+        if deps_.suppressWorldTap then deps_.suppressWorldTap() end
+        if deps_.setPlotDisplayMode then deps_.setPlotDisplayMode("single") end
+    end))
+    table.insert(children, showNextPlot and UI.Button {
             text = "下一块",
             height = 40,
             fontSize = 14,
@@ -374,8 +456,7 @@ function SettingsView.BuildPlotDisplayButtons()
                 if deps_.suppressWorldTap then deps_.suppressWorldTap() end
                 if deps_.switchNextPlot then deps_.switchNextPlot() end
             end,
-        } or UI.Panel { width = 0, height = 0 },
-    }
+        } or UI.Panel { width = 0, height = 0 })
 
     if isPlantView then
         table.insert(children, UI.Button {

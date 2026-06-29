@@ -67,6 +67,7 @@ local state_ = {
     customNickname = "",
     selectedAvatar = 1,
     unlockedAvatars = BuildDefaultUnlockedAvatars(),
+    powerSaveMode = false,
 }
 
 local callbacks_ = {}
@@ -249,6 +250,7 @@ local function LoadLocalProfile()
     state_.customNickname = TrimName(data.customNickname or "")
     state_.unlockedAvatars = MergeUnlockedAvatars(data.unlockedAvatars)
     state_.selectedAvatar = Clamp(tonumber(data.selectedAvatar or 1) or 1, 1, #AVATARS)
+    state_.powerSaveMode = data.powerSaveMode == true
     EnsureSelectedAvatarUnlocked()
 end
 
@@ -263,6 +265,7 @@ local function SaveLocalProfile()
         customNickname = state_.customNickname,
         selectedAvatar = state_.selectedAvatar,
         unlockedAvatars = state_.unlockedAvatars,
+        powerSaveMode = state_.powerSaveMode,
     }))
     file:Close()
     return true
@@ -343,6 +346,7 @@ function PlayerSystem.Init(callbacks)
         customNickname = "",
         selectedAvatar = 1,
         unlockedAvatars = BuildDefaultUnlockedAvatars(),
+        powerSaveMode = false,
     }
     LoadLocalProfile()
     if subscribedProfileEvent_ ~= true and network ~= nil and IsClientMode ~= nil and IsClientMode() then
@@ -410,6 +414,21 @@ function PlayerSystem.ClearSave()
     local ok = SaveLocalProfile()
     NotifyChanged()
     return ok
+end
+
+function PlayerSystem.IsPowerSaveMode()
+    return state_.powerSaveMode == true
+end
+
+function PlayerSystem.SetPowerSaveMode(enabled)
+    local nextValue = enabled == true
+    if state_.powerSaveMode == nextValue then return true end
+    state_.powerSaveMode = nextValue
+    return SaveLocalProfile()
+end
+
+function PlayerSystem.IsMatureCropRotationEnabled()
+    return state_.powerSaveMode ~= true
 end
 
 function PlayerSystem.GetAvatars()
@@ -509,6 +528,7 @@ function PlayerSystem.GetSaveData()
         customNickname = state_.customNickname,
         selectedAvatar = state_.selectedAvatar,
         unlockedAvatars = state_.unlockedAvatars,
+        powerSaveMode = state_.powerSaveMode,
     }
 end
 
@@ -517,6 +537,7 @@ function PlayerSystem.LoadSaveData(data)
     state_.customNickname = TrimName(data.customNickname or state_.customNickname)
     state_.unlockedAvatars = MergeUnlockedAvatars(data.unlockedAvatars or state_.unlockedAvatars)
     state_.selectedAvatar = Clamp(tonumber(data.selectedAvatar or state_.selectedAvatar) or 1, 1, #AVATARS)
+    state_.powerSaveMode = data.powerSaveMode == true
     EnsureSelectedAvatarUnlocked()
     SaveLocalProfile()
     NotifyChanged()

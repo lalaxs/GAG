@@ -17,16 +17,20 @@ local state_ = {
 }
 
 local function BuildExpansionRequirements()
+    local requirements = config_ and config_.LAND_UNLOCK_REQUIREMENTS or nil
+    if requirements ~= nil then
+        return requirements
+    end
     local sightReq = config_ and config_.LAND_UNLOCK_SIGHT_REQUIREMENTS or nil
     return {
-        [2] = { level = 1, gold = 80, tour = sightReq and sightReq[2] or 80 },
-        [3] = { level = 2, gold = 250, tour = sightReq and sightReq[3] or 220 },
-        [4] = { level = 3, gold = 800, tour = sightReq and sightReq[4] or 520 },
-        [5] = { level = 5, gold = 3500, tour = sightReq and sightReq[5] or 1100 },
-        [6] = { level = 8, gold = 15000, tour = sightReq and sightReq[6] or 2200 },
-        [7] = { level = 11, gold = 60000, tour = sightReq and sightReq[7] or 4200 },
-        [8] = { level = 15, gold = 220000, tour = sightReq and sightReq[8] or 7600 },
-        [9] = { level = 19, gold = 800000, tour = sightReq and sightReq[9] or 12500 },
+        [2] = { level = 2, gold = 600, tour = sightReq and sightReq[2] or 180 },
+        [3] = { level = 4, gold = 2200, tour = sightReq and sightReq[3] or 550 },
+        [4] = { level = 6, gold = 7500, tour = sightReq and sightReq[4] or 1300 },
+        [5] = { level = 9, gold = 25000, tour = sightReq and sightReq[5] or 3000 },
+        [6] = { level = 12, gold = 85000, tour = sightReq and sightReq[6] or 6500 },
+        [7] = { level = 16, gold = 260000, tour = sightReq and sightReq[7] or 13000 },
+        [8] = { level = 21, gold = 780000, tour = sightReq and sightReq[8] or 25000 },
+        [9] = { level = 26, gold = 2200000, tour = sightReq and sightReq[9] or 45000 },
     }
 end
 
@@ -100,8 +104,8 @@ function ProgressionSystem.GetExpansionRequirement(plotIndex)
     local requirements = BuildExpansionRequirements()
     return requirements[plotIndex] or {
         level = math.max(1, plotIndex),
-        gold = 500 * plotIndex * plotIndex,
-        tour = 30 * plotIndex * plotIndex,
+        gold = 3000 * plotIndex * plotIndex,
+        tour = 600 * plotIndex * plotIndex,
     }
 end
 
