@@ -434,7 +434,10 @@ function SocialGardenSystem.Update(_dt)
         if record.type == "visit" and record.payload ~= nil and record.payload.targetUserId ~= nil then
             EnterFallbackGarden(record.payload.targetUserId)
         elseif deps_.showToast then
-            deps_.showToast("社交请求超时，请稍后重试")
+            deps_.showToast("社交请求超时，正在重新同步")
+        end
+        if record.type ~= "socialState" then
+            SocialGardenSystem.RequestSocialState({ force = true, reason = "timeout_" .. tostring(record.type) })
         end
         print("[社交花园] 请求超时: " .. tostring(record.type) .. " " .. tostring(record.id))
     end)
@@ -502,22 +505,8 @@ function SocialGardenSystem.UploadSnapshot()
         return true
     end
     FinishRequest(payload.requestId, "saveGarden")
-    state_.lastSyncText = "本地预览"
-    if clientCloud ~= nil then
-        clientCloud:BatchSet()
-            :Set(Shared.KEYS.GARDEN_SNAPSHOT, snapshot)
-            :SetInt(Shared.KEYS.TOUR_RANK, snapshot.tourValue or 0)
-            :Save("同步花园", {
-                ok = function()
-                    state_.lastSyncText = "已同步"
-                    if deps_.showToast then deps_.showToast("花园快照已同步") end
-                end,
-                error = function(_, reason)
-                    state_.lastSyncText = "同步失败"
-                    if deps_.showToast then deps_.showToast("同步失败: " .. tostring(reason)) end
-                end,
-            })
-    end
+    state_.lastSyncText = "等待服务器"
+    if deps_.showToast then deps_.showToast("服务器未连接，花园快照暂未同步") end
     return false
 end
 
@@ -575,8 +564,11 @@ function SocialGardenSystem.GetStealLogs()
     return state_.stealLogs or {}
 end
 
-function SocialGardenSystem.RequestSocialState()
-    local payload = BeginRequest("socialState", { userId = GetUserId() })
+function SocialGardenSystem.RequestSocialState(options)
+    options = options or {}
+    if options.force == true then requests_:Cancel("socialState") end
+    if requests_:IsPending("socialState") then return true end
+    local payload = BeginRequest("socialState", { userId = GetUserId(), reason = options.reason or "sync" })
     if SendRequest(Shared.EVENTS.REQUEST_SOCIAL_STATE, payload) then return true end
     FinishRequest(payload.requestId, "socialState")
     return false
@@ -898,7 +890,12 @@ end
 
 function SocialGardenSystem.ClaimGift(gift)
     if gift == nil then return false end
-    local payload = BeginRequest("claimGift", { giftId = gift.giftId, seedId = gift.seedId, count = gift.count })
+    local payload = BeginRequest("claimGift", {
+        giftId = tostring(gift.giftId or gift.listId or ""),
+        listId = tostring(gift.listId or gift.giftId or ""),
+        seedId = gift.seedId,
+        count = gift.count,
+    })
     if SendRequest(Shared.EVENTS.CLAIM_GIFT, payload) then
         return true
     end
@@ -1290,8 +1287,9 @@ function SocialGardenSystem.HandleClearSocialMessagesResponse(data)
         state_.recentVisitors = {}
         state_.stealLogs = {}
         state_.socialNotices = {}
-        state_.gifts = {}
+        if type(data.gifts) == "table" then state_.gifts = data.gifts end
         if type(data.friendRequests) == "table" then state_.friendRequests = data.friendRequests end
+        SocialGardenSystem.RequestGifts()
         if deps_.showToast then deps_.showToast(data.message or "消息已清除") end
         EmitSocialChanged("updated")
     elseif deps_.showToast then

@@ -524,12 +524,12 @@ local function RequestEconomyState(uid, connection)
     ServerEconomyActions.RequestEconomyState(uid, connection)
 end
 
-local function BuySeed(uid, plantIndex, _price, connection, count, requestId, refreshId)
-    ServerEconomyActions.BuySeed(uid, plantIndex, _price, connection, count, requestId, refreshId)
+local function BuySeed(uid, plantIndex, _price, connection, count, requestId, refreshId, recordKey)
+    ServerEconomyActions.BuySeed(uid, plantIndex, _price, connection, count, requestId, refreshId, recordKey)
 end
 
-local function ClearPlayerSave(uid, connection)
-    ServerEconomyActions.ClearPlayerSave(uid, connection)
+local function ClearPlayerSave(uid, connection, requestId, recordKey)
+    ServerEconomyActions.ClearPlayerSave(uid, connection, requestId, recordKey)
 end
 
 local function PlantSeedAuthority(uid, payload, connection)
@@ -1080,6 +1080,7 @@ function Start()
         dailySeedPackAdLimit = DAILY_SEED_PACK_AD_LIMIT,
         dailyMatureAdLimit = DAILY_MATURE_AD_LIMIT,
         normalizePositiveCount = NormalizePositiveCount,
+        normalizePlantIndex = NormalizePlantIndex,
         buildVisitGardenFromAuthFarm = BuildVisitGardenFromAuthFarm,
     })
     ServerEventHandlers.Init({
@@ -1093,6 +1094,7 @@ function Start()
         GetConnectionKey = GetConnectionKey,
         GetConnectionUserId = GetConnectionUserId,
         GetRequestUserId = GetRequestUserId,
+        NormalizeUserId = NormalizeUserId,
         ReadRequest = ReadRequest,
         Send = Send,
         SendSeedShopState = SendSeedShopState,

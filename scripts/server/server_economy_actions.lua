@@ -93,7 +93,7 @@ function ServerEconomyActions.RequestEconomyState(uid, connection)
     })
 end
 
-function ServerEconomyActions.BuySeed(uid, plantIndex, _price, connection, count, requestId, refreshId)
+function ServerEconomyActions.BuySeed(uid, plantIndex, _price, connection, count, requestId, refreshId, recordKey)
     plantIndex = NormalizePlantIndex(plantIndex)
     count = NormalizePositiveCount(count or 1)
     if plantIndex == nil then
@@ -149,12 +149,14 @@ function ServerEconomyActions.BuySeed(uid, plantIndex, _price, connection, count
                         state.updatedAt = Now()
                         NextRevision(state)
 
+                        local response = { success = true, message = "购买成功 x" .. tostring(buyCount), requestId = requestId, plantIndex = plantIndex, price = totalPrice, count = buyCount, state = state }
                         local c = serverCloud:BatchCommit("全服商店原子购买种子")
                         c:QuotaAdd(deps_.globalShopUid, quotaKey, buyCount, maxStock)
                         c:ScoreSet(uid, deps_.Shared.KEYS.ECONOMY_STATE, state)
+                        deps_.RequestGuard.AddToCommit(c, uid, recordKey, response)
                         c:Commit({
                             ok = function()
-                                deps_.SendFullAvailableSeedShop(connection, deps_.Shared.EVENTS.BUY_SEED_RESPONSE, { success = true, message = "购买成功 x" .. tostring(buyCount), requestId = requestId, plantIndex = plantIndex, price = totalPrice, count = buyCount, state = state })
+                                deps_.SendFullAvailableSeedShop(connection, deps_.Shared.EVENTS.BUY_SEED_RESPONSE, response)
                                 deps_.BroadcastFullAvailableSeedShop()
                             end,
                             error = function(_, reason)
@@ -175,19 +177,21 @@ function ServerEconomyActions.BuySeed(uid, plantIndex, _price, connection, count
     end)
 end
 
-function ServerEconomyActions.ClearPlayerSave(uid, connection)
+function ServerEconomyActions.ClearPlayerSave(uid, connection, requestId, recordKey)
     local economyState = BuildInitialEconomyState()
     local farmState = NormalizeFarmState(nil)
+    local response = { success = true, message = "游戏存档已清除", requestId = requestId, state = economyState, farm = farmState }
     local c = serverCloud:BatchCommit("清除游戏存档")
     c:ScoreSet(uid, deps_.Shared.KEYS.ECONOMY_STATE, economyState)
     c:ScoreSet(uid, deps_.Shared.KEYS.AUTH_FARM_STATE, farmState)
+    deps_.RequestGuard.AddToCommit(c, uid, recordKey, response)
     c:Commit({
         ok = function()
-            Send(connection, deps_.Shared.EVENTS.CLEAR_SAVE_RESPONSE, { success = true, message = "游戏存档已清除", state = economyState, farm = farmState })
+            Send(connection, deps_.Shared.EVENTS.CLEAR_SAVE_RESPONSE, response)
         end,
         error = function(_, reason)
             print("[存档] 云端清档失败: " .. tostring(reason))
-            SendError(connection, deps_.Shared.EVENTS.CLEAR_SAVE_RESPONSE, "CLEAR_SAVE_FAILED", "清除存档失败")
+            SendError(connection, deps_.Shared.EVENTS.CLEAR_SAVE_RESPONSE, "CLEAR_SAVE_FAILED", "清除存档失败", { requestId = requestId })
         end,
     })
 end

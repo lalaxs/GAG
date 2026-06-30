@@ -16,6 +16,7 @@ local deps_ = {}
 local requests_ = RequestStateMachine.Create("economy", { timeout = 14.0 })
 local initialRetryDelay_ = 2.0
 local initialRetryTimer_ = 0
+local noConnectionLogTimer_ = 0
 local state_ = {
     serverEnabled = false,
     ready = false,
@@ -177,6 +178,16 @@ local function NotifyInitialSyncProgress()
     if deps_.onInitialSyncProgress then deps_.onInitialSyncProgress(EconomyCloudSystem.IsInitialSyncReady(), state_) end
 end
 
+local function RequestAuthorityRefresh(reason)
+    local refreshReason = reason or "request_timeout"
+    EconomyCloudSystem.RequestState({ force = true, reason = refreshReason })
+    EconomyCloudSystem.RequestSeedShop()
+    EconomyCloudSystem.RequestAuthFarm({ force = true, reason = refreshReason })
+    if EconomyCloudSystem.IsReady(false) then
+        EconomyCloudSystem.RequestCommissions()
+    end
+end
+
 function EconomyCloudSystem.IsBlocked(requireFarm)
     return BlockIfAuthoritativeNotReady(requireFarm)
 end
@@ -188,12 +199,24 @@ end
 function EconomyCloudSystem.Update(dt)
     requests_:Update(function(record)
         requests_:SyncLegacyPending(state_.pending)
-        state_.lastSyncText = "请求超时"
-        if deps_.showToast then deps_.showToast("服务器请求超时，正在重试") end
+        state_.lastSyncText = "请求超时，正在重拉服务器数据"
+        if deps_.showToast then deps_.showToast("服务器请求超时，正在重新同步") end
         print("[经济同步] 请求超时: " .. tostring(record.type) .. " " .. tostring(record.id))
+        if record.type ~= "load" and record.type ~= "authFarm" then
+            RequestAuthorityRefresh("timeout_" .. tostring(record.type))
+        end
     end)
     if EconomyCloudSystem.IsInitialSyncReady() then return end
     initialRetryTimer_ = initialRetryTimer_ - (dt or 0)
+    if not IsClientNetworkAvailable() then
+        noConnectionLogTimer_ = noConnectionLogTimer_ - (dt or 0)
+        if noConnectionLogTimer_ <= 0 then
+            noConnectionLogTimer_ = 10.0
+            print("[经济同步] 等待服务器连接后同步权威状态")
+        end
+        return
+    end
+    noConnectionLogTimer_ = 0
     if initialRetryTimer_ > 0 then return end
     initialRetryTimer_ = initialRetryDelay_
     if state_.ready ~= true then

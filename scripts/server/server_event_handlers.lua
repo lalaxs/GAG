@@ -16,6 +16,10 @@ local GiftServer = nil
 local connections_ = nil
 local connectionUsers_ = nil
 local scene_ = nil
+local connKeyToUserId_ = {}
+local disconnectedPlayers_ = {}
+local pendingReconnect_ = {}
+local DISCONNECTED_KEEP_SECONDS = 300
 
 function ServerEventHandlers.Init(deps)
     deps_ = deps or {}
@@ -46,6 +50,25 @@ end
 
 local function Send(connection, eventName, data)
     deps_.Send(connection, eventName, data)
+end
+
+local function Now()
+    return os and os.time and os.time() or 0
+end
+
+local function CleanupDisconnectedPlayers()
+    local now = Now()
+    for uid, info in pairs(disconnectedPlayers_) do
+        if info == nil or now - (info.disconnectedAt or 0) > DISCONNECTED_KEEP_SECONDS then
+            disconnectedPlayers_[uid] = nil
+        end
+    end
+end
+
+local function NormalizeUserId(uid)
+    if deps_.NormalizeUserId then return deps_.NormalizeUserId(uid) end
+    if uid == nil then return nil end
+    return tostring(uid)
 end
 
 local function SendSeedShopState(connection)
@@ -80,12 +103,12 @@ local function GrantAdReward(uid, data, connection)
     deps_.GrantAdReward(uid, data, connection)
 end
 
-local function BuySeed(uid, plantIndex, price, connection, count, requestId, refreshId)
-    deps_.BuySeed(uid, plantIndex, price, connection, count, requestId, refreshId)
+local function BuySeed(uid, plantIndex, price, connection, count, requestId, refreshId, recordKey)
+    deps_.BuySeed(uid, plantIndex, price, connection, count, requestId, refreshId, recordKey)
 end
 
-local function ClearPlayerSave(uid, connection)
-    deps_.ClearPlayerSave(uid, connection)
+local function ClearPlayerSave(uid, connection, requestId, recordKey)
+    deps_.ClearPlayerSave(uid, connection, requestId, recordKey)
 end
 
 local function PlantSeedAuthority(uid, data, connection)
@@ -141,35 +164,60 @@ local function ExpandPlotAuthority(uid, data, connection)
 end
 
 function ServerEventHandlers.HandleClientConnected(eventType, eventData)
+    CleanupDisconnectedPlayers()
     local connection = eventData["Connection"]:GetPtr("Connection")
     connections_[GetConnectionKey(connection)] = connection
 end
 
 function ServerEventHandlers.HandleClientIdentity(eventType, eventData)
     local connection = eventData["Connection"]:GetPtr("Connection")
-    local uid = GetConnectionUserId(connection)
+    local key = GetConnectionKey(connection)
+    local uid = NormalizeUserId(GetConnectionUserId(connection))
     if uid ~= nil then
-        connectionUsers_[GetConnectionKey(connection)] = uid
+        connectionUsers_[key] = uid
+        connKeyToUserId_[key] = uid
+        if disconnectedPlayers_[uid] ~= nil then
+            pendingReconnect_[key] = uid
+            print("[服务端重连] 识别到玩家重连 userId=" .. tostring(uid))
+        end
     end
 end
 
 function ServerEventHandlers.HandleClientDisconnected(eventType, eventData)
     local connection = eventData["Connection"]:GetPtr("Connection")
     local key = GetConnectionKey(connection)
+    local uid = NormalizeUserId(connKeyToUserId_[key] or connectionUsers_[key] or GetConnectionUserId(connection))
+    if uid ~= nil then
+        disconnectedPlayers_[uid] = {
+            userId = uid,
+            disconnectedAt = Now(),
+            lastConnectionKey = key,
+        }
+        print("[服务端重连] 玩家断线，暂存重连上下文 userId=" .. tostring(uid))
+    end
     connections_[key] = nil
     connectionUsers_[key] = nil
+    connKeyToUserId_[key] = nil
+    pendingReconnect_[key] = nil
 end
 
 function ServerEventHandlers.HandleGardenClientReady(eventType, eventData)
     local connection = eventData["Connection"]:GetPtr("Connection")
     connection.scene = scene_
     local data = ReadRequest(eventData)
-    local uid = GetRequestUserId(connection, data)
+    local key = GetConnectionKey(connection)
+    local uid = NormalizeUserId(GetRequestUserId(connection, data))
     if uid == nil then
         Send(connection, Shared.EVENTS.ECONOMY_STATE_RESPONSE, { success = false, message = "玩家身份未就绪，请稍后重试", retryable = true })
         Send(connection, Shared.EVENTS.AUTH_FARM_RESPONSE, { success = false, message = "玩家身份未就绪，请稍后重试", retryable = true })
         SendSeedShopState(connection)
         return
+    end
+    local reconnectUid = pendingReconnect_[key]
+    if reconnectUid ~= nil and reconnectUid == uid then
+        pendingReconnect_[key] = nil
+        disconnectedPlayers_[uid] = nil
+        print("[服务端重连] 已恢复玩家连接 userId=" .. tostring(uid))
     end
     SendPlayerProfile(uid, connection)
     SocialServer.RequestSocialState(uid, connection)
@@ -306,13 +354,32 @@ function ServerEventHandlers.HandleGardenBuySeed(eventType, eventData)
     local connection = eventData["Connection"]:GetPtr("Connection")
     local uid = GetConnectionUserId(connection)
     local data = ReadRequest(eventData)
-    if uid ~= nil then BuySeed(uid, data.plantIndex, data.price, connection, data.count, data.requestId, data.refreshId) end
+    if uid ~= nil then
+        RequestGuard.Check(uid, "buy_seed", data.requestId, function(recordKey)
+            BuySeed(uid, data.plantIndex, data.price, connection, data.count, data.requestId, data.refreshId, recordKey)
+        end, function(record)
+            local response = record.response or record
+            deps_.SendFullAvailableSeedShop(connection, Shared.EVENTS.BUY_SEED_RESPONSE, response)
+        end, function(reason)
+            Send(connection, Shared.EVENTS.BUY_SEED_RESPONSE, { success = false, message = "请求去重检查失败: " .. tostring(reason), requestId = data.requestId })
+        end)
+    end
 end
 
 function ServerEventHandlers.HandleGardenClearSave(eventType, eventData)
     local connection = eventData["Connection"]:GetPtr("Connection")
     local uid = GetConnectionUserId(connection)
-    if uid ~= nil then ClearPlayerSave(uid, connection) end
+    local data = ReadRequest(eventData)
+    if uid ~= nil then
+        RequestGuard.Check(uid, "clear_save", data.requestId, function(recordKey)
+            ClearPlayerSave(uid, connection, data.requestId, recordKey)
+        end, function(record)
+            local response = record.response or record
+            Send(connection, Shared.EVENTS.CLEAR_SAVE_RESPONSE, response)
+        end, function(reason)
+            Send(connection, Shared.EVENTS.CLEAR_SAVE_RESPONSE, { success = false, message = "请求去重检查失败: " .. tostring(reason), requestId = data.requestId })
+        end)
+    end
 end
 
 function ServerEventHandlers.HandleGardenPlantSeed(eventType, eventData)
@@ -585,7 +652,7 @@ function ServerEventHandlers.HandleGardenClaimGift(eventType, eventData)
     local data = ReadRequest(eventData)
     if uid ~= nil then
         RequestGuard.Check(uid, "claim_gift", data.requestId, function(recordKey)
-            GiftServer.ClaimGift(uid, data.giftId, data.seedId, data.count, connection, data.requestId, recordKey)
+            GiftServer.ClaimGift(uid, data.giftId or data.listId, data.seedId, data.count, connection, data.requestId, recordKey)
         end, function(record)
             local response = record.response or record
             Send(connection, Shared.EVENTS.CLAIM_GIFT_RESPONSE, response)

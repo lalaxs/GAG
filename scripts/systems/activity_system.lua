@@ -228,8 +228,8 @@ function ActivitySystem.OnCropHarvested(crop)
     elseif id == "dark" and (HasSpecial(crop.mutation, "devour") or HasSpecial(crop.mutation, "void")) then
         state_.dark.devourHarvestCount = state_.dark.devourHarvestCount + 1
         local rarityOrder = GetRarityOrder(crop.config and crop.config.rarity)
-        local rates = activity.darkSeedDropRates or { 0.08, 0.12, 0.18, 0.25, 0.35 }
-        if math.random() <= (rates[rarityOrder] or 0.08) then
+        local rates = activity.darkSeedDropRates or { 0.40, 0.55, 0.70, 0.85, 1.00 }
+        if math.random() <= (rates[rarityOrder] or 0.40) then
             local plantIndex = RollDarkSeed(activity)
             inventory_.AddSeedToBag(plantIndex, 1, 0)
             state_.dark.darkSeedDrops = state_.dark.darkSeedDrops + 1
@@ -366,7 +366,7 @@ function ActivitySystem.GetLeaderboard(activityId)
     elseif activityId == "alien" then
         score = state_.alien.totalGenes
     elseif activityId == "dark" then
-        score = state_.dark.darkSeedDrops * 120 + state_.dark.devourHarvestCount * 18
+        score = state_.dark.devourHarvestCount
     end
 
     local activity = GetActivityConfig(activityId) or {}

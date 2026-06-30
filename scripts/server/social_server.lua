@@ -28,6 +28,17 @@ local function NormalizeUserId(userId)
     return text
 end
 
+local function NormalizeListId(value)
+    if value == nil or value == "" then return nil end
+    local text = tostring(value)
+    text = string.gsub(text, "^%s+", "")
+    text = string.gsub(text, "%s+$", "")
+    if text == "" then return nil end
+    local integerText = string.match(text, "^(%-?%d+)%.0+$")
+    if integerText ~= nil then return integerText end
+    return text
+end
+
 local function SameUserId(left, right)
     local leftId = NormalizeUserId(left)
     local rightId = NormalizeUserId(right)
@@ -1077,7 +1088,8 @@ end
 
 local function DeleteRowsFromList(commit, rows)
     for _, row in ipairs(rows or {}) do
-        local listId = row.list_id or row.listId
+        local value = row.value or row
+        local listId = NormalizeListId(row.list_id or row.listId or (type(value) == "table" and (value.listId or value.giftId) or nil))
         if listId ~= nil then commit:ListDelete(listId) end
     end
 end
@@ -1139,6 +1151,49 @@ function SocialServer.RemoveFriend(uid, friendUserId, connection, requestId, req
     })
 end
 
+local function IsValidSeedGiftRow(row)
+    local value = row and (row.value or row) or nil
+    if type(value) ~= "table" then return false end
+    if NormalizeListId(row.list_id or row.listId or value.listId or value.giftId) == nil then return false end
+    local seedId = tonumber(value.seedId)
+    if seedId == nil or math.floor(seedId) ~= seedId then return false end
+    if deps_.normalizePlantIndex ~= nil and deps_.normalizePlantIndex(seedId) == nil then return false end
+    local count = math.floor(tonumber(value.count or 1) or 1)
+    return count >= 1
+end
+
+local function CollectInvalidGiftRows(uid, rows, done)
+    local invalid = {}
+    local index = 1
+    local function Step()
+        if index > #(rows or {}) then
+            done(invalid)
+            return
+        end
+        local row = rows[index]
+        index = index + 1
+        if not IsValidSeedGiftRow(row) then
+            invalid[#invalid + 1] = row
+            Step()
+            return
+        end
+        local value = row.value or row
+        local giftId = NormalizeListId(row.list_id or row.listId or value.listId or value.giftId)
+        serverCloud.list:Get(uid, "claimed_gift_" .. tostring(giftId), {
+            ok = function(claimRows)
+                if claimRows ~= nil and #claimRows > 0 then
+                    invalid[#invalid + 1] = row
+                end
+                Step()
+            end,
+            error = function()
+                Step()
+            end,
+        })
+    end
+    Step()
+end
+
 function SocialServer.ClearSocialMessages(uid, connection, requestId, requestRecordKey)
     local shared = Shared()
     FetchFriendRequests(uid, function(friendRequests)
@@ -1150,21 +1205,23 @@ function SocialServer.ClearSocialMessages(uid, connection, requestId, requestRec
                             ok = function(noticeRows)
                                 serverCloud.list:Get(uid, shared.KEYS.SEED_REWARDS, {
                                     ok = function(giftRows)
-                                        local response = { success = true, message = "消息已清除", requestId = requestId, friendRequests = friendRequests, gifts = {} }
-                                        local c = serverCloud:BatchCommit("清除社交消息")
-                                        DeleteRowsFromList(c, visitorRows)
-                                        DeleteRowsFromList(c, stealRows)
-                                        DeleteRowsFromList(c, noticeRows)
-                                        DeleteRowsFromList(c, giftRows)
-                                        if requestRecordKey ~= nil then deps_.RequestGuard.AddToCommit(c, uid, requestRecordKey, response) end
-                                        c:Commit({
-                                    ok = function()
-                                        Send(connection, shared.EVENTS.CLEAR_SOCIAL_MESSAGES_RESPONSE, response)
-                                    end,
-                                    error = function(_, reason)
-                                        Send(connection, shared.EVENTS.CLEAR_SOCIAL_MESSAGES_RESPONSE, { success = false, message = "消息清除失败: " .. tostring(reason), requestId = requestId })
-                                    end,
-                                        })
+                                        CollectInvalidGiftRows(uid, giftRows, function(invalidGiftRows)
+                                            local response = { success = true, message = "消息已清除", requestId = requestId, friendRequests = friendRequests }
+                                            local c = serverCloud:BatchCommit("清除社交消息")
+                                            DeleteRowsFromList(c, visitorRows)
+                                            DeleteRowsFromList(c, stealRows)
+                                            DeleteRowsFromList(c, noticeRows)
+                                            DeleteRowsFromList(c, invalidGiftRows)
+                                            if requestRecordKey ~= nil then deps_.RequestGuard.AddToCommit(c, uid, requestRecordKey, response) end
+                                            c:Commit({
+                                                ok = function()
+                                                    Send(connection, shared.EVENTS.CLEAR_SOCIAL_MESSAGES_RESPONSE, response)
+                                                end,
+                                                error = function(_, reason)
+                                                    Send(connection, shared.EVENTS.CLEAR_SOCIAL_MESSAGES_RESPONSE, { success = false, message = "消息清除失败: " .. tostring(reason), requestId = requestId })
+                                                end,
+                                            })
+                                        end)
                                     end,
                                     error = function(_, reason)
                                         Send(connection, shared.EVENTS.CLEAR_SOCIAL_MESSAGES_RESPONSE, { success = false, message = "礼物消息读取失败: " .. tostring(reason), requestId = requestId })

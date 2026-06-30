@@ -688,6 +688,10 @@ function HandleNetworkRecoveryServerReady(eventType, eventData)
     NetworkRecovery.HandleServerReady()
 end
 
+function HandleNetworkRecoveryServerDisconnected(eventType, eventData)
+    NetworkRecovery.HandleServerDisconnected()
+end
+
 ---@param eventType string
 ---@param eventData UpdateEventData
 function HandleUpdate(eventType, eventData)
@@ -1408,6 +1412,7 @@ function Start()
     CreateSkybox()
     SubscribeToEvent("Update", "HandleUpdate")
     SubscribeToEvent("ServerReady", "HandleNetworkRecoveryServerReady")
+    SubscribeToEvent("ServerDisconnected", "HandleNetworkRecoveryServerDisconnected")
     SubscribeToEvent("MouseButtonDown", "HandleMouseButtonDown")
     SubscribeToEvent("MouseMove", "HandleMouseMove")
     SubscribeToEvent("MouseWheel", "HandleMouseWheel")

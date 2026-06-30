@@ -147,8 +147,8 @@ function ServerActivity.ApplyActivityHarvestReward(state, crop)
         end
     elseif activityId == "dark" and (ServerActivity.HasSpecialMutation(crop, "devour") or ServerActivity.HasSpecialMutation(crop, "void")) then
         state.activity.dark.devourHarvestCount = state.activity.dark.devourHarvestCount + 1
-        local rates = activity.darkSeedDropRates or { 0.08, 0.12, 0.18, 0.25, 0.35 }
-        if math.random() <= (rates[rarityOrder] or 0.08) then
+        local rates = activity.darkSeedDropRates or { 0.40, 0.55, 0.70, 0.85, 1.00 }
+        if math.random() <= (rates[rarityOrder] or 0.40) then
             local plantIndex = ServerActivity.RollDarkSeed(activity)
             local current = tonumber(state.seedBag[plantIndex] or 0) or 0
             state.seedBag[plantIndex] = current + 1

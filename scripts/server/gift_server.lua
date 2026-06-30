@@ -27,6 +27,17 @@ local function NormalizeUserId(userId)
     return text
 end
 
+local function NormalizeListId(value)
+    if value == nil or value == "" then return nil end
+    local text = tostring(value)
+    text = string.gsub(text, "^%s+", "")
+    text = string.gsub(text, "%s+$", "")
+    if text == "" then return nil end
+    local integerText = string.match(text, "^(%-?%d+)%.0+$")
+    if integerText ~= nil then return integerText end
+    return text
+end
+
 local function GetNicknameMap(userIds, done)
     local map = {}
     local clean = {}
@@ -146,19 +157,31 @@ local function DayKey(time)
     return os and os.date and os.date("%Y%m%d", time or Now()) or "unknown"
 end
 
+local function IsValidGiftValue(value, listId)
+    if type(value) ~= "table" then return false end
+    if NormalizeListId(listId or value.listId or value.giftId) == nil then return false end
+    local seedId = deps_.normalizePlantIndex(value.seedId)
+    if seedId == nil then return false end
+    local count = math.floor(tonumber(value.count or 1) or 1)
+    return count >= 1
+end
+
 local function NormalizeGiftRows(rows)
     local gifts = {}
     for _, row in ipairs(rows or {}) do
         local value = row.value or row
-        if type(value) == "table" then
+        local listId = NormalizeListId(row.list_id or row.listId or (type(value) == "table" and (value.listId or value.giftId) or nil))
+        if IsValidGiftValue(value, listId) then
+            local seedId = deps_.normalizePlantIndex(value.seedId)
+            local count = NormalizePositiveCount(value.count or 1)
             gifts[#gifts + 1] = {
-                giftId = row.list_id or row.listId or value.giftId,
-                listId = row.list_id or row.listId or value.listId,
+                giftId = listId,
+                listId = listId,
                 fromUserId = value.fromUserId,
                 fromNickname = value.fromNickname,
-                seedId = value.seedId,
-                count = value.count or 1,
-                reward = value.reward or BuildReward(value.seedId, value.count or 1),
+                seedId = seedId,
+                count = count,
+                reward = value.reward or BuildReward(seedId, count),
                 sentAt = value.sentAt or value.time,
                 claimed = false,
             }
@@ -294,7 +317,8 @@ end
 
 function GiftServer.ClaimGift(uid, giftId, fallbackSeedId, fallbackCount, connection, requestId, requestRecordKey)
     local Shared = deps_.Shared
-    if giftId == nil or giftId == "" then
+    giftId = NormalizeListId(giftId)
+    if giftId == nil then
         SendError(connection, Shared.EVENTS.CLAIM_GIFT_RESPONSE, "INVALID_GIFT", "礼物不存在", { requestId = requestId, giftId = giftId })
         return
     end
@@ -320,9 +344,10 @@ function GiftServer.ClaimGift(uid, giftId, fallbackSeedId, fallbackCount, connec
                     local found = nil
                     local listId = nil
                     for _, row in ipairs(rows or {}) do
-                        local rowId = row.list_id or row.listId
-                        if tostring(rowId) == tostring(giftId) then
-                            found = row.value or row
+                        local value = row.value or row
+                        local rowId = NormalizeListId(row.list_id or row.listId or value.listId or value.giftId)
+                        if rowId == giftId then
+                            found = value
                             listId = rowId
                             break
                         end

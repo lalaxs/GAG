@@ -179,7 +179,7 @@ function ServerEconomyState.GetActivityRankScore(activityId, activity)
         return math.max(0, math.floor(tonumber(activity.alien and activity.alien.totalGenes or 0) or 0))
     elseif activityId == "dark" then
         local dark = activity.dark or {}
-        return math.max(0, math.floor(tonumber(dark.darkSeedDrops or 0) or 0))
+        return math.max(0, math.floor(tonumber(dark.devourHarvestCount or 0) or 0))
     end
     return 0
 end

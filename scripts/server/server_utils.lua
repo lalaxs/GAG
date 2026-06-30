@@ -46,11 +46,8 @@ function ServerUtils.NormalizeUserId(userId)
     return text
 end
 
-function ServerUtils.GetRequestUserId(connection, data)
-    local uid = ServerUtils.GetConnectionUserId(connection)
-    if uid ~= nil then return uid end
-    if type(data) ~= "table" then return nil end
-    return ServerUtils.NormalizeUserId(data.userId)
+function ServerUtils.GetRequestUserId(connection, _data)
+    return ServerUtils.GetConnectionUserId(connection)
 end
 
 function ServerUtils.SameUserId(left, right)
