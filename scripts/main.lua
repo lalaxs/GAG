@@ -1211,8 +1211,8 @@ function Start()
         closePackPanel = function() SeedPackOpeningController.ClosePanel() end,
         skipOpening = function() SeedPackOpeningController.SkipOpening() end,
         getSynthesisTarget = function(packId) return InventorySystem.GetSynthesisTarget(packId) end,
-        synthesizePack = function(packId)
-            local ok = EconomyCloudSystem.SynthesizePack(packId)
+        synthesizePack = function(packId, count)
+            local ok = EconomyCloudSystem.SynthesizePack(packId, count)
             if ok then ShowToast("正在请求服务器合成种子包...") end
             return ok, nil
         end,

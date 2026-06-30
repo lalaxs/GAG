@@ -713,7 +713,9 @@ function SocialServer.RequestSocialState(uid, connection)
                                             notice.avatar = profile.avatar or notice.avatar
                                         end
                                         for _, row in ipairs(stealLogs) do
-                                            row.thiefNickname = nickMap[row.thiefUserId] or nickMap[tostring(row.thiefUserId)] or "Tap玩家"
+                                            local profile = profileMap[tostring(row.thiefUserId)] or {}
+                                            row.thiefNickname = profile.nickname or nickMap[row.thiefUserId] or nickMap[tostring(row.thiefUserId)] or "Tap玩家"
+                                            row.avatar = profile.avatar or row.avatar
                                         end
                                         for _, row in ipairs(recentVisitors) do
                                             local profile = profileMap[tostring(row.userId)] or {}

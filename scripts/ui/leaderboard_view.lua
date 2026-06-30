@@ -319,7 +319,7 @@ local function BuildLeaderboardRow(entry)
                 children = {
                     UI.Label {
                         text = entry.isMe and ((entry.nickname or "你") .. "  我") or (entry.nickname or tostring(entry.userId or "Tap玩家")),
-                        fontSize = 18,
+                        fontSize = 14,
                         fontWeight = "bold",
                         fontColor = COLORS.text,
                         maxLines = 1,
@@ -418,7 +418,7 @@ local function BuildMyRankCard(data)
             flexShrink = 1,
             gap = 5,
             children = {
-                UI.Label { text = name, fontSize = 18, fontWeight = "bold", fontColor = COLORS.text, maxLines = 1 },
+                UI.Label { text = name, fontSize = 14, fontWeight = "bold", fontColor = COLORS.text, maxLines = 1 },
                 UI.Label { text = GetScoreLabel() .. " " .. FormatScore(score), fontSize = 12, fontWeight = "bold", fontColor = accent, maxLines = 1 },
             },
         },

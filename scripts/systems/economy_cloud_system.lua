@@ -326,9 +326,10 @@ function EconomyCloudSystem.ClaimDailyReward()
     return false
 end
 
-function EconomyCloudSystem.SynthesizePack(packId)
+function EconomyCloudSystem.SynthesizePack(packId, count)
     if BlockIfAuthoritativeNotReady(false) then return false end
-    local payload = BeginRequest("synthesizePack", { packId = packId })
+    local synthCount = math.max(1, math.floor(tonumber(count or 1) or 1))
+    local payload = BeginRequest("synthesizePack", { packId = packId, count = synthCount })
     if SendRequest(Shared.EVENTS.SYNTHESIZE_PACK, payload) then return true end
     FinishRequest(payload.requestId, "synthesizePack")
     return false

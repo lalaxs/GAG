@@ -1241,8 +1241,12 @@ end
 
 function SocialGardenSystem.HandleSendFriendRequestResponse(data)
     FinishRequest(data.requestId, "friendRequest")
-    if deps_.showToast and data.success ~= true then deps_.showToast(data.message or "好友申请发送失败") end
-    if data.success then SocialGardenSystem.RequestSocialState() end
+    if data.success then
+        ShowToastMessage("已发送好友申请", true)
+        SocialGardenSystem.RequestSocialState()
+    elseif deps_.showToast then
+        deps_.showToast(data.message or "好友申请发送失败")
+    end
 end
 
 function SocialGardenSystem.HandleRespondFriendRequestResponse(data)

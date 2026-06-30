@@ -517,12 +517,40 @@ local function RandomRange(minValue, maxValue)
     return minValue + math.random() * (maxValue - minValue)
 end
 
+local function GetCropScaleRules()
+    return GameConfig.CROP_SCALE_RULES or {}
+end
+
+local function ClampValue(value, minValue, maxValue)
+    return math.min(math.max(value, minValue), maxValue)
+end
+
+local function ClampCropWeightScale(weightScale)
+    local rules = GetCropScaleRules()
+    local minScale = rules.WeightScaleMin or 0.20
+    local maxScale = rules.WeightScaleMax or 3.50
+    return ClampValue(weightScale, minScale, maxScale)
+end
+
+local function GetWeightMultiplierFromRatio(weightRatio)
+    local rules = GetCropScaleRules()
+    local minMultiplier = rules.PriceMultiplierMin or 0.04
+    local maxMultiplier = rules.PriceMultiplierMax or 12.0
+    return math.min(math.max(weightRatio * weightRatio, minMultiplier), maxMultiplier)
+end
+
 local function RollCropWeightScale()
+    local rules = GetCropScaleRules()
+    local minScale = rules.WeightScaleMin or 0.20
+    local lightMax = rules.LightWeightScaleMax or 0.90
+    local normalMax = rules.NormalWeightScaleMax or 1.20
+    local largeMax = rules.LargeWeightScaleMax or 2.00
+    local maxScale = rules.WeightScaleMax or 3.50
     local r = math.random()
-    if r < 0.34 then return RandomRange(0.65, 0.9), "Light" end
-    if r < 0.94 then return RandomRange(0.9, 1.2), "Normal" end
-    if r < 0.99 then return RandomRange(1.2, 2.0), "Large" end
-    return RandomRange(2.0, 3.5), "Giant"
+    if r < 0.34 then return RandomRange(minScale, lightMax), "Light" end
+    if r < 0.94 then return RandomRange(lightMax, normalMax), "Normal" end
+    if r < 0.99 then return RandomRange(normalMax, largeMax), "Large" end
+    return RandomRange(largeMax, maxScale), "Giant"
 end
 
 local function RandItem(list)
@@ -575,6 +603,44 @@ local function CloneSpecialMutation(item)
     }
 end
 
+local function FindSpecialMutationConfig(key)
+    for _, special in ipairs(GameConfig.SPECIAL_MUTATIONS or {}) do
+        if special.key == key then return special end
+    end
+    return nil
+end
+
+local function HasMutationSpecial(mutation, key)
+    if mutation == nil or type(mutation.specials) ~= "table" then return false end
+    for _, special in ipairs(mutation.specials) do
+        if special.key == key then return true end
+    end
+    return false
+end
+
+local function AddServerSpecialMutation(mutation, key)
+    if mutation == nil or HasMutationSpecial(mutation, key) then return false end
+    local special = CloneSpecialMutation(FindSpecialMutationConfig(key))
+    if special == nil then return false end
+    table.insert(mutation.specials, special)
+    mutation.priceMultiplier = mutation.priceMultiplier * (special.multiplier or 1.0)
+    mutation.timeMultiplier = mutation.timeMultiplier * (special.timeMultiplier or 1.0)
+    return true
+end
+
+local function ApplyServerActivityPlantingMutation(mutation)
+    local activityId = GameConfig.GetActiveActivityId and GameConfig.GetActiveActivityId(Now()) or nil
+    if activityId ~= "dark" then return end
+    local activity = (((GameConfig.ACTIVITY_CONFIG or {}).activities or {})[activityId])
+    if activity == nil then return end
+    if math.random() <= (activity.devourChance or 0.035) then
+        AddServerSpecialMutation(mutation, "devour")
+    end
+    if math.random() <= (activity.extraVoidChance or 0.022) then
+        AddServerSpecialMutation(mutation, "void")
+    end
+end
+
 local function RollServerMutation(plant, seedBuff)
     seedBuff = seedBuff or 0
     local chanceMultiplier = 1.0 + seedBuff
@@ -613,6 +679,7 @@ local function RollServerMutation(plant, seedBuff)
             mutation.timeMultiplier = mutation.timeMultiplier * (special.timeMultiplier or 1.0)
         end
     end
+    ApplyServerActivityPlantingMutation(mutation)
     mutation.priceMultiplier = math.min(mutation.priceMultiplier, 80.0)
     mutation.timeMultiplier = math.min(mutation.timeMultiplier, 2.7)
     return mutation
@@ -648,7 +715,7 @@ local function RecalculateAuthoritativeItemPrice(item)
     local baseWeight = math.max(0.001, tonumber(item.baseWeight or plant.baseWeight or 1.0) or 1.0)
     local weight = tonumber(item.weight or baseWeight) or baseWeight
     local weightRatio = weight / baseWeight
-    local weightMultiplier = math.min(math.max(weightRatio * weightRatio, 0.4), 12.0)
+    local weightMultiplier = GetWeightMultiplierFromRatio(weightRatio)
     item.baseWeight = baseWeight
     item.weight = weight
     item.weightMultiplier = weightMultiplier
@@ -662,12 +729,15 @@ local function BuildAuthoritativeCrop(uid, payload, seedBuff)
     local plant = GameConfig.PLANTS[plantIndex]
     local weightScale, weightTier = RollCropWeightScale()
     local mutation = RollServerMutation(plant, seedBuff)
-    local naturalScale = 0.78 + math.random() * 0.62
+    local scaleRules = GetCropScaleRules()
+    local naturalMin = scaleRules.NaturalScaleMin or 0.54
+    local naturalMax = scaleRules.NaturalScaleMax or 1.38
+    local naturalScale = RandomRange(naturalMin, naturalMax)
     local baseWeight = plant.baseWeight or 1.0
-    local weight = baseWeight * weightScale
-    local weightRatio = weight / baseWeight
-    local weightMultiplier = math.min(math.max(weightRatio * weightRatio, 0.4), 12.0)
-    mutation.sizeScale = mutation.sizeScale * naturalScale * (weightScale ^ 0.35)
+    local weightRatio = ClampCropWeightScale(weightScale)
+    local weight = baseWeight * weightRatio
+    local weightMultiplier = GetWeightMultiplierFromRatio(weightRatio)
+    mutation.sizeScale = mutation.sizeScale * naturalScale * (weightRatio ^ (scaleRules.VisualWeightExponent or 0.62))
     local price = CalculateAuthoritativeCropPrice(plant, weightMultiplier, mutation)
     local growTime = math.max(1, (tonumber(plant.growTime or 1) or 1) * mutation.timeMultiplier)
     local localPos = NormalizeLocalPos(payload.localPos)
@@ -1165,13 +1235,9 @@ local function ApplyActivityHarvestReward(state, crop)
     state.activity = NormalizeActivityState(state.activity)
     local rarityOrder = GetRarityOrder(crop.rarity)
     if activityId == "alien" then
-        local chance = ({ 0.30, 0.40, 0.55, 0.70, 1.0 })[rarityOrder] or 0.30
+        local chance = ({ 0.18, 0.28, 0.42, 0.58, 0.85 })[rarityOrder] or 0.18
         if math.random() <= chance then
-            local minValue = math.max(1, rarityOrder)
-            local maxValue = math.max(minValue, rarityOrder + 2)
-            local amount = math.random(minValue, maxValue)
-            local specials = crop.mutation and crop.mutation.specials
-            if type(specials) == "table" and #specials > 0 then amount = amount + 1 end
+            local amount = 1
             state.activity.alien.genes = state.activity.alien.genes + amount
             state.activity.alien.totalGenes = state.activity.alien.totalGenes + amount
             local text = "获得外星基因 x" .. tostring(amount)
@@ -1179,8 +1245,8 @@ local function ApplyActivityHarvestReward(state, crop)
         end
     elseif activityId == "dark" and (HasSpecialMutation(crop, "devour") or HasSpecialMutation(crop, "void")) then
         state.activity.dark.devourHarvestCount = state.activity.dark.devourHarvestCount + 1
-        local rates = activity.darkSeedDropRates or { 0.08, 0.12, 0.18, 0.28, 0.45 }
-        if math.random() <= (rates[rarityOrder] or 0.08) then
+        local rates = activity.darkSeedDropRates or { 0.008, 0.014, 0.024, 0.036, 0.05 }
+        if math.random() <= (rates[rarityOrder] or 0.008) then
             local plantIndex = RollDarkSeed(activity)
             local current = tonumber(state.seedBag[plantIndex] or 0) or 0
             state.seedBag[plantIndex] = current + 1
@@ -2251,6 +2317,7 @@ end
 local function SynthesizePackAuthority(uid, payload, connection)
     local packId = tostring(payload.packId or "")
     local targetId = SYNTHESIS_MAP[packId]
+    local requestedCount = math.max(1, math.floor(tonumber(payload.count or 1) or 1))
     if targetId == nil then
         Send(connection, Shared.EVENTS.SYNTHESIZE_PACK_RESPONSE, { success = false, message = "该种子包不可合成", requestId = payload.requestId })
         return
@@ -2259,15 +2326,18 @@ local function SynthesizePackAuthority(uid, payload, connection)
         ok = function(scores)
             local state = NormalizeEconomyState(scores[Shared.KEYS.ECONOMY_STATE] or BuildInitialEconomyState())
             local owned = tonumber(state.seedPacks[packId] or 0) or 0
-            if owned < 3 then
+            local maxCount = math.floor(owned / 3)
+            local synthCount = math.min(requestedCount, maxCount)
+            if synthCount <= 0 then
                 Send(connection, Shared.EVENTS.SYNTHESIZE_PACK_RESPONSE, { success = false, message = "需要 3 个同品级种子包", requestId = payload.requestId, state = state })
                 return
             end
-            state.seedPacks[packId] = owned - 3
-            state.seedPacks[targetId] = (tonumber(state.seedPacks[targetId] or 0) or 0) + 1
+            local consumeCount = synthCount * 3
+            state.seedPacks[packId] = owned - consumeCount
+            state.seedPacks[targetId] = (tonumber(state.seedPacks[targetId] or 0) or 0) + synthCount
             state.updatedAt = Now()
             NextRevision(state)
-            local response = { success = true, message = "合成成功", requestId = payload.requestId, packId = packId, targetId = targetId, state = state }
+            local response = { success = true, message = "合成成功 x" .. synthCount, requestId = payload.requestId, packId = packId, targetId = targetId, count = synthCount, state = state }
             serverCloud:Set(uid, Shared.KEYS.ECONOMY_STATE, state, {
                 ok = function() Send(connection, Shared.EVENTS.SYNTHESIZE_PACK_RESPONSE, response) end,
                 error = function(_, reason) Send(connection, Shared.EVENTS.SYNTHESIZE_PACK_RESPONSE, { success = false, message = "合成失败: " .. tostring(reason), requestId = payload.requestId, state = state }) end,
@@ -2734,7 +2804,7 @@ local function RequestStealWithQuotaAvailable(uid, targetUid, cropIndex, cropId,
                                     c:ListAdd(uid, recordKey, { targetUserId = targetUid, cropId = actualCropId, stolenAt = now })
                                     c:ListAdd(targetUid, cropClaimKey, { thiefUserId = uid, cropId = actualCropId, stolenAt = now })
                                     c:ListAdd(targetUid, Shared.KEYS.STEAL_LOGS, log)
-                                    c:QuotaAdd(uid, "daily_steal", 1, DAILY_STEAL_LIMIT, "day", 1)
+                                    c:QuotaAdd(uid, "daily_steal", 1, stealLimit or DAILY_STEAL_LIMIT, "day", 1)
                                     RequestGuard.AddToCommit(c, uid, requestRecordKey, response)
                                     c:Commit({
                                         ok = function()

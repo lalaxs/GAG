@@ -1074,22 +1074,9 @@ local function BuildSynthesisContent()
                         onClick = function()
                             deps_.suppressWorldTap()
                             if deps_.synthesizePack then
-                                local totalSuccess = 0
-                                for _ = 1, synthQuantity_ do
-                                    local ok = deps_.synthesizePack(synthSelectedSource_)
-                                    if ok then
-                                        totalSuccess = totalSuccess + 1
-                                    else
-                                        break
-                                    end
-                                end
-                                if totalSuccess > 0 then
-                                    -- 浮动飘字（NanoVG渲染，在Modal之上）
-                                    FloatingToast.Show(string.format("合成成功! 获得 %s x%d", targetName, totalSuccess))
-                                    -- 刷新合成弹窗内容
-                                    BuildSynthesisModalContent()
-                                    -- 刷新种子包弹窗
-                                    if packModal_ then SeedPackView.RebuildModalContent() end
+                                local ok = deps_.synthesizePack(synthSelectedSource_, synthQuantity_)
+                                if ok then
+                                    FloatingToast.Show(string.format("正在合成 %s x%d...", targetName, synthQuantity_))
                                 end
                             end
                         end,
@@ -1264,7 +1251,10 @@ end
 
 --- 重建 Modal 内部内容
 function SeedPackView.RebuildModalContent()
-    if packModal_ == nil then return end
+    if packModal_ == nil then
+        if synthesisModal_ ~= nil then BuildSynthesisModalContent() end
+        return
+    end
     packModal_:ClearContent()
 
     -- 合成入口按钮（放在种子包列表上方）
@@ -1305,6 +1295,7 @@ function SeedPackView.RebuildModalContent()
         },
     })
     packModal_:AddContent(BuildPackDetailSection())
+    if synthesisModal_ ~= nil then BuildSynthesisModalContent() end
 end
 
 --- 关闭种子包弹窗

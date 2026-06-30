@@ -43,6 +43,12 @@ local HARVEST_DROP_RATES_BY_RARITY = InventoryRules.HARVEST_DROP_RATES_BY_RARITY
 local DEFAULT_HARVEST_BAG_CAPACITY = 20
 local MAX_HARVEST_BAG_CAPACITY = 100
 
+local function GetWeightMultiplierFromRatio(weightRatio)
+    local rules = cfg_ and cfg_.CROP_SCALE_RULES or {}
+    local minMultiplier = rules.PriceMultiplierMin or 0.04
+    local maxMultiplier = rules.PriceMultiplierMax or 12.0
+    return math.min(math.max(weightRatio * weightRatio, minMultiplier), maxMultiplier)
+end
 local state_ = {
     seedBag = {},
     seedBagBuffs = {},
@@ -193,7 +199,7 @@ local function RecalculateHarvestItemPrice(item)
     local baseWeight = math.max(0.001, tonumber(item.baseWeight or plant.baseWeight or 1.0) or 1.0)
     local weight = tonumber(item.weight or baseWeight) or baseWeight
     local weightRatio = weight / baseWeight
-    local weightMultiplier = math.min(math.max(weightRatio * weightRatio, 0.4), 12.0)
+    local weightMultiplier = GetWeightMultiplierFromRatio(weightRatio)
     local mutation = item.mutation or {}
     local mutationMultiplier = tonumber(mutation.priceMultiplier or 1.0) or 1.0
     local priceBase = math.max(1, tonumber(plant.seedPrice or plant.fruitPrice or 1) or 1)

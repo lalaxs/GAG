@@ -226,8 +226,8 @@ function ActivitySystem.OnCropHarvested(crop)
     elseif id == "dark" and (HasSpecial(crop.mutation, "devour") or HasSpecial(crop.mutation, "void")) then
         state_.dark.devourHarvestCount = state_.dark.devourHarvestCount + 1
         local rarityOrder = GetRarityOrder(crop.config and crop.config.rarity)
-        local rates = activity.darkSeedDropRates or { 0.035, 0.06, 0.10, 0.17, 0.28 }
-        if math.random() <= (rates[rarityOrder] or 0.035) then
+        local rates = activity.darkSeedDropRates or { 0.008, 0.014, 0.024, 0.036, 0.05 }
+        if math.random() <= (rates[rarityOrder] or 0.008) then
             local plantIndex = RollDarkSeed(activity)
             inventory_.AddSeedToBag(plantIndex, 1, 0)
             state_.dark.darkSeedDrops = state_.dark.darkSeedDrops + 1

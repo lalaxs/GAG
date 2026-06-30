@@ -81,16 +81,40 @@ local function RandomRange(minValue, maxValue)
     return minValue + math.random() * (maxValue - minValue)
 end
 
+local function GetCropScaleRules()
+    return cfg_.CROP_SCALE_RULES or {}
+end
+
+local function ClampCropWeightScale(weightScale)
+    local rules = GetCropScaleRules()
+    local minScale = rules.WeightScaleMin or 0.20
+    local maxScale = rules.WeightScaleMax or 3.50
+    return Clamp(weightScale, minScale, maxScale)
+end
+
+local function GetWeightMultiplierFromRatio(weightRatio)
+    local rules = GetCropScaleRules()
+    local minMultiplier = rules.PriceMultiplierMin or 0.04
+    local maxMultiplier = rules.PriceMultiplierMax or 12.0
+    return math.min(math.max(weightRatio * weightRatio, minMultiplier), maxMultiplier)
+end
+
 local function RollCropWeightScale()
+    local rules = GetCropScaleRules()
+    local minScale = rules.WeightScaleMin or 0.20
+    local lightMax = rules.LightWeightScaleMax or 0.90
+    local normalMax = rules.NormalWeightScaleMax or 1.20
+    local largeMax = rules.LargeWeightScaleMax or 2.00
+    local maxScale = rules.WeightScaleMax or 3.50
     local r = math.random()
     if r < 0.34 then
-        return RandomRange(0.65, 0.9), "Light"
+        return RandomRange(minScale, lightMax), "Light"
     elseif r < 0.94 then
-        return RandomRange(0.9, 1.2), "Normal"
+        return RandomRange(lightMax, normalMax), "Normal"
     elseif r < 0.99 then
-        return RandomRange(1.2, 2.0), "Large"
+        return RandomRange(normalMax, largeMax), "Large"
     end
-    return RandomRange(2.0, 3.5), "Giant"
+    return RandomRange(largeMax, maxScale), "Giant"
 end
 
 local function GetPlotModifier(plotIndex)
@@ -215,7 +239,7 @@ local function RecalculateCropPrice(plant, weight, baseWeight, mutation, yieldMu
     local safeBaseWeight = math.max(0.001, tonumber(baseWeight or plant.baseWeight or 1.0) or 1.0)
     local safeWeight = tonumber(weight or safeBaseWeight) or safeBaseWeight
     local weightRatio = safeWeight / safeBaseWeight
-    local weightMultiplier = math.min(math.max(weightRatio * weightRatio, 0.4), 12.0)
+    local weightMultiplier = GetWeightMultiplierFromRatio(weightRatio)
     return CalculateCropPrice(plant, weightMultiplier, mutation, yieldMultiplier, sellBonus), weightMultiplier
 end
 
@@ -331,7 +355,6 @@ local function CreateCropFromSave(plot, data)
         SetVisualScaleByProgress(crop)
         if crop.mature then
             crop.elapsed = crop.growTime
-            deps_.PlantVisual.CreateSpecialEffects(crop)
         end
     else
         crop.seedVisual = CreateSeedVisual(root, plant, crop.seedRadius)
@@ -719,12 +742,16 @@ function CropSystem.PlantSeedAt(plots, plotIndex, plantIndex, centerLocalPos, op
 
     local seedBuff = options.skipSeedConsume == true and (tonumber(options.seedBuff or 0) or 0) or deps_.InventorySystem.RemoveSeedFromBag(plantIndex)
     local mutation = RollMutation(plant, seedBuff, plotIndex)
-    local naturalScale = 0.78 + math.random() * 0.62
+    local scaleRules = GetCropScaleRules()
+    local naturalMin = scaleRules.NaturalScaleMin or 0.54
+    local naturalMax = scaleRules.NaturalScaleMax or 1.38
+    local naturalScale = RandomRange(naturalMin, naturalMax)
     local weightScale, weightTier = RollCropWeightScale()
     local weightBonus = GetWeightBonusForPlot(plotIndex)
     local baseWeight = plant.baseWeight or 1.0
-    local weight = baseWeight * weightScale * weightBonus
-    local visualWeightScale = (weightScale * weightBonus) ^ 0.35
+    local weightRatio = ClampCropWeightScale(weightScale * weightBonus)
+    local weight = baseWeight * weightRatio
+    local visualWeightScale = weightRatio ^ (scaleRules.VisualWeightExponent or 0.62)
     mutation.sizeScale = mutation.sizeScale * naturalScale * visualWeightScale
     local seedRadius = (0.09 + math.random() * 0.055) * naturalScale
     local seedHeight = 0.010 + math.random() * 0.008
@@ -737,7 +764,7 @@ function CropSystem.PlantSeedAt(plots, plotIndex, plantIndex, centerLocalPos, op
     local material = deps_.PlantVisual.ResolvePlantMaterial(plant, mutation)
 
     local weightRatio = weight / baseWeight
-    local weightMultiplier = math.min(math.max(weightRatio * weightRatio, 0.4), 12.0)
+    local weightMultiplier = GetWeightMultiplierFromRatio(weightRatio)
     local yieldMultiplier = GetPlotModifier(plotIndex).yieldMultiplier or 1.0
     local sellBonus = 1.0 + GetTalentBonus("sellBonus")
     local price = CalculateCropPrice(plant, weightMultiplier, mutation, yieldMultiplier, sellBonus)

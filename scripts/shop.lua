@@ -174,6 +174,38 @@ local seedTimerLabel_ = nil
 local toolTimerLabel_ = nil
 local refreshBtnSeed_ = nil
 local refreshBtnTool_ = nil
+local shopScrollState_ = {
+    seed = { x = 0, y = 0 },
+    tool = { x = 0, y = 0 },
+}
+
+local function SaveShopScrollState(shopType)
+    local listPanel = shopType == "seed" and seedListPanel_ or toolListPanel_
+    if listPanel == nil or listPanel.GetScroll == nil then return end
+    local scrollX, scrollY = listPanel:GetScroll()
+    local scrollState = shopScrollState_[shopType]
+    if scrollState ~= nil then
+        scrollState.x = math.max(0, scrollX or 0)
+        scrollState.y = math.max(0, scrollY or 0)
+    end
+end
+
+local function RestoreShopScrollState(shopType, listPanel)
+    local scrollState = shopScrollState_[shopType]
+    if listPanel == nil or scrollState == nil then return end
+    if listPanel.SetScrollDirect then
+        listPanel:SetScrollDirect(scrollState.x or 0, scrollState.y or 0)
+    elseif listPanel.SetScroll then
+        listPanel:SetScroll(scrollState.x or 0, scrollState.y or 0)
+    end
+end
+
+local function TrackShopScroll(shopType, scrollX, scrollY)
+    local scrollState = shopScrollState_[shopType]
+    if scrollState == nil then return end
+    scrollState.x = math.max(0, scrollX or 0)
+    scrollState.y = math.max(0, scrollY or 0)
+end
 
 -- 条目逐条渐显动画
 local STAGGER_DELAY = 0.12         -- 每个条目开始出现的间隔（秒）
@@ -904,8 +936,12 @@ local function BuildSeedShopContent()
         scrollY = true,
         showScrollbar = false,
         bounces = false,
+        onScroll = function(self, scrollX, scrollY)
+            TrackShopScroll("seed", scrollX, scrollY)
+        end,
         children = { gridContainer },
     }
+    RestoreShopScrollState("seed", seedListPanel_)
 
     return UI.Panel {
         height = shopContentMinHeight_,
@@ -989,8 +1025,12 @@ local function BuildToolShopContent()
         showScrollbar = true,
         bounces = false,
         padding = 8,
+        onScroll = function(self, scrollX, scrollY)
+            TrackShopScroll("tool", scrollX, scrollY)
+        end,
         children = listItems,
     }
+    RestoreShopScrollState("tool", toolListPanel_)
 
     return UI.Panel {
         height = shopContentMinHeight_,
@@ -1004,6 +1044,8 @@ end
 --- 构建商店弹窗内容
 function Shop.RebuildShopContent()
     if shopModal_ == nil then return end
+
+    SaveShopScrollState(state_.activeTab)
 
     local content
     if state_.activeTab == "seed" then
@@ -1077,6 +1119,10 @@ end
 function Shop.Open()
     state_.isOpen = true
     state_.activeTab = "seed"
+    shopScrollState_.seed.x = 0
+    shopScrollState_.seed.y = 0
+    shopScrollState_.tool.x = 0
+    shopScrollState_.tool.y = 0
 
     -- 计算固定商店高度：弹窗高度固定在屏幕 88%，列表超出时只在列表区域内滚动
     local screenH = graphics:GetHeight() / graphics:GetDPR()

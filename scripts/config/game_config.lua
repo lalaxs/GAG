@@ -33,6 +33,19 @@ GameConfig.CONFIG = {
     PlantViewPitch = 55.0,
 }
 
+GameConfig.CROP_SCALE_RULES = {
+    NaturalScaleMin = 0.54,
+    NaturalScaleMax = 1.38,
+    WeightScaleMin = 0.20,
+    LightWeightScaleMax = 0.90,
+    NormalWeightScaleMax = 1.20,
+    LargeWeightScaleMax = 2.00,
+    WeightScaleMax = 3.50,
+    VisualWeightExponent = 0.62,
+    PriceMultiplierMin = 0.04,
+    PriceMultiplierMax = 12.0,
+}
+
 GameConfig.RARITY_COLORS = {
     ["普通"] = Color(0.50, 0.48, 0.42, 1.0),
     ["罕见"] = Color(0.30, 0.72, 0.38, 1.0),
@@ -424,7 +437,7 @@ GameConfig.ACTIVITY_CONFIG = {
             extraVoidChance = 0.022,
             limitedSeeds = { 42, 43, 44, 45, 46, 47 },
             darkSeedPool = { 42, 43, 44, 45, 46, 47 },
-            darkSeedDropRates = { 0.035, 0.06, 0.10, 0.17, 0.28 },
+            darkSeedDropRates = { 0.008, 0.014, 0.024, 0.036, 0.05 },
             leaderboardBase = 130,
             backgroundColor = {232, 224, 240, 248},
             badgeColor = {204, 180, 235, 255},
