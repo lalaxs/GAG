@@ -1,11 +1,11 @@
 {
   "$schema": "../schemas/project.schema.json",
-  "project_id": "p_bfqc",
+  "project_id": "p_iemc",
   "author": {
     "id": "858557875"
   },
   "entry": "main.lua",
-  "version": "1.0.4",
+  "version": "1.0.6",
   "taptap_publish": {
     "title": "小花园",
     "description": "种植作物、扩展花园、收集图鉴，经营属于你的治愈小花园。",

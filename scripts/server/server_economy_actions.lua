@@ -256,6 +256,7 @@ function ServerEconomyActions.PlantSeedAuthority(uid, payload, connection)
                         localPos = payload.localPos,
                         seedBuff = seedBuff,
                         crop = crop,
+                        farmRevision = farmState.revision,
                         state = state,
                     }
                     local c = serverCloud:BatchCommit("权威播种")
@@ -302,6 +303,7 @@ function ServerEconomyActions.PlantSeedAuthority(uid, payload, connection)
                         localPos = payload.localPos,
                         seedBuff = seedBuff,
                         crop = crop,
+                        farmRevision = farmState.revision,
                         state = state,
                     }
                     local c = serverCloud:BatchCommit("首次权威播种")
@@ -432,6 +434,7 @@ function ServerEconomyActions.HarvestCropAuthority(uid, payload, connection)
                         droppedPackName = droppedPack ~= nil and deps_.GameConfig.SEED_PACK_CONFIG[droppedPack] and deps_.GameConfig.SEED_PACK_CONFIG[droppedPack].packName or nil,
                         activityReward = activityReward,
                         exp = exp,
+                        farmRevision = farmState.revision,
                         state = state,
                     }
                     local c = serverCloud:BatchCommit("权威收获")

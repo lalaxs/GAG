@@ -36,6 +36,7 @@ end
 function ServerFarmState.NormalizeFarmState(state)
     state = type(state) == "table" and state or {}
     state.version = 1
+    state.revision = tonumber(state.revision or 0) or 0
     state.plots = type(state.plots) == "table" and state.plots or {}
     for _, plot in pairs(state.plots) do
         plot.plants = type(plot.plants) == "table" and plot.plants or {}

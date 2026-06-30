@@ -203,7 +203,6 @@ end
 
 function ServerEventHandlers.HandleGardenClientReady(eventType, eventData)
     local connection = eventData["Connection"]:GetPtr("Connection")
-    connection.scene = scene_
     local data = ReadRequest(eventData)
     local key = GetConnectionKey(connection)
     local uid = NormalizeUserId(GetRequestUserId(connection, data))
@@ -213,6 +212,7 @@ function ServerEventHandlers.HandleGardenClientReady(eventType, eventData)
         SendSeedShopState(connection)
         return
     end
+    connection.scene = scene_
     local reconnectUid = pendingReconnect_[key]
     if reconnectUid ~= nil and reconnectUid == uid then
         pendingReconnect_[key] = nil

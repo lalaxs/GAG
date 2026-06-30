@@ -9,6 +9,7 @@
 local FarmRuntime = {}
 
 local deps_ = {}
+local initialHidden_ = true
 
 function FarmRuntime.Init(deps)
     deps_ = deps or {}
@@ -45,6 +46,19 @@ local function SetSelectedPlot(value)
     if deps_.setSelectedPlot ~= nil then deps_.setSelectedPlot(value) end
 end
 
+local function SetFarmEnabled(enabled)
+    for _, plot in ipairs(GetPlots() or {}) do
+        if plot.node ~= nil then
+            plot.node:SetEnabledRecursive(enabled == true)
+        end
+    end
+end
+
+function FarmRuntime.ShowInitialFarm()
+    initialHidden_ = false
+    SetFarmEnabled(true)
+end
+
 local function GetSelectedPlot()
     if deps_.getSelectedPlot ~= nil then return deps_.getSelectedPlot() end
     return 1
@@ -52,6 +66,9 @@ end
 
 function FarmRuntime.CreateFarm()
     SetPlots(deps_.FarmSystem.CreateFarm(deps_.getScene(), GetUnlockedPlotCount(), LOCAL))
+    if initialHidden_ then
+        SetFarmEnabled(false)
+    end
 end
 
 function FarmRuntime.DisposeCurrentFarm()
@@ -111,13 +128,17 @@ end
 
 function FarmRuntime.ApplyUnlockedPlotCount()
     deps_.PlotDisplayController.ApplyUnlockedPlotCount()
+    if initialHidden_ then
+        SetFarmEnabled(false)
+    end
 end
 
 function FarmRuntime.ApplyAuthoritativeFarmState(farm)
     if type(farm) ~= "table" or type(farm.plots) ~= "table" then return false end
     local serverUnlocked = deps_.ProgressionSystem.GetUnlockedPlotCount()
+    local previousUnlocked = GetUnlockedPlotCount()
     local farmRecreated = false
-    if serverUnlocked ~= GetUnlockedPlotCount() then
+    if serverUnlocked ~= previousUnlocked then
         SetOwnFarmPlotsSave(deps_.CropSystem.GetPlotsSaveData(GetPlots()))
         FarmRuntime.DisposeCurrentFarm()
         SetUnlockedPlotCount(serverUnlocked)
@@ -127,8 +148,8 @@ function FarmRuntime.ApplyAuthoritativeFarmState(farm)
     end
     deps_.CropSystem.ClearPlots(GetPlots())
     deps_.CropSystem.RestorePlotsFromSave(GetPlots(), farm.plots)
-    if farmRecreated and deps_.isInitialUiReady ~= nil and deps_.isInitialUiReady() then
-        deps_.PlotBounceAnimator.StartAll(GetPlots())
+    if farmRecreated and deps_.isInitialUiReady ~= nil and deps_.isInitialUiReady() and serverUnlocked > previousUnlocked then
+        deps_.PlotBounceAnimator.StartSingle(GetPlots(), serverUnlocked)
         if deps_.setInitialPlotBounceStarted ~= nil then
             deps_.setInitialPlotBounceStarted(true)
         end
@@ -136,6 +157,9 @@ function FarmRuntime.ApplyAuthoritativeFarmState(farm)
     SetOwnFarmPlotsSave(deps_.CropSystem.GetPlotsSaveData(GetPlots()))
     FarmRuntime.UpdateCurrentTourValue()
     deps_.refreshSelection()
+    if initialHidden_ then
+        SetFarmEnabled(false)
+    end
     if deps_.markSaveDirty ~= nil then deps_.markSaveDirty() end
     if deps_.rebuildUI ~= nil then deps_.rebuildUI() end
     deps_.refreshUI(true)

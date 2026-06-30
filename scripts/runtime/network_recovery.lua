@@ -44,6 +44,14 @@ local function GetEconomyCloudSystem()
     return deps_.EconomyCloudSystem
 end
 
+local function BindServerConnection(forceReady)
+    local socialGardenSystem = GetSocialGardenSystem()
+    if socialGardenSystem ~= nil and socialGardenSystem.BindServerConnection ~= nil then
+        return socialGardenSystem.BindServerConnection(forceReady == true)
+    end
+    return false
+end
+
 local function GetServerConnection()
     if network == nil or IsClientMode == nil or not IsClientMode() then return nil end
     return network:GetServerConnection()
@@ -75,7 +83,7 @@ function NetworkRecovery.RequestSync(reason)
     local syncReason = reason or "network_recovered"
     local socialGardenSystem = GetSocialGardenSystem()
     local economyCloudSystem = GetEconomyCloudSystem()
-    socialGardenSystem.BindServerConnection(true)
+    BindServerConnection(true)
     economyCloudSystem.RequestState({ force = true, reason = syncReason })
     economyCloudSystem.RequestSeedShop()
     economyCloudSystem.RequestAuthFarm({ force = true, reason = syncReason })
@@ -171,18 +179,12 @@ function NetworkRecovery.Update(dt)
 end
 
 function NetworkRecovery.HandleServerReady()
+    BindServerConnection(true)
     state_.serverReady = true
     state_.rawConnectedWithoutReadyElapsed = 0
     state_.wasConnected = IsReadyServerConnectionAvailable()
-    local socialGardenSystem = GetSocialGardenSystem()
-    if NetworkRecovery.RestoreOwnFarm("网络已恢复，正在同步我的花园") then
-        socialGardenSystem.UploadSnapshot()
-    end
-    if state_.wasConnected then
-        NetworkRecovery.RequestSync("server_ready")
-    else
-        state_.syncPending = true
-    end
+    state_.syncPending = false
+    NetworkRecovery.RestoreOwnFarm("网络已恢复，正在同步我的花园")
 end
 
 function NetworkRecovery.HandleServerDisconnected()

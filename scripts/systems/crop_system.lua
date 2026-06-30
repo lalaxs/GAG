@@ -355,6 +355,7 @@ local function CreateCropFromSave(plot, data)
         SetVisualScaleByProgress(crop)
         if crop.mature then
             crop.elapsed = crop.growTime
+            deps_.PlantVisual.CreateSpecialEffects(crop)
         end
     else
         crop.seedVisual = CreateSeedVisual(root, plant, crop.seedRadius)

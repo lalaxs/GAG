@@ -808,6 +808,7 @@ function Start()
         PlotBounceAnimator = PlotBounceAnimator,
         SocialGardenSystem = SocialGardenSystem,
         getPlots = function() return plots_ end,
+        showInitialFarm = function() FarmRuntime.ShowInitialFarm() end,
         isInitialUiReady = function() return initialUiReady_ end,
         setInitialUiReady = function(value) initialUiReady_ = value end,
         setInitialUiBuildPending = function(value) initialUiBuildPending_ = value end,

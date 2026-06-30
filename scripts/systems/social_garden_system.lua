@@ -390,7 +390,7 @@ function SocialGardenSystem.BindServerConnection(forceReady)
     local conn = network ~= nil and network:GetServerConnection() or nil
     if conn ~= nil and deps_.getScene ~= nil then
         conn.scene = deps_.getScene()
-        local connectionKey = tostring(conn)
+        local connectionKey = "connected"
         if forceReady ~= true and state_.serverEnabled == true and state_.boundConnectionKey == connectionKey then
             return true, false
         end
@@ -398,7 +398,7 @@ function SocialGardenSystem.BindServerConnection(forceReady)
         conn:SendRemoteEvent(Shared.EVENTS.CLIENT_READY, true)
         SocialGardenSystem.RequestSocialState()
         state_.serverEnabled = true
-        print("[社交花园] 已绑定后台服务器连接")
+        print("[社交花园] 已绑定后台服务器连接并发送客户端就绪")
         return true, true
     end
     state_.serverEnabled = false

@@ -64,6 +64,9 @@ function UiRuntime.EnsureInitialUiReady()
     SetInitialUiReady(true)
     SetInitialUiBuildPending(false)
     SetPendingRebuildUI(false)
+    if deps_.showInitialFarm ~= nil then
+        deps_.showInitialFarm()
+    end
     if not IsInitialPlotBounceStarted() then
         deps_.PlotBounceAnimator.StartAll(deps_.getPlots())
         SetInitialPlotBounceStarted(true)

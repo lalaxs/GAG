@@ -24,6 +24,7 @@ local state_ = {
     commissionsReady = false,
     pending = {},
     lastSyncText = "未同步",
+    lastAuthFarmRevision = -1,
 }
 
 local function IsClientNetworkAvailable()
@@ -132,6 +133,36 @@ local function ApplyState(cloudState, options)
     EventBus.Emit(UIEvents.SEEDPACK_CHANGED, { reason = "economy_state_applied" })
     EventBus.Emit(UIEvents.FARM_CHANGED, { reason = "economy_state_applied" })
     EventBus.Emit(UIEvents.TALENT_CHANGED, { reason = "economy_state_applied" })
+    return true
+end
+
+local function NoteAuthFarmRevision(revision, source)
+    local value = tonumber(revision)
+    if value == nil then return end
+    if value > (state_.lastAuthFarmRevision or -1) then
+        state_.lastAuthFarmRevision = value
+        print(string.format("[经济同步] 已记录权威农场 revision source=%s revision=%d", tostring(source), value))
+    end
+end
+
+local function ApplyAuthoritativeFarm(farm, source)
+    if type(farm) ~= "table" then return false end
+    local revision = tonumber(farm.revision)
+    if revision == nil then
+        if (state_.lastAuthFarmRevision or -1) >= 0 then
+            print(string.format("[经济同步] 忽略无 revision 的权威农场 source=%s latest=%d", tostring(source), state_.lastAuthFarmRevision or -1))
+            return false
+        end
+        revision = -1
+    end
+    if revision >= 0 and revision <= (state_.lastAuthFarmRevision or -1) then
+        print(string.format("[经济同步] 忽略重复或过期权威农场 source=%s revision=%d latest=%d", tostring(source), revision, state_.lastAuthFarmRevision or -1))
+        return false
+    end
+    if revision >= 0 then
+        state_.lastAuthFarmRevision = revision
+    end
+    if deps_.onAuthFarmReceived then deps_.onAuthFarmReceived(farm) end
     return true
 end
 
@@ -455,7 +486,7 @@ local function HandleGenericStateResult(data, requestType, defaultSuccess, defau
     FinishRequest(data.requestId, requestType)
     if data.success then
         if data.state ~= nil then ApplyState(data.state) end
-        if data.farm ~= nil and deps_.onAuthFarmReceived then deps_.onAuthFarmReceived(data.farm) end
+        if data.farm ~= nil then ApplyAuthoritativeFarm(data.farm, requestType) end
         if deps_.showToast then deps_.showToast(data.message or defaultSuccess) end
         if deps_.showFloatingToast then deps_.showFloatingToast(data.message or defaultSuccess) end
         if deps_.refreshUI then deps_.refreshUI(true) end
@@ -491,7 +522,7 @@ function EconomyCloudSystem.HandleAuthFarmResponse(data)
     if data.success then
         state_.authFarmReady = true
         print("[经济同步] 权威农场已同步")
-        if deps_.onAuthFarmReceived then deps_.onAuthFarmReceived(data.farm) end
+        ApplyAuthoritativeFarm(data.farm, "authFarm")
         NotifyInitialSyncProgress()
     elseif deps_.showToast then
         deps_.showToast(data.message or "权威农场读取失败")
@@ -521,7 +552,8 @@ function EconomyCloudSystem.HandleClearSaveResponse(data)
         state_.authFarmReady = true
         state_.commissionsReady = false
         ApplyState(data.state)
-        if deps_.onAuthFarmReceived then deps_.onAuthFarmReceived(data.farm) end
+        state_.lastAuthFarmRevision = -1
+        ApplyAuthoritativeFarm(data.farm, "clearSave")
         if deps_.showToast then deps_.showToast(data.message or "游戏存档已清除") end
         if deps_.onClearSaveCompleted then deps_.onClearSaveCompleted(true) end
     else
@@ -535,6 +567,7 @@ function EconomyCloudSystem.HandlePlantSeedResponse(data)
     FinishRequest(data.requestId, "plant")
     if data.success then
         ApplyState(data.state)
+        NoteAuthFarmRevision(data.farmRevision, "plant")
         if deps_.onPlantSeedConfirmed then deps_.onPlantSeedConfirmed(data) end
     else
         if data.state ~= nil then ApplyState(data.state) end
@@ -547,11 +580,12 @@ function EconomyCloudSystem.HandleHarvestCropResponse(data)
     print(string.format("[经济同步] 收到收获响应 requestId=%s success=%s message=%s cropId=%s", tostring(data.requestId), tostring(data.success), tostring(data.message), tostring(data.cropId)))
     if data.success then
         ApplyState(data.state)
+        NoteAuthFarmRevision(data.farmRevision, "harvest")
         if deps_.onHarvestCropConfirmed then deps_.onHarvestCropConfirmed(data) end
     else
         if data.state ~= nil then ApplyState(data.state) end
-        if data.farm ~= nil and deps_.onAuthFarmReceived then
-            deps_.onAuthFarmReceived(data.farm)
+        if data.farm ~= nil then
+            ApplyAuthoritativeFarm(data.farm, "harvest_failed")
         else
             EconomyCloudSystem.RequestAuthFarm({ force = true, reason = "harvest_failed" })
         end
@@ -676,14 +710,14 @@ function EconomyCloudSystem.HandleAdRewardResponse(data)
     FinishRequest(data.requestId, "adReward")
     if data.success then
         if data.state ~= nil then ApplyState(data.state) end
-        if data.farm ~= nil and deps_.onAuthFarmReceived then deps_.onAuthFarmReceived(data.farm) end
+        if data.farm ~= nil then ApplyAuthoritativeFarm(data.farm, "adReward") end
         if deps_.onAdRewardGranted then deps_.onAdRewardGranted(data) end
         if deps_.showToast then deps_.showToast(data.message or "广告奖励已发放") end
         if deps_.showFloatingToast then deps_.showFloatingToast(data.message or "广告奖励已发放") end
         if deps_.refreshUI then deps_.refreshUI(true) end
     else
         if data.state ~= nil then ApplyState(data.state) end
-        if data.farm ~= nil and deps_.onAuthFarmReceived then deps_.onAuthFarmReceived(data.farm) end
+        if data.farm ~= nil then ApplyAuthoritativeFarm(data.farm, "adReward") end
         if deps_.onAdRewardFailed then deps_.onAdRewardFailed(data) end
         if deps_.showToast then deps_.showToast(data.message or "广告奖励领取失败") end
     end
