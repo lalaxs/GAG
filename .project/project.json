@@ -1,11 +1,11 @@
 {
   "$schema": "../schemas/project.schema.json",
-  "project_id": "p_4jpc",
+  "project_id": "p_iemc",
   "author": {
     "id": "858557875"
   },
   "entry": "main.lua",
-  "version": "1.0.0",
+  "version": "1.0.4",
   "taptap_publish": {
     "title": "小花园",
     "description": "种植作物、扩展花园、收集图鉴，经营属于你的治愈小花园。",
@@ -15,11 +15,20 @@
     "trial_note": "欢迎来到小花园，体验轻松治愈的种植经营玩法。",
     "transparent": false,
     "app_platforms": "1,2",
-    "developer_id": 399464
+    "developer_id": 399464,
+    "gameplay_demo_video_source": "https://tapcode-sce.spark.xd.com/videos/p_iemc/1782746534006-rec_aaa7b9ef-e936-41da-9ef0-3b9dfc2e1968.mp4",
+    "app_id": 878332,
+    "miniapp_id": "tapmciegfs5xvkppzb"
   },
   "assets": {
     "icon": "./assets/image/icon.png",
-    "screenshots": [],
+    "screenshots": [
+      "./assets/image/release_screenshot_home.png",
+      "./assets/image/release_screenshot_commission.png",
+      "./assets/image/release_screenshot_shop.png",
+      "./assets/image/release_screenshot_album.png",
+      "./assets/image/release_screenshot_event.png"
+    ],
     "promotional_image": "./assets/image/1920.png",
     "icon_url": "https://tapcode-sce.spark.xd.com/assets/game_material/p_iemc/icon.png",
     "promotional_image_url": "https://tapcode-sce.spark.xd.com/assets/game_material/p_iemc/1920.png",
@@ -28,11 +37,23 @@
     "cover_horizontal": "./assets/image/460.png",
     "cover_horizontal_url": "https://tapcode-sce.spark.xd.com/assets/game_material/p_iemc/460.png",
     "cover_vertical": "./assets/image/600.png",
-    "cover_vertical_url": "https://tapcode-sce.spark.xd.com/assets/game_material/p_iemc/600.png"
+    "cover_vertical_url": "https://tapcode-sce.spark.xd.com/assets/game_material/p_iemc/600.png",
+    "screenshot_urls": [
+      "https://tapcode-sce.spark.xd.com/assets/game_material/p_iemc/release_screenshot_home.png",
+      "https://tapcode-sce.spark.xd.com/assets/game_material/p_iemc/release_screenshot_commission.png",
+      "https://tapcode-sce.spark.xd.com/assets/game_material/p_iemc/release_screenshot_shop.png",
+      "https://tapcode-sce.spark.xd.com/assets/game_material/p_iemc/release_screenshot_album.png",
+      "https://tapcode-sce.spark.xd.com/assets/game_material/p_iemc/release_screenshot_event.png"
+    ]
   },
   "entry@client": "main.lua",
   "entry@server": "server_main.lua",
   "metadata": {
-    "updated_at": "2026-06-28T14:33:43.712Z"
+    "updated_at": "2026-06-29T15:42:20.290Z",
+    "promo_dependent_hash": "01c59639aeb13aef890c497b492f0907"
+  },
+  "test_qrcode": {
+    "url": "https://tapcode-sce.spark.xd.com/qrcode/p_iemc_1782747315458.png",
+    "generated_at": "2026-06-29T15:35:15.592Z"
   }
 }
