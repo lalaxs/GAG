@@ -158,7 +158,6 @@ function EconomyCloudSystem.Init(deps)
         SubscribeToEvent(Shared.EVENTS.EXCHANGE_ACTIVITY_REWARD_RESPONSE, "HandleGardenExchangeActivityRewardResponse")
         SubscribeToEvent(Shared.EVENTS.DRAW_ACTIVITY_PACK_RESPONSE, "HandleGardenDrawActivityPackResponse")
         SubscribeToEvent(Shared.EVENTS.AD_REWARD_RESPONSE, "HandleGardenAdRewardResponse")
-        SubscribeToEvent("ServerReady", "HandleGardenEconomyServerReady")
     end
 end
 
@@ -207,10 +206,12 @@ function EconomyCloudSystem.Update(dt)
     end
 end
 
-function EconomyCloudSystem.RequestState()
-    if state_.ready == true then return true end
+function EconomyCloudSystem.RequestState(options)
+    options = options or {}
+    if state_.ready == true and options.force ~= true then return true end
+    if options.force == true then requests_:Cancel("load") end
     if requests_:IsPending("load") then return true end
-    local payload = BeginRequest("load", {})
+    local payload = BeginRequest("load", { reason = options.reason or "sync", userId = deps_.getUserId and deps_.getUserId() or nil })
     if SendRequest(Shared.EVENTS.REQUEST_ECONOMY_STATE, payload) then return true end
     FinishRequest(payload.requestId, "load")
     return false
@@ -219,8 +220,9 @@ end
 function EconomyCloudSystem.RequestAuthFarm(options)
     options = options or {}
     if state_.authFarmReady == true and options.force ~= true then return true end
+    if options.force == true then requests_:Cancel("authFarm") end
     if requests_:IsPending("authFarm") then return true end
-    local payload = BeginRequest("authFarm", { reason = options.reason or "sync" })
+    local payload = BeginRequest("authFarm", { reason = options.reason or "sync", userId = deps_.getUserId and deps_.getUserId() or nil })
     if SendRequest(Shared.EVENTS.REQUEST_AUTH_FARM, payload) then return true end
     FinishRequest(payload.requestId, "authFarm")
     return false
@@ -353,6 +355,7 @@ end
 
 function EconomyCloudSystem.RequestCommissions()
     if BlockIfAuthoritativeNotReady(false) then return false end
+    if requests_:IsPending("commissions") then return true end
     local payload = BeginRequest("commissions", {})
     if SendRequest(Shared.EVENTS.REQUEST_COMMISSIONS, payload) then return true end
     FinishRequest(payload.requestId, "commissions")
@@ -445,6 +448,7 @@ function EconomyCloudSystem.HandleEconomyStateResponse(data)
         state_.ready = true
         state_.lastSyncText = "已同步"
         print("[经济同步] 经济状态已同步")
+        EconomyCloudSystem.RequestCommissions()
         NotifyInitialSyncProgress()
     elseif deps_.showToast then
         deps_.showToast(data.message or "经济数据读取失败")
@@ -743,9 +747,9 @@ function HandleGardenAdRewardResponse(eventType, eventData)
 end
 
 function HandleGardenEconomyServerReady(eventType, eventData)
-    EconomyCloudSystem.RequestState()
+    EconomyCloudSystem.RequestState({ force = true, reason = "server_ready" })
     EconomyCloudSystem.RequestSeedShop()
-    EconomyCloudSystem.RequestAuthFarm()
+    EconomyCloudSystem.RequestAuthFarm({ force = true, reason = "server_ready" })
     EconomyCloudSystem.RequestCommissions()
 end
 

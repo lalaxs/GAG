@@ -1,0 +1,250 @@
+-- ============================================================================
+-- 服务端委托系统
+-- Grow A Garden
+-- ============================================================================
+-- 从 server_main.lua 拆出的委托生成、匹配、请求和完成逻辑。
+-- ============================================================================
+
+local ServerCommission = {}
+
+local deps_ = {}
+
+local COMMISSION_STATE_KEY = "garden_commission_state_v1"
+local COMMISSION_REFRESH_INTERVAL = 30 * 60
+local COMMISSION_COUNT = 4
+local COMMISSION_CUSTOMERS = { "露露", "阿麦", "青木", "莓莓", "小枫", "云朵商人", "花园旅人", "星屑收藏家" }
+local COMMISSION_COLOR_REQUIREMENTS = { "yellow", "blue", "red", "white", "purple", "black" }
+local COMMISSION_SPECIAL_REQUIREMENTS = { "wet", "frozen", "cloud", "chocolate", "pollen", "glow", "stardust", "ceramic", "rainbow", "void", "gold" }
+local COMMISSION_PACK_DIFFICULTY = {
+    pack_common = { mutationKinds = { "basic" }, minWeightScale = { 0.90, 1.20 } },
+    pack_uncommon = { mutationKinds = { "color", "basic" }, minWeightScale = { 1.00, 1.40 } },
+    pack_rare = { mutationKinds = { "color", "basic" }, minWeightScale = { 1.05, 1.55 } },
+    pack_epic = { mutationKinds = { "color", "special" }, minWeightScale = { 1.35, 2.20 } },
+    pack_legendary = { mutationKinds = { "special", "giant" }, minWeightScale = { 2.00, 3.60 } },
+}
+local COMMISSION_REWARD_POOLS = {
+    ["普通"] = { { packId = "pack_common", weight = 94 }, { packId = "pack_uncommon", weight = 6 } },
+    ["罕见"] = { { packId = "pack_common", weight = 35 }, { packId = "pack_uncommon", weight = 55 }, { packId = "pack_rare", weight = 10 } },
+    ["稀有"] = { { packId = "pack_common", weight = 18 }, { packId = "pack_uncommon", weight = 30 }, { packId = "pack_rare", weight = 45 }, { packId = "pack_epic", weight = 7 } },
+    ["史诗"] = { { packId = "pack_common", weight = 8 }, { packId = "pack_uncommon", weight = 18 }, { packId = "pack_rare", weight = 32 }, { packId = "pack_epic", weight = 38 }, { packId = "pack_legendary", weight = 4 } },
+    ["传奇"] = { { packId = "pack_common", weight = 3 }, { packId = "pack_uncommon", weight = 10 }, { packId = "pack_rare", weight = 22 }, { packId = "pack_epic", weight = 40 }, { packId = "pack_legendary", weight = 25 } },
+}
+
+ServerCommission.COMMISSION_STATE_KEY = COMMISSION_STATE_KEY
+
+function ServerCommission.Init(deps)
+    deps_ = deps or {}
+end
+
+local function Now()
+    return deps_.Now()
+end
+
+local function Send(connection, eventName, data)
+    deps_.Send(connection, eventName, data)
+end
+
+local function RandItem(list)
+    return deps_.RandItem(list)
+end
+
+local function RandomRange(minValue, maxValue)
+    return deps_.RandomRange(minValue, maxValue)
+end
+
+local function RollWeighted(pool)
+    return deps_.RollWeighted(pool)
+end
+
+local function NormalizeEconomyState(state)
+    return deps_.NormalizeEconomyState(state)
+end
+
+local function BuildInitialEconomyState()
+    return deps_.BuildInitialEconomyState()
+end
+
+local function NextRevision(state)
+    deps_.NextRevision(state)
+end
+
+function ServerCommission.FindMutationByKey(list, key)
+    if list == nil then return nil end
+    for _, item in ipairs(list) do
+        if item.key == key then return item end
+    end
+    return nil
+end
+
+function ServerCommission.IsCommissionEligiblePlant(plant)
+    return plant ~= nil and plant.limited ~= true and plant.activityTag == nil
+end
+
+function ServerCommission.PickCommissionPlantIndex(level)
+    local rarityPool = { "普通" }
+    if level >= 21 then rarityPool = { "普通", "罕见", "稀有", "史诗", "传奇" }
+    elseif level >= 16 then rarityPool = { "普通", "罕见", "稀有", "史诗" }
+    elseif level >= 11 then rarityPool = { "普通", "罕见", "稀有" }
+    elseif level >= 6 then rarityPool = { "普通", "罕见" } end
+    local pool = {}
+    for _, rarity in ipairs(rarityPool) do
+        local indices = deps_.GameConfig.RARITY_PLANT_INDICES and deps_.GameConfig.RARITY_PLANT_INDICES[rarity] or {}
+        for _, plantIndex in ipairs(indices) do
+            if ServerCommission.IsCommissionEligiblePlant(deps_.GameConfig.PLANTS[plantIndex]) then pool[#pool + 1] = plantIndex end
+        end
+    end
+    return pool[math.random(1, math.max(1, #pool))] or 1
+end
+
+function ServerCommission.GetCommissionRewardPack(plant)
+    local pool = COMMISSION_REWARD_POOLS[plant and plant.rarity or "普通"] or COMMISSION_REWARD_POOLS["普通"]
+    local picked = RollWeighted(pool)
+    return picked and picked.packId or "pack_common"
+end
+
+function ServerCommission.BuildCommissionMutationRequirement(packId)
+    local difficulty = COMMISSION_PACK_DIFFICULTY[packId] or COMMISSION_PACK_DIFFICULTY.pack_rare
+    local kind = RandItem(difficulty.mutationKinds)
+    if kind == "color" then
+        local key = RandItem(COMMISSION_COLOR_REQUIREMENTS)
+        local mutation = ServerCommission.FindMutationByKey(deps_.GameConfig.COLOR_MUTATIONS, key)
+        return { kind = kind, key = key, name = mutation and mutation.name or "颜色变异" }
+    elseif kind == "special" then
+        local key = RandItem(COMMISSION_SPECIAL_REQUIREMENTS)
+        local mutation = ServerCommission.FindMutationByKey(deps_.GameConfig.SPECIAL_MUTATIONS, key)
+        return { kind = kind, key = key, name = mutation and mutation.name or "特殊变异" }
+    elseif kind == "giant" then
+        return { kind = kind, key = "Giant", name = "巨大作物" }
+    end
+    return { kind = "basic", key = "basic", name = "任意基础变异" }
+end
+
+function ServerCommission.BuildCommission(index, level)
+    local plantIndex = ServerCommission.PickCommissionPlantIndex(level)
+    local plant = deps_.GameConfig.PLANTS[plantIndex]
+    local rewardPackId = ServerCommission.GetCommissionRewardPack(plant)
+    local difficulty = COMMISSION_PACK_DIFFICULTY[rewardPackId] or COMMISSION_PACK_DIFFICULTY.pack_rare
+    local scale = difficulty.minWeightScale
+    local minWeight = (plant and plant.baseWeight or 1.0) * RandomRange(scale[1], scale[2])
+    local packCfg = deps_.GameConfig.SEED_PACK_CONFIG[rewardPackId]
+    return {
+        id = string.format("commission_%d_%d_%d", Now(), index, math.random(1000, 9999)),
+        customer = RandItem(COMMISSION_CUSTOMERS),
+        plantIndex = plantIndex,
+        plantName = plant and plant.name or "作物",
+        plantRarity = plant and plant.rarity or "普通",
+        mutation = ServerCommission.BuildCommissionMutationRequirement(rewardPackId),
+        minWeight = minWeight,
+        rewardPackId = rewardPackId,
+        rewardPackName = packCfg and packCfg.packName or "普通种子包",
+        completed = false,
+    }
+end
+
+function ServerCommission.NormalizeCommissionState(state, level)
+    state = type(state) == "table" and state or {}
+    local now = Now()
+    local lastRefresh = tonumber(state.lastRefreshRealTime or 0) or 0
+    state.commissions = type(state.commissions) == "table" and state.commissions or {}
+    if #state.commissions == 0 or now - lastRefresh >= COMMISSION_REFRESH_INTERVAL then
+        state.commissions = {}
+        for i = 1, COMMISSION_COUNT do state.commissions[#state.commissions + 1] = ServerCommission.BuildCommission(i, level or 1) end
+        state.lastRefreshRealTime = now
+        state.timer = COMMISSION_REFRESH_INTERVAL
+    else
+        state.timer = math.max(0, COMMISSION_REFRESH_INTERVAL - (now - lastRefresh))
+    end
+    return state
+end
+
+function ServerCommission.HasColorMutation(item, key)
+    local colorMutation = item and item.mutation and item.mutation.colorMutation
+    return colorMutation ~= nil and colorMutation.key == key
+end
+
+local function HasSpecialMutation(item, key)
+    local specials = item and item.mutation and item.mutation.specials
+    if specials == nil then return false end
+    for _, special in ipairs(specials) do if special.key == key then return true end end
+    return false
+end
+
+function ServerCommission.HasBasicMutation(item)
+    local mutation = item and item.mutation
+    return mutation ~= nil and (mutation.sizePrefix ~= nil or mutation.colorMutation ~= nil)
+end
+
+function ServerCommission.CommissionItemMatches(commission, item)
+    if commission == nil or item == nil then return false end
+    if item.plantIndex ~= commission.plantIndex then return false end
+    if (item.weight or 0) < (commission.minWeight or 0) then return false end
+    local req = commission.mutation
+    if req == nil then return true end
+    if req.kind == "color" then return ServerCommission.HasColorMutation(item, req.key) end
+    if req.kind == "special" then return HasSpecialMutation(item, req.key) end
+    if req.kind == "giant" then return item.weightTier == "Giant" end
+    if req.kind == "basic" then return ServerCommission.HasBasicMutation(item) end
+    return true
+end
+
+function ServerCommission.RequestCommissionsAuthority(uid, payload, connection)
+    serverCloud:Get(uid, deps_.Shared.KEYS.ECONOMY_STATE, {
+        ok = function(scores)
+            local economy = NormalizeEconomyState(scores[deps_.Shared.KEYS.ECONOMY_STATE] or BuildInitialEconomyState())
+            serverCloud:Get(uid, COMMISSION_STATE_KEY, {
+                ok = function(rows)
+                    local commissionState = ServerCommission.NormalizeCommissionState(rows[COMMISSION_STATE_KEY], economy.talent and economy.talent.level or 1)
+                    serverCloud:Set(uid, COMMISSION_STATE_KEY, commissionState)
+                    Send(connection, deps_.Shared.EVENTS.COMMISSIONS_RESPONSE, { success = true, requestId = payload.requestId, commission = commissionState })
+                end,
+                error = function()
+                    local commissionState = ServerCommission.NormalizeCommissionState(nil, economy.talent and economy.talent.level or 1)
+                    serverCloud:Set(uid, COMMISSION_STATE_KEY, commissionState)
+                    Send(connection, deps_.Shared.EVENTS.COMMISSIONS_RESPONSE, { success = true, requestId = payload.requestId, commission = commissionState })
+                end,
+            })
+        end,
+        error = function(_, reason) Send(connection, deps_.Shared.EVENTS.COMMISSIONS_RESPONSE, { success = false, message = "经济数据读取失败: " .. tostring(reason), requestId = payload.requestId }) end,
+    })
+end
+
+function ServerCommission.CompleteCommissionAuthority(uid, payload, connection)
+    serverCloud:Get(uid, deps_.Shared.KEYS.ECONOMY_STATE, {
+        ok = function(scores)
+            local economy = NormalizeEconomyState(scores[deps_.Shared.KEYS.ECONOMY_STATE] or BuildInitialEconomyState())
+            serverCloud:Get(uid, COMMISSION_STATE_KEY, {
+                ok = function(rows)
+                    local commissionState = ServerCommission.NormalizeCommissionState(rows[COMMISSION_STATE_KEY], economy.talent and economy.talent.level or 1)
+                    local commission = nil
+                    for _, row in ipairs(commissionState.commissions or {}) do
+                        if row.id == payload.commissionId then commission = row; break end
+                    end
+                    local itemIndex = math.floor(tonumber(payload.itemIndex or 0) or 0)
+                    local item = itemIndex > 0 and economy.harvested[itemIndex] or nil
+                    if commission == nil then Send(connection, deps_.Shared.EVENTS.COMPLETE_COMMISSION_RESPONSE, { success = false, message = "委托不存在", requestId = payload.requestId, state = economy, commission = commissionState }); return end
+                    if commission.completed then Send(connection, deps_.Shared.EVENTS.COMPLETE_COMMISSION_RESPONSE, { success = false, message = "委托已完成", requestId = payload.requestId, state = economy, commission = commissionState }); return end
+                    if item == nil then Send(connection, deps_.Shared.EVENTS.COMPLETE_COMMISSION_RESPONSE, { success = false, message = "作物已不存在", requestId = payload.requestId, state = economy, commission = commissionState }); return end
+                    if not ServerCommission.CommissionItemMatches(commission, item) then Send(connection, deps_.Shared.EVENTS.COMPLETE_COMMISSION_RESPONSE, { success = false, message = "作物不满足委托条件", requestId = payload.requestId, state = economy, commission = commissionState }); return end
+                    table.remove(economy.harvested, itemIndex)
+                    economy.seedPacks[commission.rewardPackId] = (tonumber(economy.seedPacks[commission.rewardPackId] or 0) or 0) + 1
+                    commission.completed = true
+                    economy.updatedAt = Now()
+                    NextRevision(economy)
+                    local message = string.format("完成%s的委托，获得%s", commission.customer or "客人", commission.rewardPackName or "种子包")
+                    local response = { success = true, message = message, requestId = payload.requestId, state = economy, commission = commissionState }
+                    local c = serverCloud:BatchCommit("权威委托")
+                    c:ScoreSet(uid, deps_.Shared.KEYS.ECONOMY_STATE, economy)
+                    c:ScoreSet(uid, COMMISSION_STATE_KEY, commissionState)
+                    c:Commit({
+                        ok = function() Send(connection, deps_.Shared.EVENTS.COMPLETE_COMMISSION_RESPONSE, response) end,
+                        error = function(_, reason) Send(connection, deps_.Shared.EVENTS.COMPLETE_COMMISSION_RESPONSE, { success = false, message = "委托提交失败: " .. tostring(reason), requestId = payload.requestId, state = economy, commission = commissionState }) end,
+                    })
+                end,
+                error = function(_, reason) Send(connection, deps_.Shared.EVENTS.COMPLETE_COMMISSION_RESPONSE, { success = false, message = "委托数据读取失败: " .. tostring(reason), requestId = payload.requestId, state = economy }) end,
+            })
+        end,
+        error = function(_, reason) Send(connection, deps_.Shared.EVENTS.COMPLETE_COMMISSION_RESPONSE, { success = false, message = "经济数据读取失败: " .. tostring(reason), requestId = payload.requestId }) end,
+    })
+end
+
+return ServerCommission

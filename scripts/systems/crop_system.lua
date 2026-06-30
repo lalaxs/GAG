@@ -202,7 +202,7 @@ local function RollMutation(plant, seedBuff, plotIndex)
     end
 
     if deps_.ActivitySystem and deps_.ActivitySystem.ApplyPlantingMutation then
-        deps_.ActivitySystem.ApplyPlantingMutation(plant, mutation)
+        deps_.ActivitySystem.ApplyPlantingMutation(plant, mutation, mutationBonus)
     end
 
     mutation.priceMultiplier = math.min(mutation.priceMultiplier, 80.0)

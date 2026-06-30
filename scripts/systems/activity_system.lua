@@ -179,7 +179,7 @@ function ActivitySystem.GetTimeLeftText()
     return string.format("剩余 %d小时", math.max(1, hours))
 end
 
-function ActivitySystem.ApplyPlantingMutation(plant, mutation)
+function ActivitySystem.ApplyPlantingMutation(plant, mutation, mutationBonus)
     local id, activity = ActivitySystem.GetActiveActivity()
     if activity == nil or mutation == nil then return nil end
 
@@ -192,10 +192,12 @@ function ActivitySystem.ApplyPlantingMutation(plant, mutation)
             added = AddSpecial(mutation, "honey") and "honey" or added
         end
     elseif id == "dark" then
-        if math.random() <= (activity.devourChance or 0.035) then
+        local devourMultiplier = 1.0 + math.max(0, tonumber(mutationBonus or 0) or 0)
+        local devourChance = math.min((activity.devourChance or 0.04) * devourMultiplier, activity.devourChanceMax or 0.12)
+        if math.random() <= devourChance then
             added = AddSpecial(mutation, "devour") and "devour" or added
         end
-        if math.random() <= (activity.extraVoidChance or 0.022) then
+        if math.random() <= (activity.extraVoidChance or 0.05) then
             added = AddSpecial(mutation, "void") and "void" or added
         end
     end
@@ -226,8 +228,8 @@ function ActivitySystem.OnCropHarvested(crop)
     elseif id == "dark" and (HasSpecial(crop.mutation, "devour") or HasSpecial(crop.mutation, "void")) then
         state_.dark.devourHarvestCount = state_.dark.devourHarvestCount + 1
         local rarityOrder = GetRarityOrder(crop.config and crop.config.rarity)
-        local rates = activity.darkSeedDropRates or { 0.008, 0.014, 0.024, 0.036, 0.05 }
-        if math.random() <= (rates[rarityOrder] or 0.008) then
+        local rates = activity.darkSeedDropRates or { 0.08, 0.12, 0.18, 0.25, 0.35 }
+        if math.random() <= (rates[rarityOrder] or 0.08) then
             local plantIndex = RollDarkSeed(activity)
             inventory_.AddSeedToBag(plantIndex, 1, 0)
             state_.dark.darkSeedDrops = state_.dark.darkSeedDrops + 1

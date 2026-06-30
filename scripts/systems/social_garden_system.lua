@@ -50,6 +50,7 @@ local state_ = {
     },
     lastSyncText = "未同步",
     serverEnabled = false,
+    boundConnectionKey = nil,
     stealingMode = false,
     likedGardens = {},
     likeDeltas = {},
@@ -380,23 +381,28 @@ function SocialGardenSystem.Init(deps)
         SubscribeToEvent(Shared.EVENTS.RESPOND_FRIEND_REQUEST_RESPONSE, "HandleGardenRespondFriendRequestResponse")
         SubscribeToEvent(Shared.EVENTS.REMOVE_FRIEND_RESPONSE, "HandleGardenRemoveFriendResponse")
         SubscribeToEvent(Shared.EVENTS.CLEAR_SOCIAL_MESSAGES_RESPONSE, "HandleGardenClearSocialMessagesResponse")
-        SubscribeToEvent("ServerReady", "HandleGardenServerReady")
         SocialGardenSystem.BindServerConnection()
     end
     EnsureDemoData()
 end
 
-function SocialGardenSystem.BindServerConnection()
+function SocialGardenSystem.BindServerConnection(forceReady)
     local conn = network ~= nil and network:GetServerConnection() or nil
     if conn ~= nil and deps_.getScene ~= nil then
         conn.scene = deps_.getScene()
+        local connectionKey = tostring(conn)
+        if forceReady ~= true and state_.serverEnabled == true and state_.boundConnectionKey == connectionKey then
+            return true, false
+        end
+        state_.boundConnectionKey = connectionKey
         conn:SendRemoteEvent(Shared.EVENTS.CLIENT_READY, true)
         SocialGardenSystem.RequestSocialState()
         state_.serverEnabled = true
         print("[社交花园] 已绑定后台服务器连接")
-        return true
+        return true, true
     end
     state_.serverEnabled = false
+    state_.boundConnectionKey = nil
     return false
 end
 
@@ -485,6 +491,10 @@ function SocialGardenSystem.BuildSnapshot()
 end
 
 function SocialGardenSystem.UploadSnapshot()
+    if state_.mode ~= MODE_OWN then
+        print("[社交花园] 当前处于拜访模式，跳过花园快照上传")
+        return false
+    end
     local snapshot = BuildSnapshot()
     state_.lastSyncText = "同步中..."
     local payload = BeginRequest("saveGarden", { snapshot = snapshot })
@@ -566,7 +576,7 @@ function SocialGardenSystem.GetStealLogs()
 end
 
 function SocialGardenSystem.RequestSocialState()
-    local payload = BeginRequest("socialState", {})
+    local payload = BeginRequest("socialState", { userId = GetUserId() })
     if SendRequest(Shared.EVENTS.REQUEST_SOCIAL_STATE, payload) then return true end
     FinishRequest(payload.requestId, "socialState")
     return false
@@ -1388,9 +1398,10 @@ function HandleGardenClearSocialMessagesResponse(eventType, eventData)
 end
 
 function HandleGardenServerReady(eventType, eventData)
-    SocialGardenSystem.BindServerConnection()
-    SocialGardenSystem.RequestSocialState()
-    SocialGardenSystem.UploadSnapshot()
+    local ok, isNewBinding = SocialGardenSystem.BindServerConnection()
+    if ok and isNewBinding then
+        SocialGardenSystem.UploadSnapshot()
+    end
 end
 
 return SocialGardenSystem

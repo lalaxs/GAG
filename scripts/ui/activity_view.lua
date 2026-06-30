@@ -1065,7 +1065,7 @@ local function BuildDarkPrototype(activity, state, isActive)
                 justifyContent = "center",
                 alignItems = "center",
                 children = {
-                    UI.Label { text = "活动期间自动生效，收获吞噬变异作物即可获得掉落机会", fontSize = 14, fontWeight = "bold", fontColor = theme.accentDark, textAlign = "center", maxLines = 2 },
+                    UI.Label { text = "活动期间自动生效，收获吞噬或虚空变异作物即可获得掉落机会", fontSize = 14, fontWeight = "bold", fontColor = theme.accentDark, textAlign = "center", maxLines = 2 },
                 },
             },
         },

@@ -34,6 +34,12 @@ local PlayerSystem = require("systems.player_system")
 local SocialGardenSystem = require("systems.social_garden_system")
 local EconomyCloudSystem = require("systems.economy_cloud_system")
 local LeaderboardSystem = require("systems.leaderboard_system")
+local NetworkRecovery = require("runtime.network_recovery")
+local FarmRuntime = require("runtime.farm_runtime")
+local AdRewardActions = require("runtime.ad_reward_actions")
+local UiEventBindings = require("runtime.ui_event_bindings")
+local UiRuntime = require("runtime.ui_runtime")
+local UiBindings = require("runtime.ui_bindings")
 -- 纯服务器游戏：主游戏进度只从服务端 serverCloud 同步，客户端不再读写本地完整存档。
 local TalentView = require("ui.talent_view")
 local ExpansionView = require("ui.expansion_view")
@@ -82,16 +88,6 @@ local codexStats_ = inventoryState_.codexStats
 local silverRewardClaimed_ = inventoryState_.silverRewardClaimed
 local dailyTaskState_ = inventoryState_.dailyTaskState
 local taskModal_ = nil
-local unsubscribeSocialChanged_ = nil
-local unsubscribeSeedPackChanged_ = nil
-local unsubscribeCommissionChanged_ = nil
-local unsubscribeActivityChanged_ = nil
-local unsubscribeTaskChanged_ = nil
-local unsubscribeTalentChanged_ = nil
-local unsubscribeWalletChanged_ = nil
-local unsubscribeInventoryChanged_ = nil
-local unsubscribeFarmChanged_ = nil
-local unsubscribePlayerChanged_ = nil
 local pendingRebuildUI_ = false
 local harvestPanelRefreshTimer_ = 0
 local initialUiReady_ = false
@@ -111,25 +107,9 @@ local SAVE_FLUSH_INTERVAL = 1.0
 local saveDisabled_ = true
 local ownFarmPlotsSave_ = nil
 local suppressNextWorldTap_ = false
-local RefreshUI = nil
-local ShowToast = nil
-local RebuildUI = nil
-local SelectPlotByDelta = nil
-local ClearBagPreview = nil
-local OpenSeedPackHub = nil
-local OpenTaskPanel = nil
-local OpenCommissionPanel = nil
-local ExpandNextPlot = nil
-local UpdateCameraTargetForPlotDisplay = nil
-local RefreshSelection = nil
-local UpdateCurrentTourValue = nil
-local CreateFarm = nil
-local DisposeCurrentFarm = nil
-local ApplyUnlockedPlotCount = nil
-local HandleClearSaveCompleted = nil
-local EnsureInitialUiReady = nil
+-- 以下函数名需要跨初始化闭包互相引用，使用全局可避免 main.lua 顶层 local 超过 Lua 限制。
 
-local function SyncInventoryRefs()
+function SyncInventoryRefs()
     inventoryState_ = InventorySystem.GetState()
     seedBag_ = inventoryState_.seedBag
     seedBagBuffs_ = inventoryState_.seedBagBuffs
@@ -142,20 +122,20 @@ local function SyncInventoryRefs()
     dailyTaskState_ = inventoryState_.dailyTaskState
 end
 
-local function MarkSaveDirty()
+function MarkSaveDirty()
     -- 纯服务器游戏：客户端不保存权威玩法进度；此函数仅保留给现有依赖调用。
     saveDirty_ = false
     saveTimer_ = 0
 end
 
-local function SaveGameNow()
+function SaveGameNow()
     -- 纯服务器游戏：权威数据由 serverCloud 保存。
     saveDirty_ = false
     saveTimer_ = 0
     return true
 end
 
-local function ClearGameSave()
+function ClearGameSave()
     local requested = EconomyCloudSystem.ClearSave()
     if not requested and ShowToast ~= nil then
         ShowToast("服务器尚未就绪，无法清除存档")
@@ -165,45 +145,21 @@ local function ClearGameSave()
     return requested
 end
 
-local function ApplyAuthoritativeFarmState(farm)
-    if type(farm) ~= "table" or type(farm.plots) ~= "table" then return false end
-    local serverUnlocked = ProgressionSystem.GetUnlockedPlotCount()
-    local farmRecreated = false
-    if serverUnlocked ~= unlockedPlotCount_ then
-        ownFarmPlotsSave_ = CropSystem.GetPlotsSaveData(plots_)
-        DisposeCurrentFarm()
-        unlockedPlotCount_ = serverUnlocked
-        CreateFarm()
-        ApplyUnlockedPlotCount()
-        farmRecreated = true
-    end
-    CropSystem.ClearPlots(plots_)
-    CropSystem.RestorePlotsFromSave(plots_, farm.plots)
-    if farmRecreated and initialUiReady_ then
-        PlotBounceAnimator.StartAll(plots_)
-        initialPlotBounceStarted_ = true
-    end
-    ownFarmPlotsSave_ = CropSystem.GetPlotsSaveData(plots_)
-    UpdateCurrentTourValue()
-    RefreshSelection()
-    MarkSaveDirty()
-    if RebuildUI ~= nil then RebuildUI() end
-    RefreshUI(true)
-    print("[权威农场] 已从服务器重建本地农场")
-    return true
+function ApplyAuthoritativeFarmState(farm)
+    return FarmRuntime.ApplyAuthoritativeFarmState(farm)
 end
 
-local function AddSeedToBag(plantIndex, count, buff)
+function AddSeedToBag(plantIndex, count, buff)
     local added = InventorySystem.AddSeedToBag(plantIndex, count, buff)
     if added > 0 then MarkSaveDirty() end
     return added
 end
 
-local function CountSeedPacks()
+function CountSeedPacks()
     return InventorySystem.CountSeedPacks()
 end
 
-local function GetHighestPackIcon()
+function GetHighestPackIcon()
     local bestOrder = 0
     local bestIcon = "image/seedpack_icon/seedpack_0.png"
     for packId, cfg in pairs(SEED_PACK_CONFIG) do
@@ -219,82 +175,82 @@ local function GetHighestPackIcon()
     return bestIcon
 end
 
-local function AddSeedPack(packId, count)
+function AddSeedPack(packId, count)
     local ok = InventorySystem.AddSeedPack(packId, count)
     if ok then MarkSaveDirty() end
     return ok
 end
 
-local function IsTaskCompleted(taskCfg)
+function IsTaskCompleted(taskCfg)
     return InventorySystem.IsTaskCompleted(taskCfg)
 end
 
-local function AreAllDailyTasksCompleted()
+function AreAllDailyTasksCompleted()
     return InventorySystem.AreAllDailyTasksCompleted()
 end
 
-local function AddDailyProgress(key, amount)
+function AddDailyProgress(key, amount)
     InventorySystem.AddDailyProgress(key, amount)
 end
 
-local function CheckSilverPackRewards()
+function CheckSilverPackRewards()
     InventorySystem.CheckSilverPackRewards()
 end
 
-local function InitMaterials()
+function InitMaterials()
     PlantVisual.InitMaterials()
 end
 
-local function ResolvePlantMaterial(plant, mutation)
+function ResolvePlantMaterial(plant, mutation)
     return PlantVisual.ResolvePlantMaterial(plant, mutation)
 end
 
-local function CreatePlantVisual(parent, plant, mutation, material)
+function CreatePlantVisual(parent, plant, mutation, material)
     return PlantVisual.CreatePlantVisual(parent, plant, mutation, material)
 end
 
-local function CreateSpecialEffects(plantData)
+function CreateSpecialEffects(plantData)
     PlantVisual.CreateSpecialEffects(plantData)
 end
 
-local function CreateScene()
+function CreateScene()
     scene_, cameraNode_, camera_ = SceneSystem.CreateScene()
     CameraSystem.Init(CONFIG, cameraNode_)
 end
 
-local function CreateSkybox()
+function CreateSkybox()
     SceneSystem.CreateSkybox(scene_)
 end
 
-local function UpdateCamera()
+function UpdateCamera()
     CameraSystem.UpdateCamera()
 end
 
-local function GetViewMode()
+function GetViewMode()
     return CameraSystem.GetViewMode()
 end
 
-local function IsPlantGuideDone()
+function IsPlantGuideDone()
     return tutorialState_ ~= nil and tutorialState_.plantGuideDone == true
 end
 
-local function ShouldShowPlantGuide()
+function ShouldShowPlantGuide()
     return initialUiReady_ == true and not IsPlantGuideDone() and not SocialGardenSystem.IsVisitMode()
 end
 
-local function GetPlantGuideStep()
+function GetPlantGuideStep()
     if not ShouldShowPlantGuide() then return "done" end
     if GetViewMode() == ViewMode.FARM then return "start" end
     if plantTab_ ~= "seed" then return "seed_tab" end
     return "plant"
 end
 
-local function CompletePlantGuide()
+function CompletePlantGuide()
     if tutorialState_ == nil then return end
     tutorialState_.plantGuideDone = true
 end
 
-local function EnterPlantView()
+function EnterPlantView()
     selectedPlot_ = Clamp(selectedPlot_, 1, math.max(1, unlockedPlotCount_))
     if ShouldShowPlantGuide() then
         plantTab_ = "seed"
@@ -311,7 +267,7 @@ local function EnterPlantView()
     RefreshUI(true)
 end
 
-local function EnterFarmView()
+function EnterFarmView()
     CameraSystem.EnterFarmView()
     UpdateCameraTargetForPlotDisplay()
     selectedBagItem_ = nil
@@ -323,73 +279,53 @@ local function EnterFarmView()
     RefreshUI(true)
 end
 
-local function PlotWorldPosition(index)
+function PlotWorldPosition(index)
     return FarmSystem.PlotWorldPosition(index)
 end
 
 CreateFarm = function()
-    plots_ = FarmSystem.CreateFarm(scene_, unlockedPlotCount_, LOCAL)
+    FarmRuntime.CreateFarm()
 end
 
 DisposeCurrentFarm = function()
-    if plots_ ~= nil then
-        ownFarmPlotsSave_ = CropSystem.GetPlotsSaveData(plots_)
-        for _, plot in ipairs(plots_) do
-            if plot.node ~= nil then
-                plot.node:Dispose()
-            end
-        end
-    end
-    plots_ = {}
+    FarmRuntime.DisposeCurrentFarm()
 end
 
-local function BuildVisitPlots(garden)
-    DisposeCurrentFarm()
-    local plotIndex = tonumber(garden and garden.visitablePlotIndex or 1) or 1
-    plots_ = FarmSystem.CreateFarm(scene_, 1, LOCAL)
-    unlockedPlotCount_ = 1
-    selectedPlot_ = 1
-    local plotData = garden and garden.plot or nil
-    if plotData ~= nil then
-        CropSystem.RestorePlotsFromSave(plots_, {
-            [1] = { plants = plotData.plants or {} },
-        })
-    end
-    PlotDisplayController.SetDisplayMode("all")
-    CameraSystem.EnterFarmView()
-    RefreshSelection()
-    UpdateCamera()
-    print(string.format("[社交花园] 已加载玩家 %s 的可参观地块 %d", tostring(garden and garden.nickname or "好友"), plotIndex))
+function BuildVisitPlots(garden)
+    FarmRuntime.BuildVisitPlots(garden)
 end
 
-local function RestoreOwnFarm()
-    local restorePlots = ownFarmPlotsSave_ or CropSystem.GetPlotsSaveData(plots_)
-    DisposeCurrentFarm()
-    ownFarmPlotsSave_ = restorePlots
-    unlockedPlotCount_ = ProgressionSystem.GetUnlockedPlotCount()
-    CreateFarm()
-    CropSystem.RestorePlotsFromSave(plots_, ownFarmPlotsSave_)
-    ownFarmPlotsSave_ = nil
-    PlotDisplayController.ApplyUnlockedPlotCount()
-    PlotBounceAnimator.StartAll(plots_)
-    selectedPlot_ = Clamp(selectedPlot_, 1, math.max(1, unlockedPlotCount_))
-    CameraSystem.EnterFarmView()
-    UpdateCameraTargetForPlotDisplay()
-    RefreshSelection()
-    UpdateCamera()
+function RestoreOwnFarm()
+    FarmRuntime.RestoreOwnFarm()
+end
+
+function IsServerConnectionAvailable()
+    return NetworkRecovery.IsServerConnectionAvailable()
+end
+
+function RequestNetworkRecoverySync(reason)
+    return NetworkRecovery.RequestSync(reason)
+end
+
+function RestoreOwnFarmForNetworkRecovery(message)
+    return NetworkRecovery.RestoreOwnFarm(message)
+end
+
+function UpdateNetworkRecovery(dt)
+    NetworkRecovery.Update(dt)
 end
 
 --- 启动地块依次弹出动画
-local function StartPlotBounceAnimation()
+function StartPlotBounceAnimation()
     PlotBounceAnimator.StartAll(plots_)
 end
 
-local function StartSinglePlotBounceAnimation(plotIndex)
+function StartSinglePlotBounceAnimation(plotIndex)
     PlotBounceAnimator.StartSingle(plots_, plotIndex)
 end
 
 --- 更新地块弹出动画
-local function UpdatePlotBounceAnimation(dt)
+function UpdatePlotBounceAnimation(dt)
     PlotBounceAnimator.Update(plots_, dt)
 end
 
@@ -401,35 +337,35 @@ RefreshSelection = function()
     PlotDisplayController.RefreshSelection()
 end
 
-local function SetPlotDisplayMode(mode)
+function SetPlotDisplayMode(mode)
     PlotDisplayController.SetDisplayMode(mode)
 end
 
-local function SwitchNextFocusedPlot()
+function SwitchNextFocusedPlot()
     PlotDisplayController.SwitchNextFocusedPlot()
 end
 
-local function ZoomPlantView(direction)
+function ZoomPlantView(direction)
     CameraSystem.AdjustDistance(direction * 0.9, CONFIG.PlantViewMinDistance, CONFIG.PlantViewMaxDistance)
 end
 
 ApplyUnlockedPlotCount = function()
-    PlotDisplayController.ApplyUnlockedPlotCount()
+    FarmRuntime.ApplyUnlockedPlotCount()
 end
 
 ClearBagPreview = function()
 end
 
-local function CreateBagPreview(item)
+function CreateBagPreview(item)
 end
 
-local function CloseBagItemDetail()
+function CloseBagItemDetail()
     selectedBagItem_ = nil
     ClearBagPreview()
     if RebuildUI ~= nil then RebuildUI() end
 end
 
-local function OpenBagItemDetail(item)
+function OpenBagItemDetail(item)
     if item == nil then return end
     selectedBagItem_ = item
     CreateBagPreview(item)
@@ -437,21 +373,21 @@ local function OpenBagItemDetail(item)
 end
 
 
-local function ClampToPlot(localPos)
+function ClampToPlot(localPos)
     return CropSystem.ClampToPlot(localPos)
 end
 
-local function FindPlantAtLocalPosition(plot, localPos, matureOnly)
+function FindPlantAtLocalPosition(plot, localPos, matureOnly)
     return CropSystem.FindPlantAtLocalPosition(plot, localPos, matureOnly)
 end
 
-local function PlantSeedAt(plotIndex, plantIndex, centerLocalPos)
+function PlantSeedAt(plotIndex, plantIndex, centerLocalPos)
     local ok, reason = PlantActionController.PlantSeedAt(plotIndex, plantIndex, centerLocalPos)
     if ok then MarkSaveDirty() end
     return ok, reason
 end
 
-local function HarvestNearestMature(plotIndex, localPos)
+function HarvestNearestMature(plotIndex, localPos)
     local success, harvestInfo = PlantActionController.HarvestNearestMature(plotIndex, localPos)
     if success then
         if harvestInfo and harvestInfo.pendingServer then
@@ -470,45 +406,45 @@ local function HarvestNearestMature(plotIndex, localPos)
     return success, harvestInfo
 end
 
-local function PlantSeed(plotIndex, plantIndex)
+function PlantSeed(plotIndex, plantIndex)
     local ok, reason = PlantActionController.PlantSeed(plotIndex, plantIndex)
     if ok then MarkSaveDirty() end
     return ok, reason
 end
 
-local function BuySelectedSeed()
+function BuySelectedSeed()
     local ok, reason = PlantActionController.BuySelectedSeed()
     if ok then MarkSaveDirty() end
     return ok, reason
 end
 
-local function SellAllHarvested()
+function SellAllHarvested()
     local ok, value = PlantActionController.SellAllHarvested()
     if ok then MarkSaveDirty() end
     return ok, value
 end
 
-local function SellBagItem(item)
+function SellBagItem(item)
     local ok, value = PlantActionController.SellBagItem(item)
     if ok then MarkSaveDirty() end
     return ok, value
 end
 
-local function SellHarvestedByFilter(filter)
+function SellHarvestedByFilter(filter)
     local ok, value = PlantActionController.SellHarvestedByFilter(filter)
     if ok then MarkSaveDirty() end
     return ok, value
 end
 
-local function CountPlotPlants(plot)
+function CountPlotPlants(plot)
     return CropSystem.CountPlotPlants(plot)
 end
 
-local function CountMaturePlants(plot)
+function CountMaturePlants(plot)
     return CropSystem.CountMaturePlants(plot)
 end
 
-local function GetPlotText(plot)
+function GetPlotText(plot)
     return CropSystem.GetPlotText(plot)
 end
 
@@ -516,105 +452,64 @@ ShowToast = function(text, silent)
     UIController.ShowToast(text)
 end
 
-local function FindNextOwnedSeedIndex(startIndex)
+function FindNextOwnedSeedIndex(startIndex)
     return PlantActionController.FindNextOwnedSeedIndex(startIndex)
 end
 
-local function EnsureSelectedSeedAvailable()
+function EnsureSelectedSeedAvailable()
     return PlantActionController.EnsureSelectedSeedAvailable()
 end
 
-local function SelectNextOwnedSeedIfEmpty(fromIndex)
+function SelectNextOwnedSeedIfEmpty(fromIndex)
     return PlantActionController.SelectNextOwnedSeedIfEmpty(fromIndex)
 end
 
-local function SetSelectedSeedIndex(index)
+function SetSelectedSeedIndex(index)
     PlantActionController.SetSelectedSeedIndex(index)
 end
 
-local function GetUiRarityColor(rarity)
+function GetUiRarityColor(rarity)
     local c = RARITY_COLORS[rarity]
     if c == nil then return {200, 200, 200, 255} end
     return { math.floor(c.r * 255), math.floor(c.g * 255), math.floor(c.b * 255), 255 }
 end
 
-local function CountPackResults(results)
+function CountPackResults(results)
     return SeedPackSystem.CountResults(results)
 end
 
-local function GetFirstAvailablePackId()
+function GetFirstAvailablePackId()
     return SeedPackSystem.GetFirstAvailablePackId()
 end
 
 
 
-local function OpenSeedPack(packId)
+function OpenSeedPack(packId)
     SeedPackOpeningController.OpenPack(packId)
 end
 
-local function OpenAllSeedPacks(packId)
+function OpenAllSeedPacks(packId)
     SeedPackOpeningController.OpenAllPacks(packId)
 end
 
 ShowAdRewardPrompt = function(title, message, rewardType, extra)
-    return AdRewardSystem.ConfirmAndShow({
-        title = title,
-        message = message,
-        onSuccess = function()
-            if EconomyCloudSystem.RequestAdReward(rewardType, extra or {}) then
-                ShowToast("广告观看完成，正在发放奖励...")
-            end
-        end,
-    })
+    return AdRewardActions.ShowPrompt(title, message, rewardType, extra)
 end
 
 RequestStealAttemptsAdReward = function()
-    return AdRewardSystem.Show({
-        onSuccess = function()
-            if EconomyCloudSystem.RequestAdReward("steal_attempts", {}) then
-                ShowToast("广告观看完成，正在发放奖励...")
-            end
-        end,
-    })
+    return AdRewardActions.RequestStealAttempts()
 end
 
 RequestRareSeedPackAdReward = function()
-    return ShowAdRewardPrompt("领取稀有种子包", "观看广告后，获得稀有种子包 x5。", "rare_seed_pack")
+    return AdRewardActions.RequestRareSeedPack()
 end
 
 RequestMaturePlotAdReward = function()
-    local socialState = SocialGardenSystem.GetState and SocialGardenSystem.GetState() or {}
-    local daily = socialState.daily or {}
-    local matureAdCount = math.max(0, math.floor(tonumber(daily.matureAdCount or 0) or 0))
-    local matureAdLimit = math.max(5, math.floor(tonumber(daily.matureAdLimit or 5) or 5))
-    if matureAdCount >= matureAdLimit then
-        ShowToast("今日快速成熟广告已达上限")
-        return false
-    end
-    local plot = plots_[selectedPlot_]
-    if plot == nil or plot.plants == nil or #plot.plants == 0 then
-        ShowToast("当前地块没有作物")
-        return false
-    end
-    local hasImmature = false
-    for _, crop in ipairs(plot.plants) do
-        if crop.mature ~= true and crop.harvested ~= true then
-            hasImmature = true
-            break
-        end
-    end
-    if not hasImmature then
-        ShowToast("该地块作物已经成熟")
-        return false
-    end
-    return ShowAdRewardPrompt("全部成熟", "观看广告后，当前地块作物将全部成熟。", "mature_plot", { plotIndex = selectedPlot_ })
+    return AdRewardActions.RequestMaturePlot()
 end
 
-local function IsInitialUiBlocked()
-    if initialUiReady_ then return false end
-    if ShowToast ~= nil then ShowToast("正在同步服务器数据，请稍后") end
-    EnsureInitialUiReady()
-    return true
+function IsInitialUiBlocked()
+    return UiRuntime.IsInitialUiBlocked()
 end
 
 OpenSeedPackHub = function()
@@ -622,11 +517,11 @@ OpenSeedPackHub = function()
     SeedPackOpeningController.OpenHub()
 end
 
-local function BuildSeedPackOverlay()
+function BuildSeedPackOverlay()
     return SeedPackOpeningController.BuildPackOverlay()
 end
 
-local function BuildSeedPackOpeningOverlay()
+function BuildSeedPackOpeningOverlay()
     return SeedPackOpeningController.BuildOpeningOverlay()
 end
 
@@ -646,216 +541,44 @@ ExpandNextPlot = function()
 end
 
 
-local function PerformPlotAction(plotIndex, localPos)
+function PerformPlotAction(plotIndex, localPos)
     PlantActionController.PerformPlotAction(plotIndex, localPos)
 end
 
-local function SelectSeedIndex(index)
+function SelectSeedIndex(index)
     PlantActionController.SelectSeedIndex(index)
 end
 
-local function SubscribeUIEvents()
-    if unsubscribeSocialChanged_ == nil then
-        unsubscribeSocialChanged_ = EventBus.On(UIEvents.SOCIAL_CHANGED, function()
-            if not SocialView.IsOpen() and RebuildUI ~= nil then
-                RebuildUI()
-            end
-        end)
-    end
-    if unsubscribeSeedPackChanged_ == nil then
-        unsubscribeSeedPackChanged_ = EventBus.On(UIEvents.SEEDPACK_CHANGED, function()
-            if SeedPackView.IsOpen() then
-                SeedPackView.RebuildModalContent()
-            end
-            UIController.RefreshInventoryPanels()
-            RefreshUI(true)
-        end)
-    end
-    if unsubscribeCommissionChanged_ == nil then
-        unsubscribeCommissionChanged_ = EventBus.On(UIEvents.COMMISSION_CHANGED, function()
-            if CommissionView.IsOpen() then
-                CommissionView.RefreshContent()
-            else
-                RefreshUI(true)
-            end
-        end)
-    end
-    if unsubscribeActivityChanged_ == nil then
-        unsubscribeActivityChanged_ = EventBus.On(UIEvents.ACTIVITY_CHANGED, function()
-            if ActivityView.IsOpen() then
-                ActivityView.RefreshContent()
-            else
-                RefreshUI(true)
-            end
-        end)
-    end
-    if unsubscribeTaskChanged_ == nil then
-        unsubscribeTaskChanged_ = EventBus.On(UIEvents.TASK_CHANGED, function()
-            if TaskView.IsOpen() then
-                TaskView.RefreshContent()
-            else
-                RefreshUI(true)
-            end
-        end)
-    end
-    if unsubscribeTalentChanged_ == nil then
-        unsubscribeTalentChanged_ = EventBus.On(UIEvents.TALENT_CHANGED, function(payload)
-            if TalentView.IsOpen() then
-                local successText = payload ~= nil and payload.successText or nil
-                TalentView.RefreshContent(successText)
-            end
-            RefreshUI(true)
-        end)
-    end
-    if unsubscribeWalletChanged_ == nil then
-        unsubscribeWalletChanged_ = EventBus.On(UIEvents.WALLET_CHANGED, function()
-            RefreshUI(true)
-        end)
-    end
-    if unsubscribeInventoryChanged_ == nil then
-        unsubscribeInventoryChanged_ = EventBus.On(UIEvents.INVENTORY_CHANGED, function()
-            if not UIController.RefreshInventoryPanels() and RebuildUI ~= nil then
-                RebuildUI()
-            end
-            RefreshUI(true)
-        end)
-    end
-    if unsubscribeFarmChanged_ == nil then
-        unsubscribeFarmChanged_ = EventBus.On(UIEvents.FARM_CHANGED, function()
-            if not UIController.RefreshPlantContent() and RebuildUI ~= nil then
-                RebuildUI()
-            end
-            RefreshUI(true)
-        end)
-    end
-    if unsubscribePlayerChanged_ == nil then
-        unsubscribePlayerChanged_ = EventBus.On(UIEvents.PLAYER_CHANGED, function()
-            if ProfileView.IsOpen() then
-                ProfileView.RebuildProfileContent()
-            end
-            if RebuildUI ~= nil then
-                RebuildUI()
-            else
-                RefreshUI(true)
-            end
-        end)
-    end
+function SubscribeUIEvents()
+    UiEventBindings.Subscribe()
 end
 
-local function UnsubscribeUIEvents()
-    if unsubscribeSocialChanged_ ~= nil then
-        unsubscribeSocialChanged_()
-        unsubscribeSocialChanged_ = nil
-    end
-    if unsubscribeSeedPackChanged_ ~= nil then
-        unsubscribeSeedPackChanged_()
-        unsubscribeSeedPackChanged_ = nil
-    end
-    if unsubscribeCommissionChanged_ ~= nil then
-        unsubscribeCommissionChanged_()
-        unsubscribeCommissionChanged_ = nil
-    end
-    if unsubscribeActivityChanged_ ~= nil then
-        unsubscribeActivityChanged_()
-        unsubscribeActivityChanged_ = nil
-    end
-    if unsubscribeTaskChanged_ ~= nil then
-        unsubscribeTaskChanged_()
-        unsubscribeTaskChanged_ = nil
-    end
-    if unsubscribeTalentChanged_ ~= nil then
-        unsubscribeTalentChanged_()
-        unsubscribeTalentChanged_ = nil
-    end
-    if unsubscribeWalletChanged_ ~= nil then
-        unsubscribeWalletChanged_()
-        unsubscribeWalletChanged_ = nil
-    end
-    if unsubscribeInventoryChanged_ ~= nil then
-        unsubscribeInventoryChanged_()
-        unsubscribeInventoryChanged_ = nil
-    end
-    if unsubscribeFarmChanged_ ~= nil then
-        unsubscribeFarmChanged_()
-        unsubscribeFarmChanged_ = nil
-    end
-    if unsubscribePlayerChanged_ ~= nil then
-        unsubscribePlayerChanged_()
-        unsubscribePlayerChanged_ = nil
-    end
+function UnsubscribeUIEvents()
+    UiEventBindings.Unsubscribe()
 end
 
-local function RegisterModalGuards()
-    ModalRegistry.Register("social", function() return SocialView.IsOpen() end)
-    ModalRegistry.Register("leaderboard", function() return LeaderboardView.IsOpen() end)
-    ModalRegistry.Register("seedPack", function() return SeedPackView.IsOpen() end)
-    ModalRegistry.Register("task", function() return TaskView.IsOpen() end)
-    ModalRegistry.Register("modelPreview", function() return ModelPreviewSystem.IsOpen() end)
-    ModalRegistry.Register("activity", function() return ActivityView.IsOpen() end)
-    ModalRegistry.Register("profile", function() return ProfileView.IsOpen() end)
-    ModalRegistry.Register("settings", function() return SettingsView.IsOpen() end)
-    ModalRegistry.Register("shop", function() return Shop.IsOpen() end)
-    ModalRegistry.Register("commission", function() return CommissionView.IsOpen() end)
-    ModalRegistry.Register("expansion", function() return ExpansionView.IsOpen() end)
-    ModalRegistry.Register("talent", function() return TalentView.IsOpen() end)
-    ModalRegistry.Register("bulkSell", function() return BulkSellView.IsOpen() end)
-    ModalRegistry.Register("codex", function() return CodexView.IsOpen() end)
+function RegisterModalGuards()
+    UiEventBindings.RegisterModalGuards()
 end
 
-local function IsInitialDataReady()
-    return EconomyCloudSystem.IsInitialSyncReady ~= nil and EconomyCloudSystem.IsInitialSyncReady()
+function IsInitialDataReady()
+    return UiRuntime.IsInitialDataReady()
 end
 
 EnsureInitialUiReady = function()
-    if initialUiReady_ then return true end
-    if not IsInitialDataReady() then return false end
-    initialUiReady_ = true
-    initialUiBuildPending_ = false
-    pendingRebuildUI_ = false
-    if not initialPlotBounceStarted_ then
-        PlotBounceAnimator.StartAll(plots_)
-        initialPlotBounceStarted_ = true
-    end
-    UIController.Rebuild()
-    RefreshUI(true)
-    if initialSocialSnapshotUploaded_ ~= true then
-        SocialGardenSystem.UploadSnapshot()
-        initialSocialSnapshotUploaded_ = true
-    end
-    print("[启动同步] 初始权威数据已同步，显示主界面")
-    return true
+    return UiRuntime.EnsureInitialUiReady()
 end
 
 RefreshUI = function(force)
-    if not initialUiReady_ then
-        initialUiBuildPending_ = true
-        return
-    end
-    UIController.Refresh(force)
+    UiRuntime.Refresh(force)
 end
 
 RebuildUI = function()
-    if not initialUiReady_ then
-        initialUiBuildPending_ = true
-        return
-    end
-    if ModalRegistry.AnyOpen() then
-        pendingRebuildUI_ = true
-        return
-    end
-    pendingRebuildUI_ = false
-    UIController.Rebuild()
+    UiRuntime.Rebuild()
 end
 
-local function FlushPendingRebuildUI()
-    if not initialUiReady_ then
-        EnsureInitialUiReady()
-        return
-    end
-    if pendingRebuildUI_ and not ModalRegistry.AnyOpen() then
-        pendingRebuildUI_ = false
-        UIController.Rebuild()
-    end
+function FlushPendingRebuildUI()
+    UiRuntime.FlushPendingRebuild()
 end
 
 HandleClearSaveCompleted = function(success)
@@ -888,18 +611,18 @@ SelectPlotByDelta = function(dx, dz)
     PlotDisplayController.SelectPlotByDelta(dx, dz)
 end
 
-local function CycleSeed(delta)
+function CycleSeed(delta)
     PlantActionController.CycleSeed(delta)
 end
 
-local function RequestSuppressWorldTap()
+function RequestSuppressWorldTap()
     suppressNextWorldTap_ = true
     if InteractionSystem ~= nil and InteractionSystem.SuppressNextWorldTap ~= nil then
         InteractionSystem.SuppressNextWorldTap()
     end
 end
 
-local function SyncWorldTapSuppression()
+function SyncWorldTapSuppression()
     if suppressNextWorldTap_ then
         InteractionSystem.SuppressNextWorldTap()
         suppressNextWorldTap_ = false
@@ -928,21 +651,19 @@ function HandleTouchMove(eventType, eventData)
     InteractionSystem.HandleTouchMove(eventData)
 end
 
-local function UpdateTouchCameraGesture()
+function UpdateTouchCameraGesture()
     InteractionSystem.UpdateTouchCameraGesture()
 end
 
-local function HandleInput(dt)
+function HandleInput(dt)
     InteractionSystem.HandleInput(dt)
 end
 
 UpdateCurrentTourValue = function()
-    local value = CropSystem.CalculateTotalSightValue(plots_)
-    ProgressionSystem.SetCurrentTourValue(value)
-    return value
+    return FarmRuntime.UpdateCurrentTourValue()
 end
 
-local function UpdatePlants(dt)
+function UpdatePlants(dt)
     local maturedThisFrame = CropSystem.UpdatePlants(plots_, dt, PlayerSystem.IsMatureCropRotationEnabled())
     UpdateCurrentTourValue()
     if plantTab_ == "harvest" and GetViewMode() == ViewMode.PLANT then
@@ -959,14 +680,19 @@ local function UpdatePlants(dt)
     end
 end
 
-local function UpdateSeedPackOpening(dt)
+function UpdateSeedPackOpening(dt)
     SeedPackOpeningController.Update(dt)
+end
+
+function HandleNetworkRecoveryServerReady(eventType, eventData)
+    NetworkRecovery.HandleServerReady()
 end
 
 ---@param eventType string
 ---@param eventData UpdateEventData
 function HandleUpdate(eventType, eventData)
     local dt = eventData["TimeStep"]:GetFloat()
+    UpdateNetworkRecovery(dt)
 
     if not initialUiReady_ then
         PlayerSystem.Update(dt)
@@ -974,6 +700,10 @@ function HandleUpdate(eventType, eventData)
         AdRewardSystem.Update(dt)
         SocialGardenSystem.Update(dt)
         LeaderboardSystem.Update(dt)
+        if NetworkRecovery.UpdateLoading(dt) then
+            UIController.ShowLoading("服务器响应较慢，正在重试同步...")
+            RequestNetworkRecoverySync("loading_timeout")
+        end
         EnsureInitialUiReady()
         FloatingToast.Update(dt)
         UIController.Update(dt)
@@ -1018,7 +748,7 @@ function HandleUpdate(eventType, eventData)
 end
 
 --- 获取花园等级（基于玩家当前等级）
-local function GetGardenLevel()
+function GetGardenLevel()
     return TalentSystem.GetLevel()
 end
 
@@ -1033,6 +763,30 @@ end
 
 function Start()
     SampleStart()
+    UiEventBindings.Init({
+        EventBus = EventBus,
+        UIEvents = UIEvents,
+        ModalRegistry = ModalRegistry,
+        UIController = UIController,
+        SocialView = SocialView,
+        LeaderboardView = LeaderboardView,
+        SeedPackView = SeedPackView,
+        TaskView = TaskView,
+        ModelPreviewSystem = ModelPreviewSystem,
+        ActivityView = ActivityView,
+        ProfileView = ProfileView,
+        SettingsView = SettingsView,
+        Shop = Shop,
+        CommissionView = CommissionView,
+        ExpansionView = ExpansionView,
+        TalentView = TalentView,
+        BulkSellView = BulkSellView,
+        CodexView = CodexView,
+        refreshUI = RefreshUI,
+        rebuildUI = function()
+            if RebuildUI ~= nil then RebuildUI() end
+        end,
+    })
     RegisterModalGuards()
     graphics.windowTitle = CONFIG.Title
     math.randomseed(os.time())
@@ -1043,11 +797,62 @@ function Start()
     initialPlayerReady_ = false
     initialSocialSnapshotUploaded_ = false
     initialPlotBounceStarted_ = false
+    UiRuntime.Init({
+        EconomyCloudSystem = EconomyCloudSystem,
+        UIController = UIController,
+        ModalRegistry = ModalRegistry,
+        PlotBounceAnimator = PlotBounceAnimator,
+        SocialGardenSystem = SocialGardenSystem,
+        getPlots = function() return plots_ end,
+        isInitialUiReady = function() return initialUiReady_ end,
+        setInitialUiReady = function(value) initialUiReady_ = value end,
+        setInitialUiBuildPending = function(value) initialUiBuildPending_ = value end,
+        isPendingRebuildUI = function() return pendingRebuildUI_ end,
+        setPendingRebuildUI = function(value) pendingRebuildUI_ = value end,
+        isInitialPlotBounceStarted = function() return initialPlotBounceStarted_ end,
+        setInitialPlotBounceStarted = function(value) initialPlotBounceStarted_ = value end,
+        isInitialSocialSnapshotUploaded = function() return initialSocialSnapshotUploaded_ end,
+        setInitialSocialSnapshotUploaded = function(value) initialSocialSnapshotUploaded_ = value end,
+        showToast = ShowToast,
+    })
+    NetworkRecovery.Init({
+        SocialGardenSystem = SocialGardenSystem,
+        EconomyCloudSystem = EconomyCloudSystem,
+        showToast = ShowToast,
+    })
+    NetworkRecovery.ResetLoadingState()
     UIController.ShowLoading("正在同步服务器数据...")
 
     InitMaterials()
     FarmSystem.Init(CONFIG, materials_)
     CreateScene()
+    FarmRuntime.Init({
+        FarmSystem = FarmSystem,
+        CropSystem = CropSystem,
+        ProgressionSystem = ProgressionSystem,
+        PlotDisplayController = PlotDisplayController,
+        PlotBounceAnimator = PlotBounceAnimator,
+        CameraSystem = CameraSystem,
+        getScene = function() return scene_ end,
+        getPlots = function() return plots_ end,
+        setPlots = function(value) plots_ = value end,
+        getOwnFarmPlotsSave = function() return ownFarmPlotsSave_ end,
+        setOwnFarmPlotsSave = function(value) ownFarmPlotsSave_ = value end,
+        getUnlockedPlotCount = function() return unlockedPlotCount_ end,
+        setUnlockedPlotCount = function(value) unlockedPlotCount_ = value end,
+        getSelectedPlot = function() return selectedPlot_ end,
+        setSelectedPlot = function(value) selectedPlot_ = value end,
+        refreshSelection = RefreshSelection,
+        updateCamera = UpdateCamera,
+        updateCameraTargetForPlotDisplay = UpdateCameraTargetForPlotDisplay,
+        isInitialUiReady = function() return initialUiReady_ end,
+        setInitialPlotBounceStarted = function(value) initialPlotBounceStarted_ = value end,
+        markSaveDirty = MarkSaveDirty,
+        rebuildUI = function()
+            if RebuildUI ~= nil then RebuildUI() end
+        end,
+        refreshUI = RefreshUI,
+    })
     ModelPreviewSystem.Init(GameConfig, {
         scene = scene_,
         cameraNode = cameraNode_,
@@ -1089,32 +894,113 @@ function Start()
         refreshTourValue = UpdateCurrentTourValue,
     })
 
-    UIController.Init({
-        config = CONFIG,
-        plants = PLANTS,
-        seedBag = seedBag_,
+    UiBindings.Init({
+        CONFIG = CONFIG,
+        GameConfig = GameConfig,
+        PLANTS = PLANTS,
+        RARITY_ORDER = RARITY_ORDER,
+        SEED_PACK_CONFIG = SEED_PACK_CONFIG,
+        DAILY_TASK_CONFIG = DAILY_TASK_CONFIG,
+        ViewMode = ViewMode,
+        UIController = UIController,
+        SeedPackView = SeedPackView,
+        TaskView = TaskView,
+        ActivityView = ActivityView,
+        SocialView = SocialView,
+        ModelPreviewView = ModelPreviewView,
+        CommissionView = CommissionView,
+        PlantPanelView = PlantPanelView,
+        BagDetailView = BagDetailView,
+        BulkSellView = BulkSellView,
+        CodexView = CodexView,
+        MainView = MainView,
+        ProfileView = ProfileView,
+        SettingsView = SettingsView,
+        TalentView = TalentView,
+        ExpansionView = ExpansionView,
+        LeaderboardView = LeaderboardView,
+        Shop = Shop,
+        PlayerSystem = PlayerSystem,
+        LeaderboardSystem = LeaderboardSystem,
+        PlotDisplayController = PlotDisplayController,
+        ActivitySystem = ActivitySystem,
+        ModelPreviewSystem = ModelPreviewSystem,
+        CommissionSystem = CommissionSystem,
+        CameraSystem = CameraSystem,
+        WalletSystem = WalletSystem,
+        ProgressionSystem = ProgressionSystem,
+        TalentSystem = TalentSystem,
+        SocialGardenSystem = SocialGardenSystem,
+        SeedPackOpeningController = SeedPackOpeningController,
+        InventorySystem = InventorySystem,
+        EconomyCloudSystem = EconomyCloudSystem,
+        FloatingToast = FloatingToast,
+        EventBus = EventBus,
+        UIEvents = UIEvents,
+        getSeedBag = function() return seedBag_ end,
+        getHarvested = function() return harvested_ end,
+        getSeedPacks = function() return seedPacks_ end,
+        getCollectedPlants = function() return collectedPlants_ end,
+        getCodexStats = function() return codexStats_ end,
+        getDailyTaskState = function() return dailyTaskState_ end,
         getPlots = function() return plots_ end,
         getSelectedPlotIndex = function() return selectedPlot_ end,
+        getSelectedPlot = function() return plots_[selectedPlot_] end,
         getSelectedSeed = function() return selectedSeed_ end,
+        setSelectedSeedIndex = SetSelectedSeedIndex,
         getSelectedBagItem = function() return selectedBagItem_ end,
         getUnlockedPlotCount = function() return unlockedPlotCount_ end,
-        getMoney = function() return WalletSystem.GetBalance() end,
-        getTourValue = function() return ProgressionSystem.GetTourValue() end,
-        getTalentLevel = function() return TalentSystem.GetLevel() end,
-        getTalentPoints = function() return TalentSystem.GetTalentPoints() end,
-        hasUnlockableTalent = function() return TalentSystem.HasUnlockableTalent() end,
-        isFarmView = function() return GetViewMode() == ViewMode.FARM end,
-        isPlantView = function() return GetViewMode() == ViewMode.PLANT end,
-        isVisitMode = function() return SocialGardenSystem.IsVisitMode() end,
-        returnHome = function() SocialGardenSystem.ReturnHome() end,
-        rarityOrder = RARITY_ORDER,
+        getPlantTab = function() return plantTab_ end,
+        getViewMode = GetViewMode,
         countSeedPacks = CountSeedPacks,
         countMaturePlants = CountMaturePlants,
         countPlotPlants = CountPlotPlants,
+        harvestNearestMature = HarvestNearestMature,
+        openBagItemDetail = OpenBagItemDetail,
+        closeBagItemDetail = CloseBagItemDetail,
+        sellBagItem = SellBagItem,
+        sellHarvestedByFilter = SellHarvestedByFilter,
         buildSeedPackOverlay = BuildSeedPackOverlay,
         buildSeedPackOpeningOverlay = BuildSeedPackOpeningOverlay,
         createBagPreview = CreateBagPreview,
+        getUiRarityColor = GetUiRarityColor,
+        countPackResults = CountPackResults,
+        getFirstAvailablePackId = GetFirstAvailablePackId,
+        openSeedPack = OpenSeedPack,
+        openAllSeedPacks = OpenAllSeedPacks,
+        requestRareSeedPackAdReward = RequestRareSeedPackAdReward,
+        suppressWorldTap = RequestSuppressWorldTap,
+        requestStealAttemptsAdReward = RequestStealAttemptsAdReward,
+        flushPendingRebuildUI = FlushPendingRebuildUI,
+        updateCameraTargetForPlotDisplay = UpdateCameraTargetForPlotDisplay,
+        refreshUI = RefreshUI,
+        showToast = ShowToast,
+        rebuildUI = function()
+            if RebuildUI ~= nil then RebuildUI() end
+        end,
+        getTaskModal = function() return taskModal_ end,
+        setTaskModal = function(modal) taskModal_ = modal end,
+        areAllDailyTasksCompleted = AreAllDailyTasksCompleted,
+        setPlantTab = function(tab) plantTab_ = tab end,
+        enterPlantView = EnterPlantView,
+        enterFarmView = EnterFarmView,
+        openCommissionPanel = OpenCommissionPanel,
+        openSeedPackHub = OpenSeedPackHub,
+        openTaskPanel = OpenTaskPanel,
+        getHighestPackIcon = GetHighestPackIcon,
+        clearSelectedBagItem = function() selectedBagItem_ = nil end,
+        clearBagPreview = function()
+            if ClearBagPreview ~= nil then ClearBagPreview() end
+        end,
+        getPlantGuideStep = GetPlantGuideStep,
+        requestMaturePlotAdReward = RequestMaturePlotAdReward,
+        clearGameSave = ClearGameSave,
+        zoomPlantView = ZoomPlantView,
+        setPlotDisplayMode = SetPlotDisplayMode,
+        switchNextFocusedPlot = SwitchNextFocusedPlot,
+        markSaveDirty = MarkSaveDirty,
     })
+    UiBindings.InitUIController()
     SubscribeUIEvents()
     PlotDisplayController.Init({
         config = CONFIG,
@@ -1164,6 +1050,15 @@ function Start()
     AdRewardSystem.Init({
         showToast = ShowToast,
     })
+    AdRewardActions.Init({
+        AdRewardSystem = AdRewardSystem,
+        EconomyCloudSystem = EconomyCloudSystem,
+        SocialGardenSystem = SocialGardenSystem,
+        getPlots = function() return plots_ end,
+        getSelectedPlotIndex = function() return selectedPlot_ end,
+        getSelectedPlot = function() return plots_[selectedPlot_] end,
+        showToast = ShowToast,
+    })
     CommissionSystem.Init(GameConfig, InventorySystem, {
         allowLocalMutations = false,
         showToast = ShowToast,
@@ -1190,267 +1085,27 @@ function Start()
         end,
     })
 
-    SeedPackView.Init({
-        plants = PLANTS,
-        rarityOrder = RARITY_ORDER,
-        seedPackConfig = SEED_PACK_CONFIG,
-        seedPacks = seedPacks_,
-        getUiRarityColor = GetUiRarityColor,
-        countPackResults = CountPackResults,
-        countSeedPacks = CountSeedPacks,
-        getFirstAvailablePackId = GetFirstAvailablePackId,
-        openSeedPack = OpenSeedPack,
-        openAllSeedPacks = OpenAllSeedPacks,
-        requestRareSeedPackAdReward = RequestRareSeedPackAdReward,
-        getAdSeedPackDaily = function()
-            local state = SocialGardenSystem.GetState and SocialGardenSystem.GetState() or {}
-            local daily = state.daily or {}
-            return { count = daily.seedPackAdCount or 0, limit = daily.seedPackAdLimit or 3 }
-        end,
-        suppressWorldTap = RequestSuppressWorldTap,
-        closePackPanel = function() SeedPackOpeningController.ClosePanel() end,
-        skipOpening = function() SeedPackOpeningController.SkipOpening() end,
-        getSynthesisTarget = function(packId) return InventorySystem.GetSynthesisTarget(packId) end,
-        synthesizePack = function(packId, count)
-            local ok = EconomyCloudSystem.SynthesizePack(packId, count)
-            if ok then ShowToast("正在请求服务器合成种子包...") end
-            return ok, nil
-        end,
-        showToast = ShowToast,
-        showFloatingToast = function(text)
-            FloatingToast.Show(text, { fontSize = 20, duration = 1.5, yRatio = 0.42, priority = 8 })
-        end,
-        rebuildUI = function()
-            if RebuildUI ~= nil then RebuildUI() end
-        end,
-        emitSeedPackChanged = function()
-            EventBus.Emit(UIEvents.SEEDPACK_CHANGED, { reason = "seed_pack_view" })
-        end,
-    })
+    UiBindings.InitSeedPackView()
 
-    TaskView.Init({
-        dailyTaskConfig = DAILY_TASK_CONFIG,
-        dailyTaskState = dailyTaskState_,
-        seedPackConfig = SEED_PACK_CONFIG,
-        getTaskModal = function() return taskModal_ end,
-        setTaskModal = function(modal) taskModal_ = modal end,
-        areAllDailyTasksCompleted = AreAllDailyTasksCompleted,
-        claimDailyReward = function()
-            local ok = EconomyCloudSystem.ClaimDailyReward()
-            if ok then ShowToast("正在请求服务器发放每日奖励...") end
-            return ok, nil
-        end,
-        suppressWorldTap = RequestSuppressWorldTap,
-        showToast = ShowToast,
-        rebuildUI = function()
-            if RebuildUI ~= nil then RebuildUI() end
-        end,
-    })
+    UiBindings.InitTaskView()
 
-    ActivityView.Init({
-        plants = PLANTS,
-        seedPackConfig = SEED_PACK_CONFIG,
-        activityConfig = GameConfig.ACTIVITY_CONFIG,
-        getActiveActivity = function() return ActivitySystem.GetActiveActivity() end,
-        getActivityState = function(activityId) return ActivitySystem.GetState()[activityId] end,
-        getTimeLeftText = function() return ActivitySystem.GetTimeLeftText() end,
-        getSweetSubmitItems = function() return ActivitySystem.GetSweetSubmitItems() end,
-        submitSweetCrop = function(item)
-            local ok = EconomyCloudSystem.SubmitActivityCrop(item)
-            if ok then ShowToast("正在请求服务器上交作物...") end
-            return ok, ok and nil or "server_required"
-        end,
-        exchangeSweetReward = function(rewardId)
-            local ok = EconomyCloudSystem.ExchangeActivityReward(rewardId)
-            if ok then ShowToast("正在请求服务器兑换奖励...") end
-            return ok, ok and nil or "server_required"
-        end,
-        drawAlienPack = function(count)
-            local ok = EconomyCloudSystem.DrawActivityPack(count)
-            if ok then ShowToast("正在请求服务器抽取奖励...") end
-            return ok, ok and nil or "server_required"
-        end,
-        getLeaderboard = function(activityId) return ActivitySystem.GetLeaderboard(activityId) end,
-        suppressWorldTap = RequestSuppressWorldTap,
-        showToast = ShowToast,
-        rebuildUI = function()
-            if RebuildUI ~= nil then RebuildUI() end
-        end,
-    })
+    UiBindings.InitActivityView()
 
-    SocialView.Init({
-        SocialGardenSystem = SocialGardenSystem,
-        suppressWorldTap = RequestSuppressWorldTap,
-        getSelectedPlotIndex = function() return selectedPlot_ end,
-        requestStealAttemptsAdReward = RequestStealAttemptsAdReward,
-        showToast = ShowToast,
-        onClosed = FlushPendingRebuildUI,
-    })
+    UiBindings.InitSocialView()
 
-    ModelPreviewView.Init({
-        isOpen = function() return ModelPreviewSystem.IsOpen() end,
-        openPreview = function() ModelPreviewSystem.Open() end,
-        closePreview = function()
-            ModelPreviewSystem.Close()
-            CameraSystem.EnterFarmView()
-            UpdateCameraTargetForPlotDisplay()
-        end,
-        nextPreview = function() ModelPreviewSystem.Next() end,
-        prevPreview = function() ModelPreviewSystem.Prev() end,
-        showKind = function(kind) return ModelPreviewSystem.ShowKind(kind) end,
-        getCurrentItem = function() return ModelPreviewSystem.GetCurrentItem() end,
-        suppressWorldTap = RequestSuppressWorldTap,
-        rebuildUI = function()
-            if RebuildUI ~= nil then RebuildUI() end
-        end,
-    })
+    UiBindings.InitModelPreviewView()
 
-    CommissionView.Init({
-        seedPackConfig = SEED_PACK_CONFIG,
-        getCommissions = function() return CommissionSystem.GetCommissions() end,
-        getTimeLeftText = function() return CommissionSystem.GetTimeLeftText() end,
-        getRequirementText = function(commission) return CommissionSystem.GetRequirementText(commission) end,
-        getMatchingItems = function(commission) return CommissionSystem.GetMatchingHarvestedItems(commission) end,
-        completeCommission = function(commission, item)
-            local ok = EconomyCloudSystem.CompleteCommission(commission, item)
-            RefreshUI(true)
-            return ok
-        end,
-        suppressWorldTap = RequestSuppressWorldTap,
-        showToast = ShowToast,
-        rebuildUI = function()
-            if RebuildUI ~= nil then RebuildUI() end
-        end,
-    })
+    UiBindings.InitCommissionView()
 
-    PlantPanelView.Init({
-        plants = PLANTS,
-        seedBag = seedBag_,
-        harvested = harvested_,
-        getHarvestBagCapacity = function() return InventorySystem.GetHarvestBagCapacity() end,
-        getHarvestBagMaxCapacity = function() return InventorySystem.GetHarvestBagMaxCapacity() end,
-        getSelectedPlot = function() return plots_[selectedPlot_] end,
-        getSelectedPlotIndex = function() return selectedPlot_ end,
-        getSelectedSeed = function() return selectedSeed_ end,
-        setSelectedSeed = SetSelectedSeedIndex,
-        getPlantTab = function() return plantTab_ end,
-        getUnlockedPlotCount = function() return unlockedPlotCount_ end,
-        getVisitablePlotIndex = function() return SocialGardenSystem.GetVisitablePlotIndex() end,
-        setVisitablePlotIndex = function(plotIndex) return SocialGardenSystem.SetVisitablePlotIndex(plotIndex) end,
-        getUiRarityColor = GetUiRarityColor,
-        suppressWorldTap = RequestSuppressWorldTap,
-        rebuildUI = function()
-            if RebuildUI ~= nil then RebuildUI() end
-        end,
-        refreshPanel = function()
-            UIController.RefreshPlantContent()
-        end,
-        harvestNearestMature = HarvestNearestMature,
-        openBagItemDetail = OpenBagItemDetail,
-        openBulkSell = function()
-            RequestSuppressWorldTap()
-            BulkSellView.Show()
-        end,
-    })
+    UiBindings.InitPlantPanelView()
 
-    BagDetailView.Init({
-        suppressWorldTap = RequestSuppressWorldTap,
-        closeBagItemDetail = CloseBagItemDetail,
-        sellBagItem = SellBagItem,
-        showToast = ShowToast,
-        rebuildUI = function()
-            if RebuildUI ~= nil then RebuildUI() end
-        end,
-        refreshInventoryPanels = function()
-            UIController.RefreshInventoryPanels()
-            RefreshUI(true)
-        end,
-    })
+    UiBindings.InitBagDetailView()
 
-    BulkSellView.Init({
-        suppressWorldTap = RequestSuppressWorldTap,
-        previewSellHarvestedByFilter = function(filter)
-            return InventorySystem.PreviewSellHarvestedByFilter(filter)
-        end,
-        sellHarvestedByFilter = SellHarvestedByFilter,
-        showToast = ShowToast,
-        rebuildUI = function()
-            if RebuildUI ~= nil then RebuildUI() end
-        end,
-    })
+    UiBindings.InitBulkSellView()
 
-    CodexView.Init({
-        plants = PLANTS,
-        collectedPlants = collectedPlants_,
-        codexStats = codexStats_,
-        suppressWorldTap = RequestSuppressWorldTap,
-    })
+    UiBindings.InitCodexView()
 
-    MainView.Init({
-        isFarmView = function() return GetViewMode() == ViewMode.FARM end,
-        isPlantView = function() return GetViewMode() == ViewMode.PLANT end,
-        isVisitMode = function() return SocialGardenSystem.IsVisitMode() end,
-        isStealingMode = function() return SocialGardenSystem.IsStealingMode() end,
-        getVisitGarden = function() return SocialGardenSystem.GetVisitGarden() end,
-        countStealableCrops = function() return SocialGardenSystem.CountStealableCrops() end,
-        getMatureVisitCrops = function() return SocialGardenSystem.GetMatureVisitCrops() end,
-        getStealChanceText = function(crop) return SocialGardenSystem.GetStealChanceText(crop) end,
-        stealVisitCrop = function(index, cropId) SocialGardenSystem.RequestSteal(index, cropId) end,
-        getVisitTourValue = function() return SocialGardenSystem.GetVisitTourValue() end,
-        getVisitLikeCount = function() return SocialGardenSystem.GetVisitLikeCount() end,
-        hasLikedVisitGarden = function() return SocialGardenSystem.HasLikedVisitGarden() end,
-        likeVisitGarden = function() SocialGardenSystem.LikeVisitGarden(); if RebuildUI ~= nil then RebuildUI() end end,
-        sendFriendRequestToVisitGarden = function()
-            local garden = SocialGardenSystem.GetVisitGarden()
-            if garden == nil or garden.userId == nil then
-                ShowToast("当前花园玩家 ID 无效")
-                return false
-            end
-            return SocialGardenSystem.SendFriendRequest(garden.userId)
-        end,
-        beginStealingMode = function() SocialGardenSystem.BeginStealingMode() end,
-        endStealingMode = function() SocialGardenSystem.EndStealingMode() end,
-        getPlantTab = function() return plantTab_ end,
-        getSelectedPlotIndex = function() return selectedPlot_ end,
-        getUnlockedPlotCount = function() return unlockedPlotCount_ end,
-        getVisitablePlotIndex = function() return SocialGardenSystem.GetVisitablePlotIndex() end,
-        setVisitablePlotIndex = function(plotIndex) return SocialGardenSystem.SetVisitablePlotIndex(plotIndex) end,
-        setPlantTab = function(tab) plantTab_ = tab end,
-        suppressWorldTap = RequestSuppressWorldTap,
-        enterPlantView = EnterPlantView,
-        enterFarmView = EnterFarmView,
-        returnHome = function() SocialGardenSystem.ReturnHome() end,
-        openShop = function() Shop.Open() end,
-        openCommission = OpenCommissionPanel,
-        openSeedPackHub = OpenSeedPackHub,
-        openTaskPanel = OpenTaskPanel,
-        countSeedPacks = CountSeedPacks,
-        getHighestPackIcon = GetHighestPackIcon,
-        clearSelectedBagItem = function() selectedBagItem_ = nil end,
-        clearBagPreview = function()
-            if ClearBagPreview ~= nil then ClearBagPreview() end
-        end,
-        rebuildUI = function()
-            if RebuildUI ~= nil then RebuildUI() end
-        end,
-        onTalentOpen = function()
-            RequestSuppressWorldTap()
-            TalentView.Show()
-        end,
-        onExpansionOpen = function()
-            RequestSuppressWorldTap()
-            ExpansionView.Show()
-        end,
-        onCodexOpen = function()
-            RequestSuppressWorldTap()
-            CodexView.Show()
-        end,
-        isExpansionMaxed = function()
-            return not ProgressionSystem.CanUnlockNextPlot()
-        end,
-        getPlantGuideStep = GetPlantGuideStep,
-        requestMaturePlotAdReward = RequestMaturePlotAdReward,
-    })
+    UiBindings.InitMainView()
 
     PlayerSystem.Init({
         onChanged = function()
@@ -1471,66 +1126,9 @@ function Start()
         end,
     })
 
-    ProfileView.Init({
-        suppressWorldTap = RequestSuppressWorldTap,
-        getDisplayName = function() return PlayerSystem.GetDisplayName() end,
-        getTapNickname = function() return PlayerSystem.GetTapNickname() end,
-        getUserId = function() return PlayerSystem.GetUserId() end,
-        getAvatars = function() return PlayerSystem.GetAvatars() end,
-        getSelectedAvatar = function() return PlayerSystem.GetSelectedAvatar() end,
-        getSelectedAvatarIndex = function() return PlayerSystem.GetSelectedAvatarIndex() end,
-        selectAvatar = function(index) return PlayerSystem.SelectAvatar(index) end,
-        setNickname = function(name) return PlayerSystem.SetNickname(name) end,
-        getLevel = function() return TalentSystem.GetLevel() end,
-        getExp = function() return TalentSystem.GetExp() end,
-        getExpToNextLevel = function() return TalentSystem.GetExpToNextLevel() end,
-        getTourValue = function() return ProgressionSystem.GetTourValue() end,
-        getBestTourValue = function() return ProgressionSystem.GetBestTourValue() end,
-        showToast = ShowToast,
-        rebuildUI = function()
-            if RebuildUI ~= nil then RebuildUI() end
-        end,
-    })
+    UiBindings.InitProfileView()
 
-    SettingsView.Init({
-        suppressWorldTap = RequestSuppressWorldTap,
-        clearSave = ClearGameSave,
-        showToast = ShowToast,
-        getPlotDisplayMode = function()
-            return PlotDisplayController.GetDisplayMode()
-        end,
-        isPowerSaveMode = function()
-            return PlayerSystem.IsPowerSaveMode()
-        end,
-        setPowerSaveMode = function(enabled)
-            return PlayerSystem.SetPowerSaveMode(enabled)
-        end,
-        isPlantView = function()
-            return GetViewMode() == ViewMode.PLANT
-        end,
-        zoomPlantView = function(direction)
-            ZoomPlantView(direction)
-        end,
-        getFocusedPlotIndex = function()
-            return PlotDisplayController.GetFocusedPlotIndex()
-        end,
-        getUnlockedPlotCount = function()
-            return unlockedPlotCount_
-        end,
-        setPlotDisplayMode = function(mode)
-            SetPlotDisplayMode(mode)
-        end,
-        switchNextPlot = function()
-            SwitchNextFocusedPlot()
-        end,
-        requestMaturePlotAdReward = RequestMaturePlotAdReward,
-        onClearSaveSuccess = function()
-            SettingsView.Close()
-        end,
-        rebuildUI = function()
-            if RebuildUI ~= nil then RebuildUI() end
-        end,
-    })
+    UiBindings.InitSettingsView()
 
     TalentSystem.Init({
         allowLocalMutations = false,
@@ -1556,16 +1154,7 @@ function Start()
         end,
     })
 
-    TalentView.Init({
-        suppressWorldTap = RequestSuppressWorldTap,
-        unlockTalent = function(talentId)
-            return EconomyCloudSystem.UnlockTalent(talentId)
-        end,
-        showToast = ShowToast,
-        onTalentChanged = function()
-            MarkSaveDirty()
-        end,
-    })
+    UiBindings.InitTalentView()
 
     ExpansionController.Init({
         ProgressionSystem = ProgressionSystem,
@@ -1587,23 +1176,7 @@ function Start()
         end,
     })
 
-    ExpansionView.Init({
-        suppressWorldTap = RequestSuppressWorldTap,
-        getLevel = function()
-            return TalentSystem.GetLevel()
-        end,
-        getGold = function()
-            return WalletSystem.GetBalance()
-        end,
-        getTourValue = function()
-            return ProgressionSystem.GetTourValue()
-        end,
-        expandNextPlot = function()
-            local ok = EconomyCloudSystem.ExpandPlot()
-            if ok then ShowToast("正在请求服务器扩地...") end
-            return ok, ok and nil or "server_required"
-        end,
-    })
+    UiBindings.InitExpansionView()
 
     CropSystem.Init(GameConfig, {
         InventorySystem = InventorySystem,
@@ -1646,6 +1219,7 @@ function Start()
         CommissionSystem = CommissionSystem,
         ActivitySystem = ActivitySystem,
         getGold = function() return WalletSystem.GetBalance() end,
+        getUserId = function() return PlayerSystem.GetUserId() end,
         syncInventoryRefs = SyncInventoryRefs,
         markDirty = MarkSaveDirty,
         showToast = ShowToast,
@@ -1672,6 +1246,13 @@ function Start()
             ActivityView.CancelAlienDrawPending()
         end,
         onAuthFarmReceived = function(farm)
+            if SocialGardenSystem.IsVisitMode() then
+                if type(farm) == "table" and type(farm.plots) == "table" then
+                    ownFarmPlotsSave_ = farm.plots
+                    print("[权威农场] 拜访模式下收到自己的农场数据，已缓存等待返回")
+                end
+                return
+            end
             ApplyAuthoritativeFarmState(farm)
         end,
         onAdRewardGranted = function(data)
@@ -1776,19 +1357,7 @@ function Start()
         end,
     })
 
-    LeaderboardView.Init({
-        LeaderboardSystem = LeaderboardSystem,
-        SocialGardenSystem = SocialGardenSystem,
-        getActiveActivityId = function() return ActivitySystem.GetActiveActivityId() end,
-        getMyNickname = function() return PlayerSystem.GetDisplayName() end,
-        getMyAvatar = function() return PlayerSystem.GetSelectedAvatarProfile() end,
-        visitPlayer = function(userId)
-            local ok = SocialGardenSystem.VisitPlayer(userId)
-            if ok then ActivityView.Close() end
-            return ok
-        end,
-        suppressWorldTap = RequestSuppressWorldTap,
-    })
+    UiBindings.InitLeaderboardView()
 
     InteractionSystem.Init(CONFIG, CameraSystem, {
         getCamera = function() return camera_ end,
@@ -1831,13 +1400,14 @@ function Start()
 
     EconomyCloudSystem.RequestState()
     EconomyCloudSystem.RequestAuthFarm()
-    EconomyCloudSystem.RequestCommissions()
+    NetworkRecovery.ResetConnectionState()
     EnsureInitialUiReady()
 
     RefreshSelection()
     UpdateCamera()
     CreateSkybox()
     SubscribeToEvent("Update", "HandleUpdate")
+    SubscribeToEvent("ServerReady", "HandleNetworkRecoveryServerReady")
     SubscribeToEvent("MouseButtonDown", "HandleMouseButtonDown")
     SubscribeToEvent("MouseMove", "HandleMouseMove")
     SubscribeToEvent("MouseWheel", "HandleMouseWheel")
