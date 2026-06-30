@@ -11,9 +11,9 @@ local ServerShop = {}
 local deps_ = {}
 
 local SEED_SHOP_ITEMS = {
-    { name = "胡萝卜", rarity = "普通", guaranteed = true, stock = 50 },
-    { name = "玉米", rarity = "普通", guaranteed = true, stock = 50 },
-    { name = "番茄", rarity = "普通", chance = 0.80, minStock = 15, maxStock = 30 },
+    { name = "胡萝卜", rarity = "普通", guaranteed = true, stock = 99 },
+    { name = "玉米", rarity = "普通", chance = 0.80, minStock = 15, maxStock = 30 },
+    { name = "番茄", rarity = "普通", guaranteed = true, stock = 99 },
     { name = "葡萄", rarity = "普通", chance = 0.80, minStock = 15, maxStock = 30 },
     { name = "草莓", rarity = "罕见", chance = 0.60, minStock = 8, maxStock = 15 },
     { name = "花椰菜", rarity = "罕见", chance = 0.60, minStock = 8, maxStock = 15 },

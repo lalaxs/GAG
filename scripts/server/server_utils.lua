@@ -46,6 +46,30 @@ function ServerUtils.NormalizeUserId(userId)
     return text
 end
 
+function ServerUtils.BuildUidKeyCandidates(uid)
+    local keys = {}
+    local seen = {}
+    local function add(key)
+        if key == nil or key == "" then return end
+        local marker = type(key) .. ":" .. tostring(key)
+        if seen[marker] == true then return end
+        seen[marker] = true
+        keys[#keys + 1] = key
+    end
+    add(uid)
+    local normalized = ServerUtils.NormalizeUserId(uid)
+    add(normalized)
+    local numeric = tonumber(normalized or uid)
+    if numeric ~= nil and numeric == math.floor(numeric) and math.abs(numeric) < 9007199254740992 then
+        add(numeric)
+    end
+    return keys
+end
+
+function ServerUtils.GetCanonicalUidKey(uid)
+    return uid
+end
+
 function ServerUtils.GetRequestUserId(connection, _data)
     return ServerUtils.GetConnectionUserId(connection)
 end

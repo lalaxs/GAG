@@ -55,7 +55,9 @@ local function ShowToast(text, silent)
 end
 
 function UiRuntime.IsInitialDataReady()
-    return deps_.EconomyCloudSystem.IsInitialSyncReady ~= nil and deps_.EconomyCloudSystem.IsInitialSyncReady()
+    local economyReady = deps_.EconomyCloudSystem.IsInitialSyncReady ~= nil and deps_.EconomyCloudSystem.IsInitialSyncReady()
+    local socialReady = deps_.SocialGardenSystem.IsSocialSaveLoaded == nil or deps_.SocialGardenSystem.IsSocialSaveLoaded()
+    return economyReady and socialReady
 end
 
 function UiRuntime.EnsureInitialUiReady()

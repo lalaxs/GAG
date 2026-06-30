@@ -56,6 +56,12 @@ local function Now()
     return os and os.time and os.time() or 0
 end
 
+local function NormalizeUserId(uid)
+    if deps_.NormalizeUserId then return deps_.NormalizeUserId(uid) end
+    if uid == nil then return nil end
+    return tostring(uid)
+end
+
 local function CleanupDisconnectedPlayers()
     local now = Now()
     for uid, info in pairs(disconnectedPlayers_) do
@@ -63,12 +69,6 @@ local function CleanupDisconnectedPlayers()
             disconnectedPlayers_[uid] = nil
         end
     end
-end
-
-local function NormalizeUserId(uid)
-    if deps_.NormalizeUserId then return deps_.NormalizeUserId(uid) end
-    if uid == nil then return nil end
-    return tostring(uid)
 end
 
 local function SendSeedShopState(connection)
@@ -205,8 +205,9 @@ function ServerEventHandlers.HandleGardenClientReady(eventType, eventData)
     local connection = eventData["Connection"]:GetPtr("Connection")
     local data = ReadRequest(eventData)
     local key = GetConnectionKey(connection)
-    local uid = NormalizeUserId(GetRequestUserId(connection, data))
-    if uid == nil then
+    local uid = GetRequestUserId(connection, data)
+    local normalizedUid = NormalizeUserId(uid)
+    if normalizedUid == nil then
         Send(connection, Shared.EVENTS.ECONOMY_STATE_RESPONSE, { success = false, message = "玩家身份未就绪，请稍后重试", retryable = true })
         Send(connection, Shared.EVENTS.AUTH_FARM_RESPONSE, { success = false, message = "玩家身份未就绪，请稍后重试", retryable = true })
         SendSeedShopState(connection)
@@ -214,10 +215,10 @@ function ServerEventHandlers.HandleGardenClientReady(eventType, eventData)
     end
     connection.scene = scene_
     local reconnectUid = pendingReconnect_[key]
-    if reconnectUid ~= nil and reconnectUid == uid then
+    if reconnectUid ~= nil and reconnectUid == normalizedUid then
         pendingReconnect_[key] = nil
-        disconnectedPlayers_[uid] = nil
-        print("[服务端重连] 已恢复玩家连接 userId=" .. tostring(uid))
+        disconnectedPlayers_[normalizedUid] = nil
+        print("[服务端重连] 已恢复玩家连接 userId=" .. tostring(normalizedUid))
     end
     SendPlayerProfile(uid, connection)
     SocialServer.RequestSocialState(uid, connection)

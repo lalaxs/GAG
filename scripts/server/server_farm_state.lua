@@ -33,17 +33,50 @@ local function RecalculateAuthoritativeItemPrice(item)
     deps_.RecalculateAuthoritativeItemPrice(item)
 end
 
+local function BuildUidKeyCandidates(uid)
+    if deps_.BuildUidKeyCandidates ~= nil then return deps_.BuildUidKeyCandidates(uid) end
+    return { uid }
+end
+
+local function GetCanonicalUidKey(uid)
+    if deps_.GetCanonicalUidKey ~= nil then return deps_.GetCanonicalUidKey(uid) end
+    return uid
+end
+
+local function ScoreFarmState(state)
+    if type(state) ~= "table" then return -1 end
+    local score = math.max(0, tonumber(state.revision or 0) or 0) * 1000
+    for _, plot in pairs(state.plots or {}) do
+        if type(plot) == "table" and type(plot.plants) == "table" then
+            score = score + #plot.plants * 100
+            for _, crop in ipairs(plot.plants) do
+                if type(crop) == "table" and crop.harvested ~= true then score = score + 1 end
+            end
+        end
+    end
+    return score
+end
+
 function ServerFarmState.NormalizeFarmState(state)
     state = type(state) == "table" and state or {}
     state.version = 1
     state.revision = tonumber(state.revision or 0) or 0
-    state.plots = type(state.plots) == "table" and state.plots or {}
-    for _, plot in pairs(state.plots) do
-        plot.plants = type(plot.plants) == "table" and plot.plants or {}
-        for _, crop in ipairs(plot.plants) do
-            RecalculateAuthoritativeItemPrice(crop)
+    local normalizedPlots = {}
+    if type(state.plots) == "table" then
+        for plotKey, plot in pairs(state.plots) do
+            local plotIndex = tonumber(plotKey)
+            if plotIndex ~= nil then
+                plotIndex = math.max(1, math.floor(plotIndex))
+                plot = type(plot) == "table" and plot or {}
+                plot.plants = type(plot.plants) == "table" and plot.plants or {}
+                for _, crop in ipairs(plot.plants) do
+                    RecalculateAuthoritativeItemPrice(crop)
+                end
+                normalizedPlots[plotIndex] = plot
+            end
         end
     end
+    state.plots = normalizedPlots
     state.updatedAt = Now()
     return state
 end
@@ -177,20 +210,84 @@ function ServerFarmState.BuildVisitGardenFromAuthFarm(uid, nickname, farmState, 
 end
 
 function ServerFarmState.RequestAuthFarmState(uid, connection)
-    serverCloud:Get(uid, deps_.Shared.KEYS.AUTH_FARM_STATE, {
-        ok = function(scores)
-            local farmState = ServerFarmState.NormalizeFarmState(scores[deps_.Shared.KEYS.AUTH_FARM_STATE])
-            for _, plot in pairs(farmState.plots or {}) do
-                for _, crop in ipairs(plot.plants or {}) do
-                    ServerFarmState.RefreshAuthCrop(crop)
-                end
+    local canonicalUid = GetCanonicalUidKey(uid)
+    local candidates = BuildUidKeyCandidates(uid)
+    local bestKey = nil
+    local bestFarm = nil
+    local bestScore = -1
+    local index = 1
+    local hadReadError = false
+
+    local function refreshFarm(farmState)
+        for _, plot in pairs(farmState.plots or {}) do
+            for _, crop in ipairs(plot.plants or {}) do
+                ServerFarmState.RefreshAuthCrop(crop)
             end
-            Send(connection, deps_.Shared.EVENTS.AUTH_FARM_RESPONSE, { success = true, farm = farmState })
-        end,
-        error = function()
-            Send(connection, deps_.Shared.EVENTS.AUTH_FARM_RESPONSE, { success = true, farm = ServerFarmState.NormalizeFarmState(nil) })
-        end,
-    })
+        end
+        return farmState
+    end
+
+    local function finishWithFarm()
+        if bestFarm == nil then
+            if hadReadError then
+                print("[存档] 权威农场读取失败，保留原云端农场等待客户端重试")
+                Send(connection, deps_.Shared.EVENTS.AUTH_FARM_RESPONSE, {
+                    success = false,
+                    retryable = true,
+                    message = "权威农场读取失败，请稍后重试",
+                })
+                return
+            end
+            Send(connection, deps_.Shared.EVENTS.AUTH_FARM_RESPONSE, { success = true, farm = refreshFarm(ServerFarmState.NormalizeFarmState(nil)) })
+            return
+        end
+        bestFarm = refreshFarm(bestFarm)
+        if bestKey ~= canonicalUid then
+            print(string.format("[存档兼容] 权威农场命中历史 uid key=%s，迁移到当前 key=%s", tostring(bestKey), tostring(canonicalUid)))
+            serverCloud:Set(canonicalUid, deps_.Shared.KEYS.AUTH_FARM_STATE, bestFarm, {
+                ok = function()
+                    Send(connection, deps_.Shared.EVENTS.AUTH_FARM_RESPONSE, { success = true, farm = bestFarm })
+                end,
+                error = function(_, reason)
+                    print("[存档兼容] 权威农场迁移失败，使用历史 key 数据返回: " .. tostring(reason))
+                    Send(connection, deps_.Shared.EVENTS.AUTH_FARM_RESPONSE, { success = true, farm = bestFarm })
+                end,
+            })
+            return
+        end
+        Send(connection, deps_.Shared.EVENTS.AUTH_FARM_RESPONSE, { success = true, farm = bestFarm })
+    end
+
+    local function readNext()
+        local key = candidates[index]
+        index = index + 1
+        if key == nil then
+            finishWithFarm()
+            return
+        end
+        serverCloud:Get(key, deps_.Shared.KEYS.AUTH_FARM_STATE, {
+            ok = function(scores)
+                local rawFarm = scores and scores[deps_.Shared.KEYS.AUTH_FARM_STATE]
+                if type(rawFarm) == "table" then
+                    local farmState = ServerFarmState.NormalizeFarmState(rawFarm)
+                    local score = ScoreFarmState(farmState)
+                    if score > bestScore then
+                        bestScore = score
+                        bestFarm = farmState
+                        bestKey = key
+                    end
+                end
+                readNext()
+            end,
+            error = function(_, reason)
+                hadReadError = true
+                print(string.format("[存档兼容] 权威农场读取失败 key=%s reason=%s", tostring(key), tostring(reason)))
+                readNext()
+            end,
+        })
+    end
+
+    readNext()
 end
 
 return ServerFarmState

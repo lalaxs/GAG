@@ -71,6 +71,20 @@ local function BuildInitialEconomyState()
     return deps_.BuildInitialEconomyState()
 end
 
+local function GetExistingEconomyState(scores)
+    local state = scores and scores[deps_.Shared.KEYS.ECONOMY_STATE]
+    if type(state) ~= "table" then return nil end
+    return NormalizeEconomyState(state)
+end
+
+local function SendMissingEconomyState(connection, eventName, requestId, extra)
+    local data = extra or {}
+    data.success = false
+    data.message = "存档尚未初始化，请重新进入游戏"
+    data.requestId = requestId
+    Send(connection, eventName, data)
+end
+
 local function GetFarmPlot(state, plotIndex)
     return deps_.GetFarmPlot(state, plotIndex)
 end
@@ -195,7 +209,11 @@ function ServerRewards.GrantAdReward(uid, payload, connection)
                 end
                 serverCloud:Get(uid, deps_.Shared.KEYS.ECONOMY_STATE, {
                     ok = function(scores)
-                        local state = NormalizeEconomyState(scores[deps_.Shared.KEYS.ECONOMY_STATE] or BuildInitialEconomyState())
+                        local state = GetExistingEconomyState(scores)
+                        if state == nil then
+                            SendMissingEconomyState(connection, deps_.Shared.EVENTS.AD_REWARD_RESPONSE, payload.requestId, { rewardType = rewardType })
+                            return
+                        end
                         state.seedPacks.pack_rare = (tonumber(state.seedPacks.pack_rare or 0) or 0) + deps_.adRarePackCount
                         state.updatedAt = Now()
                         NextRevision(state)
@@ -237,7 +255,11 @@ function ServerRewards.GrantAdReward(uid, payload, connection)
                         end
                         serverCloud:Get(uid, deps_.Shared.KEYS.ECONOMY_STATE, {
                             ok = function(scores)
-                                local state = NormalizeEconomyState(scores[deps_.Shared.KEYS.ECONOMY_STATE] or BuildInitialEconomyState())
+                                local state = GetExistingEconomyState(scores)
+                                if state == nil then
+                                    SendMissingEconomyState(connection, deps_.Shared.EVENTS.AD_REWARD_RESPONSE, payload.requestId, { rewardType = rewardType, farm = farmState })
+                                    return
+                                end
                                 SyncProgressionTourValueFromFarm(state, farmState)
                                 farmState.updatedAt = Now()
                                 NextRevision(farmState)
@@ -272,7 +294,11 @@ end
 function ServerRewards.ClaimDailyRewardAuthority(uid, payload, connection)
     serverCloud:Get(uid, deps_.Shared.KEYS.ECONOMY_STATE, {
         ok = function(scores)
-            local state = NormalizeEconomyState(scores[deps_.Shared.KEYS.ECONOMY_STATE] or BuildInitialEconomyState())
+            local state = GetExistingEconomyState(scores)
+            if state == nil then
+                SendMissingEconomyState(connection, deps_.Shared.EVENTS.CLAIM_DAILY_REWARD_RESPONSE, payload.requestId)
+                return
+            end
             local daily = NormalizeDailyTaskState(state.dailyTaskState)
             local completed = (daily.progress.plant or 0) >= 3 and (daily.progress.harvest or 0) >= 3 and (daily.progress.sell or 0) >= 1
             if not completed or daily.rewardClaimed then
@@ -309,7 +335,11 @@ function ServerRewards.SynthesizePackAuthority(uid, payload, connection)
     end
     serverCloud:Get(uid, deps_.Shared.KEYS.ECONOMY_STATE, {
         ok = function(scores)
-            local state = NormalizeEconomyState(scores[deps_.Shared.KEYS.ECONOMY_STATE] or BuildInitialEconomyState())
+            local state = GetExistingEconomyState(scores)
+            if state == nil then
+                SendMissingEconomyState(connection, deps_.Shared.EVENTS.SYNTHESIZE_PACK_RESPONSE, payload.requestId)
+                return
+            end
             local owned = tonumber(state.seedPacks[packId] or 0) or 0
             local maxCount = math.floor(owned / 3)
             local synthCount = math.min(requestedCount, maxCount)
@@ -341,7 +371,11 @@ function ServerRewards.UnlockTalentAuthority(uid, payload, connection)
     end
     serverCloud:Get(uid, deps_.Shared.KEYS.ECONOMY_STATE, {
         ok = function(scores)
-            local state = NormalizeEconomyState(scores[deps_.Shared.KEYS.ECONOMY_STATE] or BuildInitialEconomyState())
+            local state = GetExistingEconomyState(scores)
+            if state == nil then
+                SendMissingEconomyState(connection, deps_.Shared.EVENTS.UNLOCK_TALENT_RESPONSE, payload.requestId)
+                return
+            end
             local talent = NormalizeTalentState(state.talent)
             if talent.unlockedTalents[talentId] == true then
                 Send(connection, deps_.Shared.EVENTS.UNLOCK_TALENT_RESPONSE, { success = false, message = "天赋已解锁", requestId = payload.requestId, state = state })
@@ -378,7 +412,11 @@ end
 function ServerRewards.ExpandPlotAuthority(uid, payload, connection)
     serverCloud:Get(uid, deps_.Shared.KEYS.ECONOMY_STATE, {
         ok = function(scores)
-            local state = NormalizeEconomyState(scores[deps_.Shared.KEYS.ECONOMY_STATE] or BuildInitialEconomyState())
+            local state = GetExistingEconomyState(scores)
+            if state == nil then
+                SendMissingEconomyState(connection, deps_.Shared.EVENTS.EXPAND_PLOT_RESPONSE, payload.requestId)
+                return
+            end
             local progression = NormalizeProgressionState(state.progression)
             local maxPlots = (deps_.GameConfig.CONFIG.GridCols or 1) * (deps_.GameConfig.CONFIG.GridRows or 1)
             if progression.unlockedPlotCount >= maxPlots then

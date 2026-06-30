@@ -911,6 +911,8 @@ function Start()
         NormalizePlotIndex = NormalizePlotIndex,
         NormalizeLocalPos = NormalizeLocalPos,
         RecalculateAuthoritativeItemPrice = RecalculateAuthoritativeItemPrice,
+        BuildUidKeyCandidates = ServerUtils.BuildUidKeyCandidates,
+        GetCanonicalUidKey = ServerUtils.GetCanonicalUidKey,
     })
     ServerEconomyState.Init({
         Shared = Shared,
@@ -1036,6 +1038,8 @@ function Start()
         IsValidPackId = IsValidPackId,
         IsValidSellMode = IsValidSellMode,
         maxOpenPackCount = MAX_OPEN_PACK_COUNT,
+        BuildUidKeyCandidates = ServerUtils.BuildUidKeyCandidates,
+        GetCanonicalUidKey = ServerUtils.GetCanonicalUidKey,
     })
     ServerSteal.Init({
         Shared = Shared,
@@ -1081,6 +1085,9 @@ function Start()
         dailyMatureAdLimit = DAILY_MATURE_AD_LIMIT,
         normalizePositiveCount = NormalizePositiveCount,
         normalizePlantIndex = NormalizePlantIndex,
+        normalizeUserId = NormalizeUserId,
+        buildUidKeyCandidates = ServerUtils.BuildUidKeyCandidates,
+        getCanonicalUidKey = ServerUtils.GetCanonicalUidKey,
         buildVisitGardenFromAuthFarm = BuildVisitGardenFromAuthFarm,
     })
     ServerEventHandlers.Init({

@@ -49,6 +49,54 @@ local function BuildInitialEconomyState()
     return deps_.BuildInitialEconomyState()
 end
 
+local function GetExistingEconomyState(scores)
+    local state = scores and scores[deps_.Shared.KEYS.ECONOMY_STATE]
+    if type(state) ~= "table" then return nil end
+    return NormalizeEconomyState(state)
+end
+
+local function SendMissingEconomyState(connection, eventName, requestId, extra)
+    local data = extra or {}
+    data.success = false
+    data.message = "存档尚未初始化，请重新进入游戏"
+    data.requestId = requestId
+    Send(connection, eventName, data)
+end
+
+local function BuildUidKeyCandidates(uid)
+    if deps_.BuildUidKeyCandidates ~= nil then return deps_.BuildUidKeyCandidates(uid) end
+    return { uid }
+end
+
+local function GetCanonicalUidKey(uid)
+    if deps_.GetCanonicalUidKey ~= nil then return deps_.GetCanonicalUidKey(uid) end
+    return uid
+end
+
+local function CountMapEntries(map)
+    local count = 0
+    if type(map) ~= "table" then return 0 end
+    for _, value in pairs(map) do
+        if type(value) == "number" then count = count + math.max(0, value) else count = count + 1 end
+    end
+    return count
+end
+
+local function ScoreEconomyState(state)
+    if type(state) ~= "table" then return -1 end
+    local score = 0
+    score = score + math.max(0, tonumber(state.gold or 0) or 0)
+    score = score + CountMapEntries(state.seedBag) * 10
+    score = score + CountMapEntries(state.seedPacks) * 50
+    score = score + #(type(state.harvested) == "table" and state.harvested or {}) * 100
+    local talent = type(state.talent) == "table" and state.talent or {}
+    score = score + math.max(0, tonumber(talent.level or 1) or 1) * 1000
+    local progression = type(state.progression) == "table" and state.progression or {}
+    score = score + math.max(0, tonumber(progression.bestTourValue or 0) or 0) * 2
+    score = score + math.max(0, tonumber(progression.unlockedPlotCount or 1) or 1) * 500
+    return score
+end
+
 local function NormalizeFarmState(state)
     return deps_.NormalizeFarmState(state)
 end
@@ -74,23 +122,75 @@ local function AddActivityRankCommit(commit, uid, state)
 end
 
 function ServerEconomyActions.RequestEconomyState(uid, connection)
-    serverCloud:Get(uid, deps_.Shared.KEYS.ECONOMY_STATE, {
-        ok = function(scores)
-            local state = scores[deps_.Shared.KEYS.ECONOMY_STATE]
-            if type(state) ~= "table" then
-                state = BuildInitialEconomyState()
-                serverCloud:Set(uid, deps_.Shared.KEYS.ECONOMY_STATE, state)
-            else
-                state = NormalizeEconomyState(state)
+    local canonicalUid = GetCanonicalUidKey(uid)
+    local candidates = BuildUidKeyCandidates(uid)
+    local bestKey = nil
+    local bestState = nil
+    local bestScore = -1
+    local index = 1
+    local hadReadError = false
+
+    local function finishWithState()
+        if bestState == nil then
+            if hadReadError then
+                Send(connection, deps_.Shared.EVENTS.ECONOMY_STATE_RESPONSE, {
+                    success = false,
+                    retryable = true,
+                    message = "经济数据读取失败，请稍后重试",
+                })
+                return
             end
-            Send(connection, deps_.Shared.EVENTS.ECONOMY_STATE_RESPONSE, { success = true, state = state })
-        end,
-        error = function()
             local state = BuildInitialEconomyState()
-            serverCloud:Set(uid, deps_.Shared.KEYS.ECONOMY_STATE, state)
+            serverCloud:Set(canonicalUid, deps_.Shared.KEYS.ECONOMY_STATE, state)
             Send(connection, deps_.Shared.EVENTS.ECONOMY_STATE_RESPONSE, { success = true, state = state })
-        end,
-    })
+            return
+        end
+        if bestKey ~= canonicalUid then
+            print(string.format("[存档兼容] 经济存档命中历史 uid key=%s，迁移到当前 key=%s", tostring(bestKey), tostring(canonicalUid)))
+            serverCloud:Set(canonicalUid, deps_.Shared.KEYS.ECONOMY_STATE, bestState, {
+                ok = function()
+                    Send(connection, deps_.Shared.EVENTS.ECONOMY_STATE_RESPONSE, { success = true, state = bestState })
+                end,
+                error = function(_, reason)
+                    print("[存档兼容] 经济存档迁移失败，使用历史 key 数据返回: " .. tostring(reason))
+                    Send(connection, deps_.Shared.EVENTS.ECONOMY_STATE_RESPONSE, { success = true, state = bestState })
+                end,
+            })
+            return
+        end
+        Send(connection, deps_.Shared.EVENTS.ECONOMY_STATE_RESPONSE, { success = true, state = bestState })
+    end
+
+    local function readNext()
+        local key = candidates[index]
+        index = index + 1
+        if key == nil then
+            finishWithState()
+            return
+        end
+        serverCloud:Get(key, deps_.Shared.KEYS.ECONOMY_STATE, {
+            ok = function(scores)
+                local rawState = scores and scores[deps_.Shared.KEYS.ECONOMY_STATE]
+                if type(rawState) == "table" then
+                    local state = NormalizeEconomyState(rawState)
+                    local score = ScoreEconomyState(state)
+                    if score > bestScore then
+                        bestScore = score
+                        bestState = state
+                        bestKey = key
+                    end
+                end
+                readNext()
+            end,
+            error = function(_, reason)
+                hadReadError = true
+                print(string.format("[存档兼容] 经济状态读取失败 key=%s reason=%s", tostring(key), tostring(reason)))
+                readNext()
+            end,
+        })
+    end
+
+    readNext()
 end
 
 function ServerEconomyActions.BuySeed(uid, plantIndex, _price, connection, count, requestId, refreshId, recordKey)
@@ -127,7 +227,11 @@ function ServerEconomyActions.BuySeed(uid, plantIndex, _price, connection, count
 
                 serverCloud:Get(uid, deps_.Shared.KEYS.ECONOMY_STATE, {
                     ok = function(scores)
-                        local state = NormalizeEconomyState(scores[deps_.Shared.KEYS.ECONOMY_STATE] or BuildInitialEconomyState())
+                        local state = GetExistingEconomyState(scores)
+                        if state == nil then
+                            deps_.SendFullAvailableSeedShop(connection, deps_.Shared.EVENTS.BUY_SEED_RESPONSE, { success = false, message = "存档尚未初始化，请重新进入游戏", requestId = requestId })
+                            return
+                        end
                         local owned = tonumber(state.seedBag[plantIndex] or 0) or 0
                         local buyCount = math.min(count, available)
                         if buyCount <= 0 then
@@ -180,10 +284,12 @@ end
 function ServerEconomyActions.ClearPlayerSave(uid, connection, requestId, recordKey)
     local economyState = BuildInitialEconomyState()
     local farmState = NormalizeFarmState(nil)
-    local response = { success = true, message = "游戏存档已清除", requestId = requestId, state = economyState, farm = farmState }
+    local socialSave = { visitablePlotIndex = 1, updatedAt = Now() }
+    local response = { success = true, message = "游戏存档已清除", requestId = requestId, state = economyState, farm = farmState, socialSave = socialSave }
     local c = serverCloud:BatchCommit("清除游戏存档")
     c:ScoreSet(uid, deps_.Shared.KEYS.ECONOMY_STATE, economyState)
     c:ScoreSet(uid, deps_.Shared.KEYS.AUTH_FARM_STATE, farmState)
+    c:ScoreSet(uid, deps_.Shared.KEYS.SOCIAL_SAVE, socialSave)
     deps_.RequestGuard.AddToCommit(c, uid, recordKey, response)
     c:Commit({
         ok = function()
@@ -208,7 +314,11 @@ function ServerEconomyActions.PlantSeedAuthority(uid, payload, connection)
     payload.localPos = NormalizeLocalPos(payload.localPos)
     serverCloud:Get(uid, deps_.Shared.KEYS.ECONOMY_STATE, {
         ok = function(scores)
-            local state = NormalizeEconomyState(scores[deps_.Shared.KEYS.ECONOMY_STATE] or BuildInitialEconomyState())
+            local state = GetExistingEconomyState(scores)
+            if state == nil then
+                SendMissingEconomyState(connection, deps_.Shared.EVENTS.PLANT_SEED_RESPONSE, payload.requestId)
+                return
+            end
             local owned = tonumber(state.seedBag[plantIndex] or 0) or 0
             if owned <= 0 then
                 Send(connection, deps_.Shared.EVENTS.PLANT_SEED_RESPONSE, { success = false, message = "没有该种子", state = state })
@@ -274,52 +384,8 @@ function ServerEconomyActions.PlantSeedAuthority(uid, payload, connection)
                         end,
                     })
                 end,
-                error = function()
-                    local farmState = NormalizeFarmState(nil)
-                    local plot = GetFarmPlot(farmState, payload.plotIndex)
-                    local crop = deps_.BuildAuthoritativeCrop(uid, payload, seedBuff, mutationBonus)
-                    if crop == nil then
-                        Send(connection, deps_.Shared.EVENTS.PLANT_SEED_RESPONSE, { success = false, message = "作物配置不存在", requestId = payload.requestId, state = state })
-                        return
-                    end
-                    state.seedBag[plantIndex] = owned - 1
-                    if buffCount > 0 then state.seedBagBuffs[plantIndex] = buffCount - 1 end
-                    state.tutorial = type(state.tutorial) == "table" and state.tutorial or {}
-                    state.tutorial.plantGuideDone = true
-                    state.dailyTaskState = NormalizeDailyTaskState(state.dailyTaskState)
-                    state.dailyTaskState.progress.plant = math.min(99, (state.dailyTaskState.progress.plant or 0) + 1)
-                    state.updatedAt = Now()
-                    NextRevision(state)
-                    table.insert(plot.plants, crop)
-                    deps_.SyncProgressionTourValueFromFarm(state, farmState)
-                    farmState.updatedAt = Now()
-                    NextRevision(farmState)
-                    local response = {
-                        success = true,
-                        message = "播种确认",
-                        requestId = payload.requestId,
-                        plantIndex = plantIndex,
-                        plotIndex = payload.plotIndex,
-                        localPos = payload.localPos,
-                        seedBuff = seedBuff,
-                        crop = crop,
-                        farmRevision = farmState.revision,
-                        state = state,
-                    }
-                    local c = serverCloud:BatchCommit("首次权威播种")
-                    c:ScoreSet(uid, deps_.Shared.KEYS.ECONOMY_STATE, state)
-                    AddTourRankCommit(c, uid, state)
-                    AddActivityRankCommit(c, uid, state)
-                    c:ScoreSet(uid, deps_.Shared.KEYS.AUTH_FARM_STATE, farmState)
-                    deps_.RequestGuard.AddToCommit(c, uid, payload._requestRecordKey, response)
-                    c:Commit({
-                        ok = function()
-                            Send(connection, deps_.Shared.EVENTS.PLANT_SEED_RESPONSE, response)
-                        end,
-                        error = function(_, reason)
-                            Send(connection, deps_.Shared.EVENTS.PLANT_SEED_RESPONSE, { success = false, message = "播种失败: " .. tostring(reason), requestId = payload.requestId, state = state })
-                        end,
-                    })
+                error = function(_, reason)
+                    Send(connection, deps_.Shared.EVENTS.PLANT_SEED_RESPONSE, { success = false, message = "农场数据读取失败: " .. tostring(reason), requestId = payload.requestId, state = state })
                 end,
             })
         end,
@@ -373,7 +439,11 @@ function ServerEconomyActions.HarvestCropAuthority(uid, payload, connection)
 
             serverCloud:Get(uid, deps_.Shared.KEYS.ECONOMY_STATE, {
                 ok = function(scores)
-                    local state = NormalizeEconomyState(scores[deps_.Shared.KEYS.ECONOMY_STATE] or BuildInitialEconomyState())
+                    local state = GetExistingEconomyState(scores)
+                    if state == nil then
+                        SendMissingEconomyState(connection, deps_.Shared.EVENTS.HARVEST_CROP_RESPONSE, payload.requestId)
+                        return
+                    end
                     state.harvested = state.harvested or {}
                     local harvestBagCapacity = deps_.GetHarvestBagCapacityFromState(state)
                     if #(state.harvested) >= harvestBagCapacity then
@@ -476,7 +546,11 @@ function ServerEconomyActions.OpenSeedPackAuthority(uid, payload, connection)
 
     serverCloud:Get(uid, deps_.Shared.KEYS.ECONOMY_STATE, {
         ok = function(scores)
-            local state = NormalizeEconomyState(scores[deps_.Shared.KEYS.ECONOMY_STATE] or BuildInitialEconomyState())
+            local state = GetExistingEconomyState(scores)
+            if state == nil then
+                SendMissingEconomyState(connection, deps_.Shared.EVENTS.OPEN_SEED_PACK_RESPONSE, payload.requestId)
+                return
+            end
             local owned = tonumber(state.seedPacks[packId] or 0) or 0
             local openCount = openAll and owned or math.min(requestedCount, owned)
             if openCount <= 0 then
@@ -547,7 +621,11 @@ function ServerEconomyActions.SellHarvested(uid, sellMode, payload, connection)
     end
     serverCloud:Get(uid, deps_.Shared.KEYS.ECONOMY_STATE, {
         ok = function(scores)
-            local state = NormalizeEconomyState(scores[deps_.Shared.KEYS.ECONOMY_STATE] or BuildInitialEconomyState())
+            local state = GetExistingEconomyState(scores)
+            if state == nil then
+                SendMissingEconomyState(connection, deps_.Shared.EVENTS.SELL_HARVESTED_RESPONSE, payload and payload.requestId)
+                return
+            end
             local harvested = state.harvested or {}
             local sold = {}
             local remain = {}

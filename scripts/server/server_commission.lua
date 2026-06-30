@@ -64,6 +64,16 @@ local function BuildInitialEconomyState()
     return deps_.BuildInitialEconomyState()
 end
 
+local function GetExistingEconomyState(scores)
+    local state = scores and scores[deps_.Shared.KEYS.ECONOMY_STATE]
+    if type(state) ~= "table" then return nil end
+    return NormalizeEconomyState(state)
+end
+
+local function SendMissingEconomyState(connection, eventName, requestId)
+    deps_.Send(connection, eventName, { success = false, message = "存档尚未初始化，请重新进入游戏", requestId = requestId })
+end
+
 local function NextRevision(state)
     deps_.NextRevision(state)
 end
@@ -190,7 +200,11 @@ end
 function ServerCommission.RequestCommissionsAuthority(uid, payload, connection)
     serverCloud:Get(uid, deps_.Shared.KEYS.ECONOMY_STATE, {
         ok = function(scores)
-            local economy = NormalizeEconomyState(scores[deps_.Shared.KEYS.ECONOMY_STATE] or BuildInitialEconomyState())
+            local economy = GetExistingEconomyState(scores)
+            if economy == nil then
+                SendMissingEconomyState(connection, deps_.Shared.EVENTS.COMMISSIONS_RESPONSE, payload.requestId)
+                return
+            end
             serverCloud:Get(uid, COMMISSION_STATE_KEY, {
                 ok = function(rows)
                     local commissionState = ServerCommission.NormalizeCommissionState(rows[COMMISSION_STATE_KEY], economy.talent and economy.talent.level or 1)
@@ -211,7 +225,11 @@ end
 function ServerCommission.CompleteCommissionAuthority(uid, payload, connection)
     serverCloud:Get(uid, deps_.Shared.KEYS.ECONOMY_STATE, {
         ok = function(scores)
-            local economy = NormalizeEconomyState(scores[deps_.Shared.KEYS.ECONOMY_STATE] or BuildInitialEconomyState())
+            local economy = GetExistingEconomyState(scores)
+            if economy == nil then
+                SendMissingEconomyState(connection, deps_.Shared.EVENTS.COMPLETE_COMMISSION_RESPONSE, payload.requestId)
+                return
+            end
             serverCloud:Get(uid, COMMISSION_STATE_KEY, {
                 ok = function(rows)
                     local commissionState = ServerCommission.NormalizeCommissionState(rows[COMMISSION_STATE_KEY], economy.talent and economy.talent.level or 1)

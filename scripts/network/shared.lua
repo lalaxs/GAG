@@ -6,6 +6,7 @@ local Shared = {}
 
 Shared.KEYS = {
     GARDEN_SNAPSHOT = "garden_snapshot_v1",
+    SOCIAL_SAVE = "garden_social_save_v1",
     TOUR_RANK = "garden_tour_rank",
     INCOME_RANK_PREFIX = "garden_income_rank_w",
     ACTIVITY_RANK_PREFIX = "garden_activity_rank_",

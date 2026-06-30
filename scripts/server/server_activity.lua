@@ -33,6 +33,16 @@ local function BuildInitialEconomyState()
     return deps_.BuildInitialEconomyState()
 end
 
+local function GetExistingEconomyState(scores)
+    local state = scores and scores[deps_.Shared.KEYS.ECONOMY_STATE]
+    if type(state) ~= "table" then return nil end
+    return NormalizeEconomyState(state)
+end
+
+local function SendMissingEconomyState(connection, eventName, requestId)
+    Send(connection, eventName, { success = false, message = "存档尚未初始化，请重新进入游戏", requestId = requestId })
+end
+
 local function NormalizePositiveCount(value, maxValue)
     return deps_.NormalizePositiveCount(value, maxValue)
 end
@@ -165,7 +175,11 @@ end
 function ServerActivity.SubmitActivityCropAuthority(uid, payload, connection)
     serverCloud:Get(uid, deps_.Shared.KEYS.ECONOMY_STATE, {
         ok = function(scores)
-            local state = NormalizeEconomyState(scores[deps_.Shared.KEYS.ECONOMY_STATE] or BuildInitialEconomyState())
+            local state = GetExistingEconomyState(scores)
+            if state == nil then
+                SendMissingEconomyState(connection, deps_.Shared.EVENTS.SUBMIT_ACTIVITY_CROP_RESPONSE, payload.requestId)
+                return
+            end
             if ServerActivity.GetActiveActivityId() ~= "sweet" then
                 Send(connection, deps_.Shared.EVENTS.SUBMIT_ACTIVITY_CROP_RESPONSE, { success = false, message = "当前不是甜蜜蜜活动", requestId = payload.requestId, state = state })
                 return
@@ -200,7 +214,11 @@ end
 function ServerActivity.ExchangeActivityRewardAuthority(uid, payload, connection)
     serverCloud:Get(uid, deps_.Shared.KEYS.ECONOMY_STATE, {
         ok = function(scores)
-            local state = NormalizeEconomyState(scores[deps_.Shared.KEYS.ECONOMY_STATE] or BuildInitialEconomyState())
+            local state = GetExistingEconomyState(scores)
+            if state == nil then
+                SendMissingEconomyState(connection, deps_.Shared.EVENTS.EXCHANGE_ACTIVITY_REWARD_RESPONSE, payload.requestId)
+                return
+            end
             if ServerActivity.GetActiveActivityId() ~= "sweet" then
                 Send(connection, deps_.Shared.EVENTS.EXCHANGE_ACTIVITY_REWARD_RESPONSE, { success = false, message = "当前不是甜蜜蜜活动", requestId = payload.requestId, state = state })
                 return
@@ -250,7 +268,11 @@ end
 function ServerActivity.DrawActivityPackAuthority(uid, payload, connection)
     serverCloud:Get(uid, deps_.Shared.KEYS.ECONOMY_STATE, {
         ok = function(scores)
-            local state = NormalizeEconomyState(scores[deps_.Shared.KEYS.ECONOMY_STATE] or BuildInitialEconomyState())
+            local state = GetExistingEconomyState(scores)
+            if state == nil then
+                SendMissingEconomyState(connection, deps_.Shared.EVENTS.DRAW_ACTIVITY_PACK_RESPONSE, payload.requestId)
+                return
+            end
             if ServerActivity.GetActiveActivityId() ~= "alien" then
                 Send(connection, deps_.Shared.EVENTS.DRAW_ACTIVITY_PACK_RESPONSE, { success = false, message = "当前不是外星基因活动", requestId = payload.requestId, state = state })
                 return

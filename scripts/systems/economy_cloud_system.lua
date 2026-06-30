@@ -552,6 +552,9 @@ function EconomyCloudSystem.HandleClearSaveResponse(data)
         state_.authFarmReady = true
         state_.commissionsReady = false
         ApplyState(data.state)
+        if data.socialSave ~= nil and deps_.SocialGardenSystem ~= nil and deps_.SocialGardenSystem.LoadSaveData ~= nil then
+            deps_.SocialGardenSystem.LoadSaveData(data.socialSave)
+        end
         state_.lastAuthFarmRevision = -1
         ApplyAuthoritativeFarm(data.farm, "clearSave")
         if deps_.showToast then deps_.showToast(data.message or "游戏存档已清除") end
@@ -571,7 +574,9 @@ function EconomyCloudSystem.HandlePlantSeedResponse(data)
         if deps_.onPlantSeedConfirmed then deps_.onPlantSeedConfirmed(data) end
     else
         if data.state ~= nil then ApplyState(data.state) end
-        if deps_.showToast then deps_.showToast(data.message or "播种失败") end
+        local message = data.message or "播种失败"
+        if deps_.showToast then deps_.showToast(message) end
+        if deps_.showFloatingToast then deps_.showFloatingToast(message) end
     end
 end
 

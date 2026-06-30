@@ -37,6 +37,12 @@ local function BuildInitialEconomyState()
     return deps_.BuildInitialEconomyState()
 end
 
+local function GetExistingEconomyState(scores)
+    local state = scores and scores[deps_.Shared.KEYS.ECONOMY_STATE]
+    if type(state) ~= "table" then return nil end
+    return NormalizeEconomyState(state)
+end
+
 local function NormalizeFarmState(state)
     return deps_.NormalizeFarmState(state)
 end
@@ -146,7 +152,11 @@ function ServerSteal.RequestStealWithQuotaAvailable(uid, targetUid, cropIndex, c
                             local reward = ServerSteal.RollStealReward(crop)
                             serverCloud:Get(uid, deps_.Shared.KEYS.ECONOMY_STATE, {
                                 ok = function(economyRows)
-                                    local economy = NormalizeEconomyState(economyRows[deps_.Shared.KEYS.ECONOMY_STATE] or BuildInitialEconomyState())
+                                    local economy = GetExistingEconomyState(economyRows)
+                                    if economy == nil then
+                                        Send(connection, deps_.Shared.EVENTS.STEAL_RESPONSE, { success = false, message = "存档尚未初始化，请重新进入游戏", requestId = requestId })
+                                        return
+                                    end
                                     if reward.type == "seed" then
                                         local seedId = NormalizePlantIndex(reward.seedId or crop.plantIndex or 1) or 1
                                         local current = tonumber(economy.seedBag[seedId] or 0) or 0

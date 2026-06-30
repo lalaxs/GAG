@@ -258,17 +258,24 @@ function PlantPanelView.BuildContent()
         local harvestCards = {}
         if plot ~= nil and plot.plants ~= nil then
             local crops = {}
-            for _, crop in ipairs(plot.plants) do
-                table.insert(crops, crop)
+            for index, crop in ipairs(plot.plants) do
+                table.insert(crops, { crop = crop, order = index })
             end
             table.sort(crops, function(a, b)
-                local aMature = a.mature == true
-                local bMature = b.mature == true
+                local cropA = a.crop
+                local cropB = b.crop
+                local aMature = cropA.mature == true
+                local bMature = cropB.mature == true
                 if aMature ~= bMature then return aMature end
-                return GetCropRemainingSeconds(a) < GetCropRemainingSeconds(b)
+                if aMature and bMature then return a.order < b.order end
+                local aRemaining = GetCropRemainingSeconds(cropA)
+                local bRemaining = GetCropRemainingSeconds(cropB)
+                if aRemaining ~= bRemaining then return aRemaining < bRemaining end
+                return a.order < b.order
             end)
 
-            for _, crop in ipairs(crops) do
+            for _, cropRow in ipairs(crops) do
+                local crop = cropRow.crop
                 local tags = {}
                 if crop.mutation and crop.mutation.specials then
                     for _, sp in ipairs(crop.mutation.specials) do

@@ -14,6 +14,7 @@ local function Now()
 end
 
 local function NormalizeUserId(userId)
+    if deps_.normalizeUserId ~= nil then return deps_.normalizeUserId(userId) end
     if userId == nil or userId == 0 or userId == "" then return nil end
     local text = tostring(userId)
     text = string.gsub(text, "^%s+", "")
@@ -26,6 +27,16 @@ local function NormalizeUserId(userId)
         return string.format("%.0f", numericId)
     end
     return text
+end
+
+local function BuildUidKeyCandidates(uid)
+    if deps_.buildUidKeyCandidates ~= nil then return deps_.buildUidKeyCandidates(uid) end
+    return { uid }
+end
+
+local function GetCanonicalUidKey(uid)
+    if deps_.getCanonicalUidKey ~= nil then return deps_.getCanonicalUidKey(uid) end
+    return NormalizeUserId(uid) or uid
 end
 
 local function NormalizeListId(value)
@@ -169,33 +180,87 @@ local function NormalizeListRows(rows)
     return result
 end
 
+local function ReadListFromUidCandidates(uid, listKey, done)
+    local candidates = BuildUidKeyCandidates(uid)
+    local index = 1
+    local fallbackRows = nil
+    local fallbackKey = nil
+
+    local function readNext()
+        local key = candidates[index]
+        index = index + 1
+        if key == nil then
+            done(fallbackRows or {}, fallbackKey)
+            return
+        end
+        serverCloud.list:Get(key, listKey, {
+            ok = function(rows)
+                if rows ~= nil and #rows > 0 then
+                    done(rows, key)
+                    return
+                end
+                fallbackRows = fallbackRows or rows
+                fallbackKey = fallbackKey or key
+                readNext()
+            end,
+            error = function()
+                readNext()
+            end,
+        })
+    end
+
+    readNext()
+end
+
+local function ReadQuotaFromUidCandidates(uid, quotaKey, done)
+    local candidates = BuildUidKeyCandidates(uid)
+    local index = 1
+
+    local function readNext()
+        local key = candidates[index]
+        index = index + 1
+        if key == nil then
+            done({})
+            return
+        end
+        serverCloud.quota:Get(key, quotaKey, {
+            ok = function(rows)
+                if rows ~= nil and #rows > 0 then
+                    done(rows, key)
+                    return
+                end
+                readNext()
+            end,
+            error = function()
+                readNext()
+            end,
+        })
+    end
+
+    readNext()
+end
+
 local function FetchStealLogs(uid, done)
-    serverCloud.list:Get(uid, Shared().KEYS.STEAL_LOGS, {
-        ok = function(rows) done(NormalizeListRows(rows)) end,
-        error = function() done({}) end,
-    })
+    ReadListFromUidCandidates(uid, Shared().KEYS.STEAL_LOGS, function(rows) done(NormalizeListRows(rows)) end)
 end
 
 local function FetchRecentVisitors(uid, done)
-    serverCloud.list:Get(uid, Shared().KEYS.RECENT_VISITORS, {
-        ok = function(rows)
-            local normalized = NormalizeListRows(rows)
-            local result = {}
-            local seen = {}
-            for _, row in ipairs(normalized) do
-                local userId = NormalizeUserId(row.userId or row.thiefUserId or row.targetUserId)
-                local key = row.visitKey or (userId ~= nil and BuildVisitRecordKey(userId)) or row.listId
-                key = tostring(key or (#result + 1))
-                if not seen[key] then
-                    seen[key] = true
-                    if userId ~= nil then row.userId = userId end
-                    result[#result + 1] = row
-                end
+    ReadListFromUidCandidates(uid, Shared().KEYS.RECENT_VISITORS, function(rows)
+        local normalized = NormalizeListRows(rows)
+        local result = {}
+        local seen = {}
+        for _, row in ipairs(normalized) do
+            local userId = NormalizeUserId(row.userId or row.thiefUserId or row.targetUserId)
+            local key = row.visitKey or (userId ~= nil and BuildVisitRecordKey(userId)) or row.listId
+            key = tostring(key or (#result + 1))
+            if not seen[key] then
+                seen[key] = true
+                if userId ~= nil then row.userId = userId end
+                result[#result + 1] = row
             end
-            done(result)
-        end,
-        error = function() done({}) end,
-    })
+        end
+        done(result)
+    end)
 end
 
 local function NormalizeFriendRows(rows)
@@ -265,24 +330,47 @@ local function NormalizeNoticeRows(rows)
 end
 
 local function FetchFriends(uid, done)
-    serverCloud.list:Get(uid, Shared().KEYS.FRIENDS, {
-        ok = function(rows) done(NormalizeFriendRows(rows)) end,
-        error = function() done({}) end,
-    })
+    ReadListFromUidCandidates(uid, Shared().KEYS.FRIENDS, function(rows) done(NormalizeFriendRows(rows)) end)
 end
 
 local function FetchFriendRequests(uid, done)
-    serverCloud.list:Get(uid, Shared().KEYS.FRIEND_REQUESTS, {
-        ok = function(rows) done(NormalizeFriendRequestRows(rows)) end,
-        error = function() done({}) end,
-    })
+    ReadListFromUidCandidates(uid, Shared().KEYS.FRIEND_REQUESTS, function(rows) done(NormalizeFriendRequestRows(rows)) end)
 end
 
 local function FetchSocialNotices(uid, done)
-    serverCloud.list:Get(uid, Shared().KEYS.SOCIAL_NOTICES, {
-        ok = function(rows) done(NormalizeNoticeRows(rows)) end,
-        error = function() done({}) end,
-    })
+    ReadListFromUidCandidates(uid, Shared().KEYS.SOCIAL_NOTICES, function(rows) done(NormalizeNoticeRows(rows)) end)
+end
+
+local function ReadScoreFromUidCandidates(uid, scoreKey, done)
+    local canonicalUid = GetCanonicalUidKey(uid)
+    local candidates = BuildUidKeyCandidates(uid)
+    local index = 1
+    local fallbackError = nil
+
+    local function readNext()
+        local key = candidates[index]
+        index = index + 1
+        if key == nil then
+            done(nil, canonicalUid, fallbackError)
+            return
+        end
+        serverCloud:Get(key, scoreKey, {
+            ok = function(scores)
+                local value = scores and scores[scoreKey]
+                if type(value) == "table" then
+                    done(value, key, nil)
+                    return
+                end
+                readNext()
+            end,
+            error = function(_, reason)
+                fallbackError = reason
+                readNext()
+            end,
+        })
+    end
+
+    readNext()
 end
 
 local function FetchGardenProfiles(userIds, done)
@@ -305,22 +393,16 @@ local function FetchGardenProfiles(userIds, done)
             return
         end
         local cloudUid = tonumber(userId) or userId
-        serverCloud:Get(cloudUid, Shared().KEYS.GARDEN_SNAPSHOT, {
-            ok = function(scores)
-                local garden = scores and scores[Shared().KEYS.GARDEN_SNAPSHOT]
-                if type(garden) == "table" then
-                    profiles[userId] = {
-                        nickname = garden.nickname,
-                        avatar = NormalizeAvatar(garden.avatar),
-                        score = garden.tourValue or 0,
-                    }
-                end
-                nextOne()
-            end,
-            error = function()
-                nextOne()
-            end,
-        })
+        ReadScoreFromUidCandidates(cloudUid, Shared().KEYS.GARDEN_SNAPSHOT, function(garden)
+            if type(garden) == "table" then
+                profiles[userId] = {
+                    nickname = garden.nickname,
+                    avatar = NormalizeAvatar(garden.avatar),
+                    score = garden.tourValue or 0,
+                }
+            end
+            nextOne()
+        end)
     end
     nextOne()
 end
@@ -331,13 +413,18 @@ end
 
 local function SaveCanonicalGardenSnapshot(uid, snapshot, farmState, connection, saveLabel)
     local shared = Shared()
-    local canonical = deps_.buildVisitGardenFromAuthFarm(uid, snapshot.nickname, farmState, snapshot)
+    local saveUid = GetCanonicalUidKey(uid)
+    local canonical = deps_.buildVisitGardenFromAuthFarm(saveUid, snapshot.nickname, farmState, snapshot)
     canonical.nickname = snapshot.nickname or canonical.nickname
     canonical.avatar = NormalizeAvatar(snapshot.avatar or canonical.avatar)
     canonical.unlockedPlotCount = math.max(1, tonumber(snapshot.unlockedPlotCount or canonical.unlockedPlotCount or 1) or 1)
     local score = math.max(0, math.floor(tonumber(canonical.tourValue or 0) or 0))
-    serverCloud:BatchSet(uid)
+    serverCloud:BatchSet(saveUid)
         :Set(shared.KEYS.GARDEN_SNAPSHOT, canonical)
+        :Set(shared.KEYS.SOCIAL_SAVE, {
+            visitablePlotIndex = canonical.visitablePlotIndex,
+            updatedAt = Now(),
+        })
         :SetInt(shared.KEYS.TOUR_RANK, score)
         :Save(saveLabel or "保存权威社交花园", {
             ok = function()
@@ -360,14 +447,9 @@ function SocialServer.SaveGardenSnapshot(uid, snapshot, connection)
         return
     end
 
-    serverCloud:Get(uid, shared.KEYS.AUTH_FARM_STATE, {
-        ok = function(scores)
-            SaveCanonicalGardenSnapshot(uid, snapshot, scores[shared.KEYS.AUTH_FARM_STATE], connection, "保存权威社交花园")
-        end,
-        error = function()
-            SaveCanonicalGardenSnapshot(uid, snapshot, nil, connection, "首次保存权威社交花园")
-        end,
-    })
+    ReadScoreFromUidCandidates(uid, shared.KEYS.AUTH_FARM_STATE, function(farmState)
+        SaveCanonicalGardenSnapshot(uid, snapshot, farmState, connection, farmState ~= nil and "保存权威社交花园" or "首次保存权威社交花园")
+    end)
 end
 
 function SocialServer.RequestGardenSnapshot(requesterUid, targetUid, connection, requestId, requestRecordKey)
@@ -459,61 +541,37 @@ function SocialServer.RequestGardenSnapshot(requesterUid, targetUid, connection,
         })
     end
 
-    serverCloud:Get(targetUid, shared.KEYS.GARDEN_SNAPSHOT, {
-        ok = function(scores)
-            local garden = scores[shared.KEYS.GARDEN_SNAPSHOT]
-            if type(garden) == "table" and garden.plot ~= nil then
-                RefreshRuntimeSnapshot(garden)
-            else
-                garden = { nickname = "Tap玩家", visitablePlotIndex = 1, unlockedPlotCount = 1 }
-            end
-            GetNicknameMap({ requesterUid }, function(nickMap)
-                FetchGardenProfiles({ requesterUid }, function(profileMap)
-                    local profile = profileMap[tostring(requesterUid)] or {}
-                    local visitorProfile = {
-                        nickname = profile.nickname or nickMap[requesterUid] or nickMap[tostring(requesterUid)] or "Tap玩家",
-                        avatar = profile.avatar,
-                    }
-                    RecordVisit(visitorProfile, function()
-                        serverCloud:Get(targetUid, shared.KEYS.AUTH_FARM_STATE, {
-                            ok = function(farmScores)
-                                local authGarden = deps_.buildVisitGardenFromAuthFarm(targetUid, garden.nickname, farmScores[shared.KEYS.AUTH_FARM_STATE], garden)
-                                SendGardenWithLikes(authGarden)
-                            end,
-                            error = function()
-                                if garden.plot ~= nil then
-                                    SendGardenWithLikes(garden)
-                                else
-                                    SendGardenResponse({ success = false, message = "该玩家尚未开放花园" })
-                                end
-                            end,
-                        })
+    ReadScoreFromUidCandidates(targetUid, shared.KEYS.GARDEN_SNAPSHOT, function(garden)
+        if type(garden) == "table" and garden.plot ~= nil then
+            RefreshRuntimeSnapshot(garden)
+        else
+            garden = { nickname = "Tap玩家", visitablePlotIndex = 1, unlockedPlotCount = 1 }
+        end
+        GetNicknameMap({ requesterUid }, function(nickMap)
+            FetchGardenProfiles({ requesterUid }, function(profileMap)
+                local profile = profileMap[tostring(requesterUid)] or {}
+                local visitorProfile = {
+                    nickname = profile.nickname or nickMap[requesterUid] or nickMap[tostring(requesterUid)] or "Tap玩家",
+                    avatar = profile.avatar,
+                }
+                RecordVisit(visitorProfile, function()
+                    ReadScoreFromUidCandidates(targetUid, shared.KEYS.AUTH_FARM_STATE, function(farmState, farmKey, farmError)
+                        if type(farmState) == "table" then
+                            if farmKey ~= GetCanonicalUidKey(targetUid) then
+                                print(string.format("[存档兼容] 拜访花园使用历史权威农场 key=%s target=%s", tostring(farmKey), tostring(targetUid)))
+                            end
+                            local authGarden = deps_.buildVisitGardenFromAuthFarm(targetUid, garden.nickname, farmState, garden)
+                            SendGardenWithLikes(authGarden)
+                        elseif garden.plot ~= nil then
+                            SendGardenWithLikes(garden)
+                        else
+                            SendGardenResponse({ success = false, message = "读取花园失败: " .. tostring(farmError or "该玩家尚未开放花园") })
+                        end
                     end)
                 end)
             end)
-        end,
-        error = function()
-            serverCloud:Get(targetUid, shared.KEYS.AUTH_FARM_STATE, {
-                ok = function(farmScores)
-                    GetNicknameMap({ requesterUid }, function(nickMap)
-                        FetchGardenProfiles({ requesterUid }, function(profileMap)
-                            local profile = profileMap[tostring(requesterUid)] or {}
-                            RecordVisit({
-                                nickname = profile.nickname or nickMap[requesterUid] or nickMap[tostring(requesterUid)] or "Tap玩家",
-                                avatar = profile.avatar,
-                            }, function()
-                                local authGarden = deps_.buildVisitGardenFromAuthFarm(targetUid, "Tap玩家", farmScores[shared.KEYS.AUTH_FARM_STATE], { visitablePlotIndex = 1, unlockedPlotCount = 1 })
-                                SendGardenWithLikes(authGarden)
-                            end)
-                        end)
-                    end)
-                end,
-                error = function(_, reason)
-                    SendGardenResponse({ success = false, message = "读取花园失败: " .. tostring(reason) })
-                end,
-            })
-        end,
-    })
+        end)
+    end)
 end
 
 function SocialServer.RequestRank(count, connection, requesterUid)
@@ -552,90 +610,46 @@ end
 
 local function FetchDailyQuota(uid, done)
     local daily = { stealCount = 0, giftSentCount = 0, stealAdCount = 0, stealLimit = deps_.dailyStealLimit or 5, seedPackAdCount = 0, seedPackAdLimit = deps_.dailySeedPackAdLimit or 5, matureAdCount = 0, matureAdLimit = deps_.dailyMatureAdLimit or 5 }
-    serverCloud.quota:Get(uid, "daily_steal", {
-        ok = function(stealRows)
-            local row = stealRows and stealRows[1]
-            daily.stealCount = math.max(0, math.floor(tonumber(row and row.value or 0) or 0))
-            serverCloud.quota:Get(uid, "daily_steal_ad_bonus", {
-                ok = function(bonusRows)
-                    local bonusRow = bonusRows and bonusRows[1]
-                    local bonus = math.max(0, math.floor(tonumber(bonusRow and bonusRow.value or 0) or 0))
-                    daily.stealLimit = (deps_.dailyStealLimit or 5) + bonus
-                    serverCloud.quota:Get(uid, "daily_steal_ad", {
-                        ok = function(adRows)
-                            local adRow = adRows and adRows[1]
-                            daily.stealAdCount = math.max(0, math.floor(tonumber(adRow and adRow.value or 0) or 0))
-                            serverCloud.quota:Get(uid, "daily_seed_pack_ad", {
-                                ok = function(packRows)
-                                    local packRow = packRows and packRows[1]
-                                    daily.seedPackAdCount = math.max(0, math.floor(tonumber(packRow and packRow.value or 0) or 0))
-                                    serverCloud.quota:Get(uid, "daily_mature_ad", {
-                                        ok = function(matureRows)
-                                            local matureRow = matureRows and matureRows[1]
-                                            daily.matureAdCount = math.max(0, math.floor(tonumber(matureRow and matureRow.value or 0) or 0))
-                                            serverCloud.quota:Get(uid, "daily_seed_gift", {
-                                                ok = function(giftRows)
-                                                    local giftRow = giftRows and giftRows[1]
-                                                    daily.giftSentCount = math.max(0, math.floor(tonumber(giftRow and giftRow.value or 0) or 0))
-                                                    done(daily)
-                                                end,
-                                                error = function()
-                                                    done(daily)
-                                                end,
-                                            })
-                                        end,
-                                        error = function()
-                                            done(daily)
-                                        end,
-                                    })
-                                end,
-                                error = function()
-                                    done(daily)
-                                end,
-                            })
-                        end,
-                        error = function()
+    ReadQuotaFromUidCandidates(uid, "daily_steal", function(stealRows)
+        local row = stealRows and stealRows[1]
+        daily.stealCount = math.max(0, math.floor(tonumber(row and row.value or 0) or 0))
+        ReadQuotaFromUidCandidates(uid, "daily_steal_ad_bonus", function(bonusRows)
+            local bonusRow = bonusRows and bonusRows[1]
+            local bonus = math.max(0, math.floor(tonumber(bonusRow and bonusRow.value or 0) or 0))
+            daily.stealLimit = (deps_.dailyStealLimit or 5) + bonus
+            ReadQuotaFromUidCandidates(uid, "daily_steal_ad", function(adRows)
+                local adRow = adRows and adRows[1]
+                daily.stealAdCount = math.max(0, math.floor(tonumber(adRow and adRow.value or 0) or 0))
+                ReadQuotaFromUidCandidates(uid, "daily_seed_pack_ad", function(packRows)
+                    local packRow = packRows and packRows[1]
+                    daily.seedPackAdCount = math.max(0, math.floor(tonumber(packRow and packRow.value or 0) or 0))
+                    ReadQuotaFromUidCandidates(uid, "daily_mature_ad", function(matureRows)
+                        local matureRow = matureRows and matureRows[1]
+                        daily.matureAdCount = math.max(0, math.floor(tonumber(matureRow and matureRow.value or 0) or 0))
+                        ReadQuotaFromUidCandidates(uid, "daily_seed_gift", function(giftRows)
+                            local giftRow = giftRows and giftRows[1]
+                            daily.giftSentCount = math.max(0, math.floor(tonumber(giftRow and giftRow.value or 0) or 0))
                             done(daily)
-                        end,
-                    })
-                end,
-                error = function()
-                    done(daily)
-                end,
-            })
-        end,
-        error = function()
-            serverCloud.quota:Get(uid, "daily_seed_gift", {
-                ok = function(giftRows)
-                    local giftRow = giftRows and giftRows[1]
-                    daily.giftSentCount = math.max(0, math.floor(tonumber(giftRow and giftRow.value or 0) or 0))
-                    done(daily)
-                end,
-                error = function()
-                    done(daily)
-                end,
-            })
-        end,
-    })
+                        end)
+                    end)
+                end)
+            end)
+        end)
+    end)
 end
 
 local function FetchGiftTargets(uid, done)
     local today = DayKey()
-    serverCloud.list:Get(uid, Shared().KEYS.GIFT_SENT_TARGETS, {
-        ok = function(rows)
-            local targets = {}
-            for _, row in ipairs(rows or {}) do
-                local value = row.value or row
-                if type(value) == "table" and value.targetUserId ~= nil and tostring(value.day or today) == today then
-                    targets[tostring(value.targetUserId)] = true
-                end
+    ReadListFromUidCandidates(uid, Shared().KEYS.GIFT_SENT_TARGETS, function(rows)
+        local targets = {}
+        for _, row in ipairs(rows or {}) do
+            local value = row.value or row
+            if type(value) == "table" and value.targetUserId ~= nil and tostring(value.day or today) == today then
+                targets[tostring(value.targetUserId)] = true
             end
-            done(targets)
-        end,
-        error = function()
-            done({})
-        end,
-    })
+        end
+        done(targets)
+    end)
 end
 
 function SocialServer.FetchGardenProfiles(userIds, done)
@@ -644,135 +658,163 @@ end
 
 function SocialServer.RequestSocialState(uid, connection)
     local shared = Shared()
-    FetchStealLogs(uid, function(stealLogs)
-        FetchRecentVisitors(uid, function(recentVisitors)
-            FetchFriends(uid, function(friends)
-                FetchFriendRequests(uid, function(friendRequests)
-                    FetchSocialNotices(uid, function(socialNotices)
-                        serverCloud:GetRankList(shared.KEYS.TOUR_RANK, 1, 12, {
-                            ok = function(rankList)
-                                local userIds = {}
-                                local recommended = {}
-                                local seen = { [tostring(uid)] = true }
 
-                                for _, friend in ipairs(friends) do
-                                    if friend.userId ~= nil then
-                                        seen[tostring(friend.userId)] = true
-                                        userIds[#userIds + 1] = friend.userId
+    local function ContinueWithSocialSave(socialSave)
+        socialSave = type(socialSave) == "table" and socialSave or { visitablePlotIndex = 1 }
+        FetchStealLogs(uid, function(stealLogs)
+            FetchRecentVisitors(uid, function(recentVisitors)
+                FetchFriends(uid, function(friends)
+                    FetchFriendRequests(uid, function(friendRequests)
+                        FetchSocialNotices(uid, function(socialNotices)
+                            serverCloud:GetRankList(shared.KEYS.TOUR_RANK, 1, 12, {
+                                ok = function(rankList)
+                                    local userIds = {}
+                                    local recommended = {}
+                                    local seen = { [tostring(uid)] = true }
+
+                                    for _, friend in ipairs(friends) do
+                                        if friend.userId ~= nil then
+                                            seen[tostring(friend.userId)] = true
+                                            userIds[#userIds + 1] = friend.userId
+                                        end
                                     end
-                                end
 
-                                for _, request in ipairs(friendRequests) do
-                                    if request.fromUserId ~= nil then userIds[#userIds + 1] = request.fromUserId end
-                                end
+                                    for _, request in ipairs(friendRequests) do
+                                        if request.fromUserId ~= nil then userIds[#userIds + 1] = request.fromUserId end
+                                    end
 
-                                for _, notice in ipairs(socialNotices) do
-                                    if notice.fromUserId ~= nil then userIds[#userIds + 1] = notice.fromUserId end
-                                end
+                                    for _, notice in ipairs(socialNotices) do
+                                        if notice.fromUserId ~= nil then userIds[#userIds + 1] = notice.fromUserId end
+                                    end
 
-                                for _, row in ipairs(recentVisitors) do
-                                    local userId = row.userId or row.thiefUserId or row.targetUserId
-                                    if userId ~= nil then
-                                        userIds[#userIds + 1] = userId
-                                        if not seen[tostring(userId)] then
+                                    for _, row in ipairs(recentVisitors) do
+                                        local userId = row.userId or row.thiefUserId or row.targetUserId
+                                        if userId ~= nil then
+                                            userIds[#userIds + 1] = userId
+                                            if not seen[tostring(userId)] then
+                                                seen[tostring(userId)] = true
+                                                recommended[#recommended + 1] = { userId = userId, score = 0, source = row.direction == "visited" and "recent_visit" or "recent_visitor" }
+                                            end
+                                        end
+                                    end
+
+                                    for i, item in ipairs(rankList or {}) do
+                                        local userId = item.userId or item.player
+                                        if userId ~= nil and not seen[tostring(userId)] then
                                             seen[tostring(userId)] = true
-                                            recommended[#recommended + 1] = { userId = userId, score = 0, source = row.direction == "visited" and "recent_visit" or "recent_visitor" }
+                                            userIds[#userIds + 1] = userId
+                                            recommended[#recommended + 1] = {
+                                                userId = userId,
+                                                rank = i,
+                                                score = item.iscore and item.iscore[shared.KEYS.TOUR_RANK] or 0,
+                                                source = "rank",
+                                            }
                                         end
                                     end
-                                end
 
-                                for i, item in ipairs(rankList or {}) do
-                                    local userId = item.userId or item.player
-                                    if userId ~= nil and not seen[tostring(userId)] then
-                                        seen[tostring(userId)] = true
-                                        userIds[#userIds + 1] = userId
-                                        recommended[#recommended + 1] = {
-                                            userId = userId,
-                                            rank = i,
-                                            score = item.iscore and item.iscore[shared.KEYS.TOUR_RANK] or 0,
-                                            source = "rank",
-                                        }
+                                    for _, row in ipairs(stealLogs) do
+                                        if row.thiefUserId ~= nil then userIds[#userIds + 1] = row.thiefUserId end
                                     end
-                                end
 
-                                for _, row in ipairs(stealLogs) do
-                                    if row.thiefUserId ~= nil then userIds[#userIds + 1] = row.thiefUserId end
-                                end
+                                    GetNicknameMap(userIds, function(nickMap)
+                                        FetchGardenProfiles(userIds, function(profileMap)
+                                            for _, entry in ipairs(friends) do
+                                                local profile = profileMap[tostring(entry.userId)] or {}
+                                                entry.nickname = profile.nickname or nickMap[entry.userId] or nickMap[tostring(entry.userId)] or entry.nickname or "Tap玩家"
+                                                entry.avatar = profile.avatar or entry.avatar
+                                                entry.score = profile.score or entry.score or 0
+                                            end
+                                            for _, entry in ipairs(recommended) do
+                                                local profile = profileMap[tostring(entry.userId)] or {}
+                                                entry.nickname = profile.nickname or nickMap[entry.userId] or nickMap[tostring(entry.userId)] or "Tap玩家"
+                                                entry.avatar = profile.avatar or entry.avatar
+                                                entry.score = profile.score or entry.score or 0
+                                            end
+                                            for _, request in ipairs(friendRequests) do
+                                                local profile = profileMap[tostring(request.fromUserId)] or {}
+                                                request.fromNickname = profile.nickname or nickMap[request.fromUserId] or nickMap[tostring(request.fromUserId)] or request.fromNickname or "Tap玩家"
+                                                request.avatar = profile.avatar or request.avatar
+                                            end
+                                            for _, notice in ipairs(socialNotices) do
+                                                local profile = profileMap[tostring(notice.fromUserId)] or {}
+                                                notice.fromNickname = profile.nickname or nickMap[notice.fromUserId] or nickMap[tostring(notice.fromUserId)] or notice.fromNickname or "Tap玩家"
+                                                notice.avatar = profile.avatar or notice.avatar
+                                            end
+                                            for _, row in ipairs(stealLogs) do
+                                                local profile = profileMap[tostring(row.thiefUserId)] or {}
+                                                row.thiefNickname = profile.nickname or nickMap[row.thiefUserId] or nickMap[tostring(row.thiefUserId)] or "Tap玩家"
+                                                row.avatar = profile.avatar or row.avatar
+                                            end
+                                            for _, row in ipairs(recentVisitors) do
+                                                local profile = profileMap[tostring(row.userId)] or {}
+                                                row.nickname = profile.nickname or nickMap[row.userId] or nickMap[tostring(row.userId)] or row.nickname or "Tap玩家"
+                                                row.avatar = profile.avatar or row.avatar
+                                            end
 
-                                GetNicknameMap(userIds, function(nickMap)
-                                    FetchGardenProfiles(userIds, function(profileMap)
-                                        for _, entry in ipairs(friends) do
-                                            local profile = profileMap[tostring(entry.userId)] or {}
-                                            entry.nickname = profile.nickname or nickMap[entry.userId] or nickMap[tostring(entry.userId)] or entry.nickname or "Tap玩家"
-                                            entry.avatar = profile.avatar or entry.avatar
-                                            entry.score = profile.score or entry.score or 0
-                                        end
-                                        for _, entry in ipairs(recommended) do
-                                            local profile = profileMap[tostring(entry.userId)] or {}
-                                            entry.nickname = profile.nickname or nickMap[entry.userId] or nickMap[tostring(entry.userId)] or "Tap玩家"
-                                            entry.avatar = profile.avatar or entry.avatar
-                                            entry.score = profile.score or entry.score or 0
-                                        end
-                                        for _, request in ipairs(friendRequests) do
-                                            local profile = profileMap[tostring(request.fromUserId)] or {}
-                                            request.fromNickname = profile.nickname or nickMap[request.fromUserId] or nickMap[tostring(request.fromUserId)] or request.fromNickname or "Tap玩家"
-                                            request.avatar = profile.avatar or request.avatar
-                                        end
-                                        for _, notice in ipairs(socialNotices) do
-                                            local profile = profileMap[tostring(notice.fromUserId)] or {}
-                                            notice.fromNickname = profile.nickname or nickMap[notice.fromUserId] or nickMap[tostring(notice.fromUserId)] or notice.fromNickname or "Tap玩家"
-                                            notice.avatar = profile.avatar or notice.avatar
-                                        end
-                                        for _, row in ipairs(stealLogs) do
-                                            local profile = profileMap[tostring(row.thiefUserId)] or {}
-                                            row.thiefNickname = profile.nickname or nickMap[row.thiefUserId] or nickMap[tostring(row.thiefUserId)] or "Tap玩家"
-                                            row.avatar = profile.avatar or row.avatar
-                                        end
-                                        for _, row in ipairs(recentVisitors) do
-                                            local profile = profileMap[tostring(row.userId)] or {}
-                                            row.nickname = profile.nickname or nickMap[row.userId] or nickMap[tostring(row.userId)] or row.nickname or "Tap玩家"
-                                            row.avatar = profile.avatar or row.avatar
-                                        end
-
-                                        FetchDailyQuota(uid, function(daily)
-                                            FetchGiftTargets(uid, function(giftTargets)
-                                                Send(connection, shared.EVENTS.SOCIAL_STATE_RESPONSE, {
-                                                    success = true,
-                                                    friends = friends,
-                                                    friendRequests = friendRequests,
-                                                    socialNotices = socialNotices,
-                                                    stealLogs = stealLogs,
-                                                    recentVisitors = recentVisitors,
-                                                    recommendedPlayers = recommended,
-                                                    giftedTargets = giftTargets,
-                                                    daily = daily,
-                                                })
+                                            FetchDailyQuota(uid, function(daily)
+                                                FetchGiftTargets(uid, function(giftTargets)
+                                                    Send(connection, shared.EVENTS.SOCIAL_STATE_RESPONSE, {
+                                                        success = true,
+                                                        socialSave = socialSave,
+                                                        friends = friends,
+                                                        friendRequests = friendRequests,
+                                                        socialNotices = socialNotices,
+                                                        stealLogs = stealLogs,
+                                                        recentVisitors = recentVisitors,
+                                                        recommendedPlayers = recommended,
+                                                        giftedTargets = giftTargets,
+                                                        daily = daily,
+                                                    })
+                                                end)
                                             end)
                                         end)
                                     end)
-                                end)
-                            end,
-                            error = function()
-                                FetchDailyQuota(uid, function(daily)
-                                    FetchGiftTargets(uid, function(giftTargets)
-                                        Send(connection, shared.EVENTS.SOCIAL_STATE_RESPONSE, {
-                                            success = true,
-                                            friends = friends,
-                                            friendRequests = friendRequests,
-                                            socialNotices = socialNotices,
-                                            stealLogs = stealLogs,
-                                            recentVisitors = recentVisitors,
-                                            recommendedPlayers = {},
-                                            giftedTargets = giftTargets,
-                                            daily = daily,
-                                        })
+                                end,
+                                error = function()
+                                    FetchDailyQuota(uid, function(daily)
+                                        FetchGiftTargets(uid, function(giftTargets)
+                                            Send(connection, shared.EVENTS.SOCIAL_STATE_RESPONSE, {
+                                                success = true,
+                                                socialSave = socialSave,
+                                                friends = friends,
+                                                friendRequests = friendRequests,
+                                                socialNotices = socialNotices,
+                                                stealLogs = stealLogs,
+                                                recentVisitors = recentVisitors,
+                                                recommendedPlayers = {},
+                                                giftedTargets = giftTargets,
+                                                daily = daily,
+                                            })
+                                        end)
                                     end)
-                                end)
-                            end,
-                        })
+                                end,
+                            })
+                        end)
                     end)
                 end)
             end)
+        end)
+    end
+
+    local function ContinueWithResolvedSocialSave(socialSave, sourceKey)
+        socialSave = type(socialSave) == "table" and socialSave or { visitablePlotIndex = 1 }
+        socialSave.visitablePlotIndex = math.max(1, math.floor(tonumber(socialSave.visitablePlotIndex or 1) or 1))
+        local canonicalUid = GetCanonicalUidKey(uid)
+        if sourceKey ~= nil and sourceKey ~= canonicalUid then
+            print(string.format("[存档兼容] 社交存档命中历史 uid key=%s，迁移到当前 key=%s", tostring(sourceKey), tostring(canonicalUid)))
+            serverCloud:Set(canonicalUid, shared.KEYS.SOCIAL_SAVE, socialSave)
+        end
+        ContinueWithSocialSave(socialSave)
+    end
+
+    ReadScoreFromUidCandidates(uid, shared.KEYS.SOCIAL_SAVE, function(socialSave, socialKey)
+        if type(socialSave) == "table" then
+            ContinueWithResolvedSocialSave(socialSave, socialKey)
+            return
+        end
+        ReadScoreFromUidCandidates(uid, shared.KEYS.GARDEN_SNAPSHOT, function(garden, gardenKey)
+            local fallback = { visitablePlotIndex = type(garden) == "table" and garden.visitablePlotIndex or 1 }
+            ContinueWithResolvedSocialSave(fallback, type(garden) == "table" and gardenKey or nil)
         end)
     end)
 end

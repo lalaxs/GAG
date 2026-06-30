@@ -406,8 +406,10 @@ end
 
 function CropSystem.RestorePlotsFromSave(plots, data)
     if plots == nil or type(data) ~= "table" then return end
+    local restoredCount = 0
     for plotKey, plotData in pairs(data) do
-        local plotIndex = tonumber(plotKey)
+        local plotIndex = tonumber(plotKey) or tonumber(plotData and plotData.plotIndex)
+        if plotIndex ~= nil then plotIndex = math.max(1, math.floor(plotIndex)) end
         local plot = plotIndex ~= nil and plots[plotIndex] or nil
         if plot ~= nil then
             if plot.plants ~= nil then
@@ -421,10 +423,14 @@ function CropSystem.RestorePlotsFromSave(plots, data)
                 local crop = CreateCropFromSave(plot, cropData)
                 if crop ~= nil then
                     table.insert(plot.plants, crop)
+                    restoredCount = restoredCount + 1
                 end
             end
+        else
+            print(string.format("[存档恢复] 忽略无法匹配的地块 plotKey=%s plotIndex=%s", tostring(plotKey), tostring(plotIndex)))
         end
     end
+    print(string.format("[存档恢复] 已恢复作物数量=%d", restoredCount))
 end
 
 function CropSystem.PlantCropFromServer(plots, plotIndex, cropData)

@@ -7,6 +7,9 @@
 -- 就主动重新绑定 scene、发送 CLIENT_READY，并强制拉取服务端权威状态。
 -- ============================================================================
 
+local UI = require("urhox-libs/UI")
+local ModalAnim = require("ui.modal_anim")
+
 local NetworkRecovery = {}
 
 local deps_ = {}
@@ -24,8 +27,13 @@ local state_ = {
     disconnectedNoticeElapsed = 0,
     disconnectedNoticeInterval = 10.0,
     rawReadyFallbackDelay = 1.5,
+    retrying = false,
+    retryMessage = nil,
 }
 
+local disconnectModal_ = nil
+local retryButton_ = nil
+local statusLabel_ = nil
 function NetworkRecovery.Init(deps)
     deps_ = deps or {}
 end
@@ -70,6 +78,83 @@ local function IsReadyServerConnectionAvailable()
     return state_.serverReady == true and IsRawServerConnectionAvailable()
 end
 
+local function SetDisconnectModalStatus(text, retrying)
+    state_.retryMessage = text
+    state_.retrying = retrying == true
+    if statusLabel_ ~= nil then statusLabel_:SetText(text or "网络连接已断开") end
+    if retryButton_ ~= nil then
+        retryButton_:SetDisabled(state_.retrying)
+        retryButton_:SetText(state_.retrying and "重连中..." or "重试连接")
+    end
+end
+
+local function CloseDisconnectModal()
+    if disconnectModal_ ~= nil then
+        disconnectModal_:Close()
+        disconnectModal_ = nil
+    end
+    retryButton_ = nil
+    statusLabel_ = nil
+    state_.retrying = false
+    state_.retryMessage = nil
+end
+
+local function ShowDisconnectModal(message)
+    if disconnectModal_ ~= nil then
+        SetDisconnectModalStatus(message or "网络连接已断开，请检查网络后重试", false)
+        return
+    end
+    disconnectModal_ = UI.Modal {
+        title = "网络连接断开",
+        size = "sm",
+        closeOnOverlay = false,
+        showCloseButton = false,
+        contentPadding = {18, 20, 20, 20},
+        contentGap = 14,
+        onClose = function()
+            disconnectModal_ = nil
+            retryButton_ = nil
+            statusLabel_ = nil
+        end,
+    }
+
+    statusLabel_ = UI.Label {
+        text = message or "网络连接已断开，请检查网络后重试",
+        fontSize = 15,
+        fontColor = {92, 70, 48, 255},
+        textAlign = "center",
+    }
+
+    retryButton_ = UI.Button {
+        text = "重试连接",
+        height = 44,
+        fontSize = 16,
+        fontWeight = "bold",
+        backgroundColor = {78, 155, 100, 255},
+        fontColor = {255, 255, 255, 255},
+        borderRadius = 16,
+        onClick = function()
+            NetworkRecovery.RetryNow()
+        end,
+    }
+
+    disconnectModal_:AddContent(UI.Panel {
+        gap = 16,
+        children = {
+            UI.Label {
+                text = "当前无法连接到游戏服务器，部分操作可能无法保存。",
+                fontSize = 14,
+                fontColor = {116, 92, 58, 235},
+                textAlign = "center",
+            },
+            statusLabel_,
+            retryButton_,
+        },
+    })
+    ModalAnim.Apply(disconnectModal_, { fixedHeight = 245 })
+    disconnectModal_:Open()
+end
+
 function NetworkRecovery.IsServerConnectionAvailable()
     return IsReadyServerConnectionAvailable()
 end
@@ -92,8 +177,26 @@ function NetworkRecovery.RequestSync(reason)
         economyCloudSystem.RequestCommissions()
     end
     socialGardenSystem.UploadSnapshot()
+    CloseDisconnectModal()
     print("[网络恢复] 已请求服务器权威数据重同步: " .. tostring(syncReason))
     return true
+end
+
+function NetworkRecovery.RetryNow()
+    SetDisconnectModalStatus("正在尝试重新连接服务器...", true)
+    if IsRawServerConnectionAvailable() then
+        state_.serverReady = true
+        state_.rawConnectedWithoutReadyElapsed = 0
+        state_.syncPending = true
+        if NetworkRecovery.RequestSync("manual_retry") then
+            ShowToast("网络已恢复，正在同步数据")
+            return true
+        end
+    end
+    state_.syncPending = true
+    SetDisconnectModalStatus("暂时还没有连接到服务器，请稍后再试", false)
+    ShowToast("暂时无法重连，请稍后再试")
+    return false
 end
 
 function NetworkRecovery.RestoreOwnFarm(message)
@@ -166,10 +269,12 @@ function NetworkRecovery.Update(dt)
 
     state_.wasConnected = connected
     if connected then
+        CloseDisconnectModal()
         NetworkRecovery.RestoreOwnFarm("网络已恢复，已返回我的花园并同步数据")
         NetworkRecovery.RequestSync("network_recovered")
     else
         state_.syncPending = true
+        ShowDisconnectModal("网络连接已断开，请检查网络后点击重试")
         if NetworkRecovery.RestoreOwnFarm("网络连接已断开，已先返回我的花园") then
             print("[网络恢复] 断线时处于拜访模式，已恢复本地花园显示")
         else
@@ -184,6 +289,7 @@ function NetworkRecovery.HandleServerReady()
     state_.rawConnectedWithoutReadyElapsed = 0
     state_.wasConnected = IsReadyServerConnectionAvailable()
     state_.syncPending = false
+    CloseDisconnectModal()
     NetworkRecovery.RestoreOwnFarm("网络已恢复，正在同步我的花园")
 end
 
@@ -195,6 +301,7 @@ function NetworkRecovery.HandleServerDisconnected()
     state_.rawConnectedWithoutReadyElapsed = 0
     state_.rawDisconnectedElapsed = 0
     state_.disconnectedNoticeElapsed = 0
+    ShowDisconnectModal("网络连接已断开，请检查网络后点击重试")
     ShowToast("网络连接已断开，等待恢复")
 end
 

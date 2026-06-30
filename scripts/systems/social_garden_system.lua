@@ -50,6 +50,7 @@ local state_ = {
     },
     lastSyncText = "未同步",
     serverEnabled = false,
+    socialSaveLoaded = false,
     boundConnectionKey = nil,
     stealingMode = false,
     likedGardens = {},
@@ -416,11 +417,16 @@ function SocialGardenSystem.GetSaveData()
 end
 
 function SocialGardenSystem.LoadSaveData(data)
+    state_.socialSaveLoaded = true
     if type(data) ~= "table" then return end
-    state_.visitablePlotIndex = ClampPlotIndex(data.visitablePlotIndex or 1)
+    state_.visitablePlotIndex = math.max(1, math.floor(tonumber(data.visitablePlotIndex or 1) or 1))
     if type(data.daily) == "table" then state_.daily = data.daily end
     if type(data.likedGardens) == "table" then state_.likedGardens = data.likedGardens end
     if type(data.likeDeltas) == "table" then state_.likeDeltas = data.likeDeltas end
+end
+
+function SocialGardenSystem.IsSocialSaveLoaded()
+    return state_.socialSaveLoaded == true
 end
 
 function SocialGardenSystem.GetState()
@@ -482,8 +488,9 @@ end
 function SocialGardenSystem.SetVisitablePlotIndex(plotIndex)
     plotIndex = ClampPlotIndex(plotIndex)
     state_.visitablePlotIndex = plotIndex
+    state_.socialSaveLoaded = true
     if deps_.showToast then deps_.showToast("已将第 " .. plotIndex .. " 块地设为可参观地块") end
-    SocialGardenSystem.UploadSnapshot()
+    SocialGardenSystem.UploadSnapshot({ force = true })
     if deps_.markDirty then deps_.markDirty() end
     EmitSocialChanged("updated")
     return true
@@ -493,9 +500,14 @@ function SocialGardenSystem.BuildSnapshot()
     return BuildSnapshot()
 end
 
-function SocialGardenSystem.UploadSnapshot()
+function SocialGardenSystem.UploadSnapshot(options)
+    options = options or {}
     if state_.mode ~= MODE_OWN then
         print("[社交花园] 当前处于拜访模式，跳过花园快照上传")
+        return false
+    end
+    if options.force ~= true and state_.socialSaveLoaded ~= true then
+        print("[社交花园] 社交存档尚未恢复，跳过自动花园快照上传")
         return false
     end
     local snapshot = BuildSnapshot()
@@ -1159,6 +1171,7 @@ end
 function SocialGardenSystem.HandleSocialStateResponse(data)
     FinishRequest(data.requestId, "socialState")
     if data.success then
+        if data.socialSave ~= nil then SocialGardenSystem.LoadSaveData(data.socialSave) end
         if type(data.friends) == "table" then state_.friends = data.friends end
         if type(data.friendRequests) == "table" then state_.friendRequests = data.friendRequests end
         if type(data.socialNotices) == "table" then state_.socialNotices = data.socialNotices end

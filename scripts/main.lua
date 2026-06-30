@@ -1223,6 +1223,7 @@ function Start()
         ProgressionSystem = ProgressionSystem,
         CommissionSystem = CommissionSystem,
         ActivitySystem = ActivitySystem,
+        SocialGardenSystem = SocialGardenSystem,
         getGold = function() return WalletSystem.GetBalance() end,
         getUserId = function() return PlayerSystem.GetUserId() end,
         syncInventoryRefs = SyncInventoryRefs,

@@ -140,8 +140,19 @@ local function RequireServerUnavailable(reason)
     return false, "server_unavailable"
 end
 
+local function ShowPlotFullMessage()
+    local text = "这块田地已满"
+    ShowToast(text)
+    FloatingToast.Show(text, { fontSize = 20, duration = 1.5, yRatio = 0.38, priority = 8 })
+end
+
 function PlantActionController.PlantSeedAt(plotIndex, plantIndex, centerLocalPos, options)
     options = options or {}
+    local plot = GetPlots()[plotIndex]
+    if plot ~= nil and plot.plants ~= nil and #plot.plants >= deps_.config.MaxCropsPerPlot then
+        ShowPlotFullMessage()
+        return false, "plot_full"
+    end
     if options.serverConfirmed ~= true and deps_.EconomyCloudSystem ~= nil and deps_.EconomyCloudSystem.PlantSeed ~= nil then
         local requested = deps_.EconomyCloudSystem.PlantSeed({
             requestId = NextRequestId("plant"),
@@ -475,7 +486,7 @@ function PlantActionController.PerformPlotAction(plotIndex, localPos)
     if deps_.getPlantTab() == "seed" then
         -- 播种模式：点击土地播种
         if deps_.countPlotPlants(plot) >= deps_.config.MaxCropsPerPlot then
-            ShowToast("这块田地已满")
+            ShowPlotFullMessage()
         elseif not PlantActionController.EnsureSelectedSeedAvailable() then
             ShowToast("没有可用种子，前往商店购买")
         else

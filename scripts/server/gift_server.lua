@@ -94,6 +94,12 @@ local function NormalizePositiveCount(value, maxValue)
     return count
 end
 
+local function GetExistingEconomyState(scores)
+    local state = scores and scores[deps_.Shared.KEYS.ECONOMY_STATE]
+    if type(state) ~= "table" then return nil end
+    return deps_.normalizeEconomyState(state)
+end
+
 local function GetSeedName(seedId)
     if deps_.getSeedName ~= nil then
         return deps_.getSeedName(seedId)
@@ -364,7 +370,11 @@ function GiftServer.ClaimGift(uid, giftId, fallbackSeedId, fallbackCount, connec
                     end
                     serverCloud:Get(uid, Shared.KEYS.ECONOMY_STATE, {
                         ok = function(scores)
-                            local state = deps_.normalizeEconomyState(scores[Shared.KEYS.ECONOMY_STATE] or deps_.buildInitialEconomyState())
+                            local state = GetExistingEconomyState(scores)
+                            if state == nil then
+                                SendError(connection, Shared.EVENTS.CLAIM_GIFT_RESPONSE, "SAVE_NOT_INITIALIZED", "存档尚未初始化，请重新进入游戏", { requestId = requestId })
+                                return
+                            end
                             local owned = tonumber(state.seedBag[seedId] or 0) or 0
                             state.seedBag[seedId] = owned + count
                             state.updatedAt = Now()
