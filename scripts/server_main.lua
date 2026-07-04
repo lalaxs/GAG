@@ -7,6 +7,7 @@
 
 local Shared = require("network.shared")
 local GameConfig = require("config.game_config")
+local ServerConfig = require("config.server_tuning")
 local InventoryRules = require("systems.inventory_rules")
 local RequestGuard = require("server.request_guard")
 local GiftServer = require("server.gift_server")
@@ -23,27 +24,15 @@ local ServerEconomyActions = require("server.server_economy_actions")
 local ServerLeaderboard = require("server.server_leaderboard")
 local ServerSteal = require("server.server_steal")
 local ServerEventHandlers = require("server.server_event_handlers")
+local ServerGlobals = require("runtime.server_globals")
+local ServerBootstrap = require("runtime.server_bootstrap")
 ServerUtils.Init({ GameConfig = GameConfig })
 
 local scene_ = nil
 local connections_ = {}
 local connectionUsers_ = {}
 
-local DAILY_STEAL_LIMIT = 5
-local DAILY_STEAL_AD_LIMIT = 5
-local DAILY_SEED_PACK_AD_LIMIT = 5
-local DAILY_MATURE_AD_LIMIT = 5
-local AD_STEAL_BONUS = 5
-local AD_RARE_PACK_COUNT = 5
-local DAILY_GIFT_LIMIT = 5
-local MAX_SOCIAL_ROWS = 20
-local START_GOLD = 150
-local MAX_OPEN_PACK_COUNT = 50
-local MAX_GIFT_COUNT = 1
-local GLOBAL_SHOP_UID = 858557875
-local SEED_SHOP_REFRESH_INTERVAL = 300
-local INCOME_RANK_REFRESH_INTERVAL = 7 * 24 * 60 * 60
-local ACTIVITY_RANK_REWARD_TOP = 20
+local ServerTuning = ServerConfig.Tuning
 local function Now()
     return ServerUtils.Now()
 end
@@ -54,6 +43,18 @@ end
 
 local function GetConnectionUserId(connection)
     return ServerUtils.GetConnectionUserId(connection)
+end
+
+local function ReadConnectionIdentity(connection)
+    return ServerUtils.ReadConnectionIdentity(connection)
+end
+
+local function RegisterConnectionUserId(connection, uid)
+    return ServerUtils.RegisterConnectionUserId(connection, uid)
+end
+
+local function ClearConnectionUserId(connection)
+    ServerUtils.ClearConnectionUserId(connection)
 end
 
 local function NormalizeUserId(userId)
@@ -358,52 +359,8 @@ local function NormalizeEconomyState(state)
     return ServerEconomyState.NormalizeEconomyState(state)
 end
 
-local TALENT_LEVEL_EXP_TABLE = {
-    [1]  = 30, [2]  = 50, [3]  = 80, [4]  = 120, [5]  = 170,
-    [6]  = 230, [7]  = 300, [8]  = 380, [9]  = 470, [10] = 570,
-    [11] = 680, [12] = 800, [13] = 940, [14] = 1100, [15] = 1280,
-    [16] = 1480, [17] = 1700, [18] = 1950, [19] = 2230, [20] = 2550,
-    [21] = 2900, [22] = 3280, [23] = 3700, [24] = 4160, [25] = 4660,
-    [26] = 5200, [27] = 5780, [28] = 6400, [29] = 7060,
-}
-local TALENT_MAX_LEVEL = 30
-local RARITY_BASE_EXP = { ["普通"] = 5, ["罕见"] = 10, ["稀有"] = 18, ["史诗"] = 30, ["传奇"] = 50 }
-local TALENT_CONFIG = {
-    { id = "drop_rate_1", cost = 1, goldCost = 500, requires = nil }, { id = "drop_rate_2", cost = 1, goldCost = 2000, requires = "drop_rate_1" }, { id = "drop_rate_3", cost = 2, goldCost = 8000, requires = "drop_rate_2" }, { id = "drop_rate_4", cost = 2, goldCost = 30000, requires = "drop_rate_3" }, { id = "drop_rate_5", cost = 3, goldCost = 100000, requires = "drop_rate_4" },
-    { id = "grow_speed_1", cost = 1, goldCost = 800, requires = nil }, { id = "grow_speed_2", cost = 1, goldCost = 3000, requires = "grow_speed_1" }, { id = "grow_speed_3", cost = 2, goldCost = 12000, requires = "grow_speed_2" }, { id = "grow_speed_4", cost = 2, goldCost = 50000, requires = "grow_speed_3" }, { id = "grow_speed_5", cost = 3, goldCost = 160000, requires = "grow_speed_4" },
-    { id = "sell_bonus_1", cost = 1, goldCost = 1000, requires = nil }, { id = "sell_bonus_2", cost = 1, goldCost = 4000, requires = "sell_bonus_1" }, { id = "sell_bonus_3", cost = 2, goldCost = 16000, requires = "sell_bonus_2" }, { id = "sell_bonus_4", cost = 2, goldCost = 70000, requires = "sell_bonus_3" }, { id = "sell_bonus_5", cost = 3, goldCost = 220000, requires = "sell_bonus_4" },
-    { id = "mutation_1", cost = 1, goldCost = 1200, requires = nil }, { id = "mutation_2", cost = 1, goldCost = 5000, requires = "mutation_1" }, { id = "mutation_3", cost = 2, goldCost = 20000, requires = "mutation_2" }, { id = "mutation_4", cost = 2, goldCost = 90000, requires = "mutation_3" }, { id = "mutation_5", cost = 3, goldCost = 300000, requires = "mutation_4" },
-    { id = "bag_capacity_1", cost = 1, goldCost = 600, requires = nil }, { id = "bag_capacity_2", cost = 1, goldCost = 2500, requires = "bag_capacity_1" }, { id = "bag_capacity_3", cost = 2, goldCost = 10000, requires = "bag_capacity_2" }, { id = "bag_capacity_4", cost = 2, goldCost = 40000, requires = "bag_capacity_3" }, { id = "bag_capacity_5", cost = 3, goldCost = 120000, requires = "bag_capacity_4" },
-}
-local DAILY_REWARD_PACK_WEIGHTS = {
-    { packId = "pack_common", weight = 35 }, { packId = "pack_uncommon", weight = 32 },
-    { packId = "pack_rare", weight = 22 }, { packId = "pack_epic", weight = 9 },
-    { packId = "pack_legendary", weight = 2 },
-}
-local SYNTHESIS_MAP = { pack_common = "pack_uncommon", pack_uncommon = "pack_rare", pack_rare = "pack_epic", pack_epic = "pack_legendary" }
-local COMMISSION_STATE_KEY = "garden_commission_state_v1"
-local COMMISSION_REFRESH_INTERVAL = 30 * 60
-local COMMISSION_COUNT = 4
-local COMMISSION_CUSTOMERS = { "露露", "阿麦", "青木", "莓莓", "小枫", "云朵商人", "花园旅人", "星屑收藏家" }
-local COMMISSION_COLOR_REQUIREMENTS = { "yellow", "blue", "red", "white", "purple", "black" }
-local COMMISSION_SPECIAL_REQUIREMENTS = { "wet", "frozen", "cloud", "chocolate", "pollen", "glow", "stardust", "ceramic", "rainbow", "void", "gold" }
-local COMMISSION_PACK_DIFFICULTY = {
-    pack_common = { mutationKinds = { "basic" }, minWeightScale = { 0.90, 1.20 } },
-    pack_uncommon = { mutationKinds = { "color", "basic" }, minWeightScale = { 1.00, 1.40 } },
-    pack_rare = { mutationKinds = { "color", "basic" }, minWeightScale = { 1.05, 1.55 } },
-    pack_epic = { mutationKinds = { "color", "special" }, minWeightScale = { 1.35, 2.20 } },
-    pack_legendary = { mutationKinds = { "special", "giant" }, minWeightScale = { 2.00, 3.60 } },
-}
-local COMMISSION_REWARD_POOLS = {
-    ["普通"] = { { packId = "pack_common", weight = 94 }, { packId = "pack_uncommon", weight = 6 } },
-    ["罕见"] = { { packId = "pack_common", weight = 35 }, { packId = "pack_uncommon", weight = 55 }, { packId = "pack_rare", weight = 10 } },
-    ["稀有"] = { { packId = "pack_common", weight = 18 }, { packId = "pack_uncommon", weight = 30 }, { packId = "pack_rare", weight = 45 }, { packId = "pack_epic", weight = 7 } },
-    ["史诗"] = { { packId = "pack_common", weight = 8 }, { packId = "pack_uncommon", weight = 18 }, { packId = "pack_rare", weight = 32 }, { packId = "pack_epic", weight = 38 }, { packId = "pack_legendary", weight = 4 } },
-    ["传奇"] = { { packId = "pack_common", weight = 3 }, { packId = "pack_uncommon", weight = 10 }, { packId = "pack_rare", weight = 22 }, { packId = "pack_epic", weight = 40 }, { packId = "pack_legendary", weight = 25 } },
-}
-
-local function BuildInitialEconomyState()
-    return ServerEconomyState.BuildInitialEconomyState()
+local function BuildInitialEconomyState(options)
+    return ServerEconomyState.BuildInitialEconomyState(options)
 end
 
 local SERVER_MUTATION_TALENT_BONUSES = {
@@ -516,39 +473,6 @@ local function BuildExpansionRequirement(plotIndex)
     return ServerRewards.BuildExpansionRequirement(plotIndex)
 end
 
-local function RequestAuthFarmState(uid, connection)
-    ServerFarmState.RequestAuthFarmState(uid, connection)
-end
-
-local function RequestEconomyState(uid, connection)
-    ServerEconomyActions.RequestEconomyState(uid, connection)
-end
-
-local function BuySeed(uid, plantIndex, _price, connection, count, requestId, refreshId, recordKey)
-    ServerEconomyActions.BuySeed(uid, plantIndex, _price, connection, count, requestId, refreshId, recordKey)
-end
-
-local function ClearPlayerSave(uid, connection, requestId, recordKey)
-    ServerEconomyActions.ClearPlayerSave(uid, connection, requestId, recordKey)
-end
-
-local function PlantSeedAuthority(uid, payload, connection)
-    ServerEconomyActions.PlantSeedAuthority(uid, payload, connection)
-end
-
-local function HarvestCropAuthority(uid, payload, connection)
-    ServerEconomyActions.HarvestCropAuthority(uid, payload, connection)
-end
-
-local function OpenSeedPackAuthority(uid, payload, connection)
-    ServerEconomyActions.OpenSeedPackAuthority(uid, payload, connection)
-end
-
-local function SellHarvested(uid, sellMode, payload, connection)
-    ServerEconomyActions.SellHarvested(uid, sellMode, payload, connection)
-end
-
-
 local function FindMutationByKey(list, key)
     return ServerCommission.FindMutationByKey(list, key)
 end
@@ -589,48 +513,8 @@ local function CommissionItemMatches(commission, item)
     return ServerCommission.CommissionItemMatches(commission, item)
 end
 
-local function RequestCommissionsAuthority(uid, payload, connection)
-    ServerCommission.RequestCommissionsAuthority(uid, payload, connection)
-end
-
-local function CompleteCommissionAuthority(uid, payload, connection)
-    ServerCommission.CompleteCommissionAuthority(uid, payload, connection)
-end
-
-local function SubmitActivityCropAuthority(uid, payload, connection)
-    ServerActivity.SubmitActivityCropAuthority(uid, payload, connection)
-end
-
-local function ExchangeActivityRewardAuthority(uid, payload, connection)
-    ServerActivity.ExchangeActivityRewardAuthority(uid, payload, connection)
-end
-
-local function DrawActivityPackAuthority(uid, payload, connection)
-    ServerActivity.DrawActivityPackAuthority(uid, payload, connection)
-end
-
 local function MatureAllCropsInPlot(farmState, plotIndex)
     return ServerRewards.MatureAllCropsInPlot(farmState, plotIndex)
-end
-
-local function GrantAdReward(uid, payload, connection)
-    ServerRewards.GrantAdReward(uid, payload, connection)
-end
-
-local function ClaimDailyRewardAuthority(uid, payload, connection)
-    ServerRewards.ClaimDailyRewardAuthority(uid, payload, connection)
-end
-
-local function SynthesizePackAuthority(uid, payload, connection)
-    ServerRewards.SynthesizePackAuthority(uid, payload, connection)
-end
-
-local function UnlockTalentAuthority(uid, payload, connection)
-    ServerRewards.UnlockTalentAuthority(uid, payload, connection)
-end
-
-local function ExpandPlotAuthority(uid, payload, connection)
-    ServerRewards.ExpandPlotAuthority(uid, payload, connection)
 end
 
 local function ReadRequest(eventData)
@@ -653,16 +537,8 @@ local function SendLeaderboardWithMyRank(uid, connection, requestId, info, list)
     ServerLeaderboard.SendLeaderboardWithMyRank(uid, connection, requestId, info, list)
 end
 
-local function RequestLeaderboardAuthority(uid, payload, connection)
-    ServerLeaderboard.RequestLeaderboardAuthority(uid, payload, connection)
-end
-
 local function PickLockedAvatar(unlocked)
     return ServerLeaderboard.PickLockedAvatar(unlocked)
-end
-
-local function ClaimActivityRankRewardAuthority(uid, payload, connection)
-    ServerLeaderboard.ClaimActivityRankRewardAuthority(uid, payload, connection)
 end
 
 local function GetStealChance(crop)
@@ -681,189 +557,41 @@ local function BuildStealCropClaimKey(cropId)
     return ServerSteal.BuildStealCropClaimKey(cropId)
 end
 
-local function RequestStealWithQuotaAvailable(uid, targetUid, cropIndex, cropId, connection, requestId, requestRecordKey, stealLimit)
-    ServerSteal.RequestStealWithQuotaAvailable(uid, targetUid, cropIndex, cropId, connection, requestId, requestRecordKey, stealLimit)
-end
-
-local function RequestSteal(uid, targetUid, cropIndex, cropId, connection, requestId, requestRecordKey)
-    ServerSteal.RequestSteal(uid, targetUid, cropIndex, cropId, connection, requestId, requestRecordKey)
-end
-
 local function SendPlayerProfile(uid, connection)
     if uid == nil then return end
-    if GetUserNickname == nil then
-        Send(connection, Shared.EVENTS.PLAYER_PROFILE, { success = true, userId = NormalizeUserId(uid) or uid, nickname = "Tap玩家" })
-        return
+
+    local function deliverProfile(nickname, avatar)
+        Send(connection, Shared.EVENTS.PLAYER_PROFILE, {
+            success = true,
+            userId = uid,
+            nickname = nickname or "Tap玩家",
+            avatar = avatar,
+        })
     end
-    GetUserNickname({
-        userIds = { uid },
-        onSuccess = function(response)
-            local nickname = "Tap玩家"
-            for _, info in ipairs(GetNicknameRows(response)) do
-                if SameUserId(info.userId, uid) and info.nickname ~= nil and info.nickname ~= "" then
-                    nickname = info.nickname
-                    break
+
+    SocialServer.GetPlayerGardenAvatar(uid, function(avatar)
+        if GetUserNickname == nil then
+            deliverProfile("Tap玩家", avatar)
+            return
+        end
+        GetUserNickname({
+            userIds = { uid },
+            onSuccess = function(response)
+                local nickname = "Tap玩家"
+                for _, info in ipairs(GetNicknameRows(response)) do
+                    if SameUserId(info.userId, uid) and info.nickname ~= nil and info.nickname ~= "" then
+                        nickname = info.nickname
+                        break
+                    end
                 end
-            end
-            Send(connection, Shared.EVENTS.PLAYER_PROFILE, { success = true, userId = NormalizeUserId(uid) or uid, nickname = nickname })
-        end,
-        onError = function(errorCode)
-            print("[玩家资料] 服务端昵称查询失败: " .. tostring(errorCode))
-            Send(connection, Shared.EVENTS.PLAYER_PROFILE, { success = true, userId = NormalizeUserId(uid) or uid, nickname = "Tap玩家" })
-        end,
-    })
-end
-
-function HandleClientConnected(eventType, eventData)
-    ServerEventHandlers.HandleClientConnected(eventType, eventData)
-end
-
-function HandleClientIdentity(eventType, eventData)
-    ServerEventHandlers.HandleClientIdentity(eventType, eventData)
-end
-
-function HandleClientDisconnected(eventType, eventData)
-    ServerEventHandlers.HandleClientDisconnected(eventType, eventData)
-end
-
-function HandleGardenClientReady(eventType, eventData)
-    ServerEventHandlers.HandleGardenClientReady(eventType, eventData)
-end
-
-function HandleGardenSaveSnapshot(eventType, eventData)
-    ServerEventHandlers.HandleGardenSaveSnapshot(eventType, eventData)
-end
-
-function HandleGardenRequestSnapshot(eventType, eventData)
-    ServerEventHandlers.HandleGardenRequestSnapshot(eventType, eventData)
-end
-
-function HandleGardenRequestRank(eventType, eventData)
-    ServerEventHandlers.HandleGardenRequestRank(eventType, eventData)
-end
-
-function HandleGardenRequestLeaderboard(eventType, eventData)
-    ServerEventHandlers.HandleGardenRequestLeaderboard(eventType, eventData)
-end
-
-function HandleGardenClaimActivityRankReward(eventType, eventData)
-    ServerEventHandlers.HandleGardenClaimActivityRankReward(eventType, eventData)
-end
-
-function HandleGardenRequestSteal(eventType, eventData)
-    ServerEventHandlers.HandleGardenRequestSteal(eventType, eventData)
-end
-
-function HandleGardenRequestSocialState(eventType, eventData)
-    ServerEventHandlers.HandleGardenRequestSocialState(eventType, eventData)
-end
-
-function HandleGardenRequestEconomyState(eventType, eventData)
-    ServerEventHandlers.HandleGardenRequestEconomyState(eventType, eventData)
-end
-
-function HandleGardenRequestSeedShop(eventType, eventData)
-    ServerEventHandlers.HandleGardenRequestSeedShop(eventType, eventData)
-end
-
-function HandleGardenRequestAuthFarm(eventType, eventData)
-    ServerEventHandlers.HandleGardenRequestAuthFarm(eventType, eventData)
-end
-
-function HandleGardenRequestAdReward(eventType, eventData)
-    ServerEventHandlers.HandleGardenRequestAdReward(eventType, eventData)
-end
-
-function HandleGardenBuySeed(eventType, eventData)
-    ServerEventHandlers.HandleGardenBuySeed(eventType, eventData)
-end
-
-function HandleGardenClearSave(eventType, eventData)
-    ServerEventHandlers.HandleGardenClearSave(eventType, eventData)
-end
-
-function HandleGardenPlantSeed(eventType, eventData)
-    ServerEventHandlers.HandleGardenPlantSeed(eventType, eventData)
-end
-
-function HandleGardenHarvestCrop(eventType, eventData)
-    ServerEventHandlers.HandleGardenHarvestCrop(eventType, eventData)
-end
-
-function HandleGardenOpenSeedPack(eventType, eventData)
-    ServerEventHandlers.HandleGardenOpenSeedPack(eventType, eventData)
-end
-
-function HandleGardenSellHarvested(eventType, eventData)
-    ServerEventHandlers.HandleGardenSellHarvested(eventType, eventData)
-end
-
-function HandleGardenRequestCommissions(eventType, eventData)
-    ServerEventHandlers.HandleGardenRequestCommissions(eventType, eventData)
-end
-
-function HandleGardenCompleteCommission(eventType, eventData)
-    ServerEventHandlers.HandleGardenCompleteCommission(eventType, eventData)
-end
-
-function HandleGardenSubmitActivityCrop(eventType, eventData)
-    ServerEventHandlers.HandleGardenSubmitActivityCrop(eventType, eventData)
-end
-
-function HandleGardenExchangeActivityReward(eventType, eventData)
-    ServerEventHandlers.HandleGardenExchangeActivityReward(eventType, eventData)
-end
-
-function HandleGardenDrawActivityPack(eventType, eventData)
-    ServerEventHandlers.HandleGardenDrawActivityPack(eventType, eventData)
-end
-
-function HandleGardenClaimDailyReward(eventType, eventData)
-    ServerEventHandlers.HandleGardenClaimDailyReward(eventType, eventData)
-end
-
-function HandleGardenSynthesizePack(eventType, eventData)
-    ServerEventHandlers.HandleGardenSynthesizePack(eventType, eventData)
-end
-
-function HandleGardenUnlockTalent(eventType, eventData)
-    ServerEventHandlers.HandleGardenUnlockTalent(eventType, eventData)
-end
-
-function HandleGardenExpandPlot(eventType, eventData)
-    ServerEventHandlers.HandleGardenExpandPlot(eventType, eventData)
-end
-
-function HandleGardenSendSeedGift(eventType, eventData)
-    ServerEventHandlers.HandleGardenSendSeedGift(eventType, eventData)
-end
-
-function HandleGardenLikeGarden(eventType, eventData)
-    ServerEventHandlers.HandleGardenLikeGarden(eventType, eventData)
-end
-
-function HandleGardenSendFriendRequest(eventType, eventData)
-    ServerEventHandlers.HandleGardenSendFriendRequest(eventType, eventData)
-end
-
-function HandleGardenRespondFriendRequest(eventType, eventData)
-    ServerEventHandlers.HandleGardenRespondFriendRequest(eventType, eventData)
-end
-
-function HandleGardenRemoveFriend(eventType, eventData)
-    ServerEventHandlers.HandleGardenRemoveFriend(eventType, eventData)
-end
-
-function HandleGardenClearSocialMessages(eventType, eventData)
-    ServerEventHandlers.HandleGardenClearSocialMessages(eventType, eventData)
-end
-
-function HandleGardenRequestGifts(eventType, eventData)
-    ServerEventHandlers.HandleGardenRequestGifts(eventType, eventData)
-end
-
-function HandleGardenClaimGift(eventType, eventData)
-    ServerEventHandlers.HandleGardenClaimGift(eventType, eventData)
+                deliverProfile(nickname, avatar)
+            end,
+            onError = function(errorCode)
+                print("[玩家资料] 服务端昵称查询失败: " .. tostring(errorCode))
+                deliverProfile("Tap玩家", avatar)
+            end,
+        })
+    end)
 end
 
 local function PickGiftSeedId()
@@ -879,151 +607,72 @@ local function PickGiftSeedId()
 end
 
 function Start()
-    math.randomseed(os.time())
-    scene_ = Scene()
-    ServerShop.Init({
+    ServerBootstrap.Start({
         Shared = Shared,
         GameConfig = GameConfig,
-        globalShopUid = GLOBAL_SHOP_UID,
-        refreshInterval = SEED_SHOP_REFRESH_INTERVAL,
-        getConnections = function() return connections_ end,
-        send = Send,
-        now = Now,
-        deepCopy = DeepCopy,
-    })
-    ServerCropRules.Init({
-        GameConfig = GameConfig,
+        ServerTuning = ServerTuning,
+        ServerConfig = ServerConfig,
         InventoryRules = InventoryRules,
+        RequestGuard = RequestGuard,
+        ServerShop = ServerShop,
+        ServerCropRules = ServerCropRules,
+        ServerFarmState = ServerFarmState,
+        ServerEconomyState = ServerEconomyState,
+        ServerCommission = ServerCommission,
+        ServerActivity = ServerActivity,
+        ServerLeaderboard = ServerLeaderboard,
+        ServerRewards = ServerRewards,
+        ServerEconomyActions = ServerEconomyActions,
+        ServerSteal = ServerSteal,
+        GiftServer = GiftServer,
+        SocialServer = SocialServer,
+        ServerEventHandlers = ServerEventHandlers,
+        ServerGlobals = ServerGlobals,
+        SERVER_MUTATION_TALENT_BONUSES = SERVER_MUTATION_TALENT_BONUSES,
+        DEFAULT_HARVEST_BAG_CAPACITY = DEFAULT_HARVEST_BAG_CAPACITY,
+        MAX_HARVEST_BAG_CAPACITY = MAX_HARVEST_BAG_CAPACITY,
+        BAG_CAPACITY_BONUSES = BAG_CAPACITY_BONUSES,
+        connections = connections_,
+        connectionUsers = connectionUsers_,
+        setScene = function(scene) scene_ = scene end,
+        getScene = function() return scene_ end,
+        Send = Send,
         Now = Now,
+        DeepCopy = DeepCopy,
+        PickGiftSeedId = PickGiftSeedId,
         NormalizePlantIndex = NormalizePlantIndex,
         NormalizePlotIndex = NormalizePlotIndex,
         NormalizeLocalPos = NormalizeLocalPos,
+        NormalizePositiveCount = NormalizePositiveCount,
+        NormalizeUserId = NormalizeUserId,
+        NormalizeEconomyState = NormalizeEconomyState,
+        NormalizeFarmState = NormalizeFarmState,
+        NormalizeActivityState = NormalizeActivityState,
+        NormalizeTalentState = NormalizeTalentState,
+        NormalizeProgressionState = NormalizeProgressionState,
+        NormalizeDailyTaskState = NormalizeDailyTaskState,
+        BuildInitialEconomyState = BuildInitialEconomyState,
+        NextRevision = NextRevision,
         RollWeighted = RollWeighted,
         RandomRange = RandomRange,
         RandItem = RandItem,
-        ClampValue = ClampValue,
-    })
-    ServerFarmState.Init({
-        Shared = Shared,
-        GameConfig = GameConfig,
-        Send = Send,
-        Now = Now,
-        NormalizePlotIndex = NormalizePlotIndex,
-        NormalizeLocalPos = NormalizeLocalPos,
-        RecalculateAuthoritativeItemPrice = RecalculateAuthoritativeItemPrice,
-        BuildUidKeyCandidates = ServerUtils.BuildUidKeyCandidates,
-        GetCanonicalUidKey = ServerUtils.GetCanonicalUidKey,
-    })
-    ServerEconomyState.Init({
-        Shared = Shared,
-        GameConfig = GameConfig,
-        startGold = START_GOLD,
-        talentMaxLevel = TALENT_MAX_LEVEL,
-        serverMutationTalentBonuses = SERVER_MUTATION_TALENT_BONUSES,
-        defaultHarvestBagCapacity = DEFAULT_HARVEST_BAG_CAPACITY,
-        maxHarvestBagCapacity = MAX_HARVEST_BAG_CAPACITY,
-        bagCapacityBonuses = BAG_CAPACITY_BONUSES,
-        Now = Now,
         CopyNumericKeyMap = CopyNumericKeyMap,
         RecalculateAuthoritativeItemPrice = RecalculateAuthoritativeItemPrice,
         CalculateAuthFarmTourValue = CalculateAuthFarmTourValue,
         GetActivityRankInfo = GetActivityRankInfo,
         GetIncomeRankInfo = GetIncomeRankInfo,
-    })
-    ServerCommission.Init({
-        Shared = Shared,
-        GameConfig = GameConfig,
-        Send = Send,
-        Now = Now,
-        RandItem = RandItem,
-        RandomRange = RandomRange,
-        RollWeighted = RollWeighted,
-        NormalizeEconomyState = NormalizeEconomyState,
-        BuildInitialEconomyState = BuildInitialEconomyState,
-        NextRevision = NextRevision,
-    })
-    ServerActivity.Init({
-        Shared = Shared,
-        GameConfig = GameConfig,
-        RequestGuard = RequestGuard,
-        Send = Send,
-        Now = Now,
-        NormalizeActivityState = NormalizeActivityState,
-        NormalizeEconomyState = NormalizeEconomyState,
-        BuildInitialEconomyState = BuildInitialEconomyState,
-        NormalizePositiveCount = NormalizePositiveCount,
-        NormalizePlantIndex = NormalizePlantIndex,
-        IsValidPackId = IsValidPackId,
-        RollWeighted = RollWeighted,
-        NextRevision = NextRevision,
-        AddActivityRankCommit = AddActivityRankCommit,
-    })
-    ServerLeaderboard.Init({
-        Shared = Shared,
-        GameConfig = GameConfig,
-        RequestGuard = RequestGuard,
-        SocialServer = SocialServer,
-        Send = Send,
-        Now = Now,
         GetCurrentActivityCycleInfo = GetCurrentActivityCycleInfo,
         GetPreviousActivityCycleInfo = GetPreviousActivityCycleInfo,
         GetActivityConfig = GetActivityConfig,
-        NormalizePositiveCount = NormalizePositiveCount,
         GetNicknameMap = GetNicknameMap,
-        incomeRankRefreshInterval = INCOME_RANK_REFRESH_INTERVAL,
-        activityRankRewardTop = ACTIVITY_RANK_REWARD_TOP,
-    })
-    ServerRewards.Init({
-        Shared = Shared,
-        GameConfig = GameConfig,
-        RequestGuard = RequestGuard,
-        SocialServer = SocialServer,
-        Send = Send,
-        Now = Now,
-        NormalizeTalentState = NormalizeTalentState,
-        NormalizeProgressionState = NormalizeProgressionState,
-        NormalizeDailyTaskState = NormalizeDailyTaskState,
-        NormalizeEconomyState = NormalizeEconomyState,
-        NormalizeFarmState = NormalizeFarmState,
-        BuildInitialEconomyState = BuildInitialEconomyState,
-        GetFarmPlot = GetFarmPlot,
-        SyncProgressionTourValueFromFarm = SyncProgressionTourValueFromFarm,
-        AddTourRankCommit = AddTourRankCommit,
-        NextRevision = NextRevision,
-        RollWeighted = RollWeighted,
-        NormalizePlotIndex = NormalizePlotIndex,
-        dailyStealLimit = DAILY_STEAL_LIMIT,
-        dailyStealAdLimit = DAILY_STEAL_AD_LIMIT,
-        dailySeedPackAdLimit = DAILY_SEED_PACK_AD_LIMIT,
-        dailyMatureAdLimit = DAILY_MATURE_AD_LIMIT,
-        adStealBonus = AD_STEAL_BONUS,
-        adRarePackCount = AD_RARE_PACK_COUNT,
-    })
-    ServerEconomyActions.Init({
-        Shared = Shared,
-        GameConfig = GameConfig,
-        RequestGuard = RequestGuard,
-        Send = Send,
-        SendError = SendError,
-        Now = Now,
-        NormalizePlantIndex = NormalizePlantIndex,
-        NormalizePositiveCount = NormalizePositiveCount,
-        NormalizePlotIndex = NormalizePlotIndex,
-        NormalizeLocalPos = NormalizeLocalPos,
-        NormalizeEconomyState = NormalizeEconomyState,
-        BuildInitialEconomyState = BuildInitialEconomyState,
-        NormalizeFarmState = NormalizeFarmState,
-        GetFarmPlot = GetFarmPlot,
-        NormalizeDailyTaskState = NormalizeDailyTaskState,
-        NextRevision = NextRevision,
-        AddTourRankCommit = AddTourRankCommit,
         AddActivityRankCommit = AddActivityRankCommit,
+        AddTourRankCommit = AddTourRankCommit,
         AddIncomeRankCommit = AddIncomeRankCommit,
         EnsureSeedShopState = EnsureSeedShopState,
         SendFullAvailableSeedShop = SendFullAvailableSeedShop,
         BroadcastFullAvailableSeedShop = BroadcastFullAvailableSeedShop,
         BuildSeedShopQuotaKey = BuildSeedShopQuotaKey,
-        globalShopUid = GLOBAL_SHOP_UID,
+        SendSeedShopState = SendSeedShopState,
         GetServerMutationTalentBonus = GetServerMutationTalentBonus,
         GetMaxCropsPerPlot = GetMaxCropsPerPlot,
         BuildAuthoritativeCrop = BuildAuthoritativeCrop,
@@ -1037,98 +686,38 @@ function Start()
         RollSeedFromPack = RollSeedFromPack,
         IsValidPackId = IsValidPackId,
         IsValidSellMode = IsValidSellMode,
-        maxOpenPackCount = MAX_OPEN_PACK_COUNT,
-        BuildUidKeyCandidates = ServerUtils.BuildUidKeyCandidates,
-        GetCanonicalUidKey = ServerUtils.GetCanonicalUidKey,
-    })
-    ServerSteal.Init({
-        Shared = Shared,
-        RequestGuard = RequestGuard,
-        Send = Send,
-        Now = Now,
-        NormalizePlantIndex = NormalizePlantIndex,
-        NormalizePositiveCount = NormalizePositiveCount,
-        NormalizeEconomyState = NormalizeEconomyState,
-        BuildInitialEconomyState = BuildInitialEconomyState,
-        NormalizeFarmState = NormalizeFarmState,
+        BuildVisitGardenFromAuthFarm = BuildVisitGardenFromAuthFarm,
         GetFarmPlot = GetFarmPlot,
         FindFarmCrop = FindFarmCrop,
-        RefreshAuthCrop = RefreshAuthCrop,
-        NextRevision = NextRevision,
-        GetMaxCropsPerPlot = GetMaxCropsPerPlot,
-        dailyStealLimit = DAILY_STEAL_LIMIT,
-    })
-    GiftServer.Init({
-        Shared = Shared,
-        RequestGuard = RequestGuard,
-        dailyGiftLimit = DAILY_GIFT_LIMIT,
-        dailyStealLimit = DAILY_STEAL_LIMIT,
-        dailySeedPackAdLimit = DAILY_SEED_PACK_AD_LIMIT,
-        dailyMatureAdLimit = DAILY_MATURE_AD_LIMIT,
-        maxGiftCount = MAX_GIFT_COUNT,
-        normalizePlantIndex = NormalizePlantIndex,
-        normalizeEconomyState = NormalizeEconomyState,
-        buildInitialEconomyState = BuildInitialEconomyState,
-        nextRevision = NextRevision,
-        pickGiftSeedId = PickGiftSeedId,
-        getSeedName = function(seedId)
-            local plant = GameConfig.PLANTS[tonumber(seedId or 0) or 0]
-            return plant and plant.name or "神秘"
-        end,
-    })
-    SocialServer.Init({
-        Shared = Shared,
-        RequestGuard = RequestGuard,
-        maxSocialRows = MAX_SOCIAL_ROWS,
-        dailyStealLimit = DAILY_STEAL_LIMIT,
-        dailySeedPackAdLimit = DAILY_SEED_PACK_AD_LIMIT,
-        dailyMatureAdLimit = DAILY_MATURE_AD_LIMIT,
-        normalizePositiveCount = NormalizePositiveCount,
-        normalizePlantIndex = NormalizePlantIndex,
-        normalizeUserId = NormalizeUserId,
-        buildUidKeyCandidates = ServerUtils.BuildUidKeyCandidates,
-        getCanonicalUidKey = ServerUtils.GetCanonicalUidKey,
-        buildVisitGardenFromAuthFarm = BuildVisitGardenFromAuthFarm,
-    })
-    ServerEventHandlers.Init({
-        Shared = Shared,
-        RequestGuard = RequestGuard,
-        SocialServer = SocialServer,
-        GiftServer = GiftServer,
-        connections = connections_,
-        connectionUsers = connectionUsers_,
-        scene = scene_,
+        SendError = SendError,
+        SendPlayerProfile = SendPlayerProfile,
+        RequestEconomyState = ServerEconomyActions.RequestEconomyState,
+        RequestAuthFarmState = ServerFarmState.RequestAuthFarmState,
+        RequestLeaderboardAuthority = ServerLeaderboard.RequestLeaderboardAuthority,
+        ClaimActivityRankRewardAuthority = ServerLeaderboard.ClaimActivityRankRewardAuthority,
+        RequestSteal = ServerSteal.RequestSteal,
+        GrantAdReward = ServerRewards.GrantAdReward,
+        BuySeed = ServerEconomyActions.BuySeed,
+        ClearPlayerSave = ServerEconomyActions.ClearPlayerSave,
+        PlantSeedAuthority = ServerEconomyActions.PlantSeedAuthority,
+        HarvestCropAuthority = ServerEconomyActions.HarvestCropAuthority,
+        OpenSeedPackAuthority = ServerEconomyActions.OpenSeedPackAuthority,
+        SellHarvested = ServerEconomyActions.SellHarvested,
+        RequestCommissionsAuthority = ServerCommission.RequestCommissionsAuthority,
+        CompleteCommissionAuthority = ServerCommission.CompleteCommissionAuthority,
+        SubmitActivityCropAuthority = ServerActivity.SubmitActivityCropAuthority,
+        ExchangeActivityRewardAuthority = ServerActivity.ExchangeActivityRewardAuthority,
+        DrawActivityPackAuthority = ServerActivity.DrawActivityPackAuthority,
+        ClaimDailyRewardAuthority = ServerRewards.ClaimDailyRewardAuthority,
+        SynthesizePackAuthority = ServerRewards.SynthesizePackAuthority,
+        UnlockTalentAuthority = ServerRewards.UnlockTalentAuthority,
+        ExpandPlotAuthority = ServerRewards.ExpandPlotAuthority,
         GetConnectionKey = GetConnectionKey,
         GetConnectionUserId = GetConnectionUserId,
+        ReadConnectionIdentity = ReadConnectionIdentity,
+        RegisterConnectionUserId = RegisterConnectionUserId,
+        ClearConnectionUserId = ClearConnectionUserId,
         GetRequestUserId = GetRequestUserId,
-        NormalizeUserId = NormalizeUserId,
         ReadRequest = ReadRequest,
-        Send = Send,
-        SendSeedShopState = SendSeedShopState,
-        SendPlayerProfile = SendPlayerProfile,
-        RequestEconomyState = RequestEconomyState,
-        RequestAuthFarmState = RequestAuthFarmState,
-        RequestLeaderboardAuthority = RequestLeaderboardAuthority,
-        ClaimActivityRankRewardAuthority = ClaimActivityRankRewardAuthority,
-        RequestSteal = RequestSteal,
-        GrantAdReward = GrantAdReward,
-        BuySeed = BuySeed,
-        ClearPlayerSave = ClearPlayerSave,
-        PlantSeedAuthority = PlantSeedAuthority,
-        HarvestCropAuthority = HarvestCropAuthority,
-        OpenSeedPackAuthority = OpenSeedPackAuthority,
-        SellHarvested = SellHarvested,
-        RequestCommissionsAuthority = RequestCommissionsAuthority,
-        CompleteCommissionAuthority = CompleteCommissionAuthority,
-        SubmitActivityCropAuthority = SubmitActivityCropAuthority,
-        ExchangeActivityRewardAuthority = ExchangeActivityRewardAuthority,
-        DrawActivityPackAuthority = DrawActivityPackAuthority,
-        ClaimDailyRewardAuthority = ClaimDailyRewardAuthority,
-        SynthesizePackAuthority = SynthesizePackAuthority,
-        UnlockTalentAuthority = UnlockTalentAuthority,
-        ExpandPlotAuthority = ExpandPlotAuthority,
     })
-    Shared.RegisterServerEvents()
-    ServerEventHandlers.Register()
-    print("[社交花园服务端] 权威农场服务已启动")
 end

@@ -7,6 +7,7 @@
 -- ============================================================================
 
 local UI = require("urhox-libs/UI")
+local AppVersion = require("utils.app_version")
 local SettingsView = require("ui.settings_view")
 local FloatingToast = require("ui.floating_toast")
 local ProfileView = require("ui.profile_view")
@@ -101,6 +102,33 @@ local function BuildActionButton()
                 deps_.enterFarmView()
             end
         end,
+    }
+end
+
+--- 版本号叠在按钮下方，不参与 flex 高度，避免把「开始种植」顶上去。
+local function BuildActionButtonWithVersion(actionButton)
+    return UI.Panel {
+        width = 228,
+        height = 90,
+        overflow = "visible",
+        alignItems = "center",
+        justifyContent = "center",
+        pointerEvents = "box-none",
+        children = {
+            actionButton,
+            UI.Label {
+                position = "absolute",
+                top = 94,
+                left = 0,
+                right = 0,
+                text = AppVersion.GetDisplayLabel(),
+                fontSize = 11,
+                fontColor = {255, 250, 235, 170},
+                textAlign = "center",
+                maxLines = 1,
+                pointerEvents = "none",
+            },
+        },
     }
 end
 
@@ -295,7 +323,7 @@ local function BuildFarmControls(labels, actionButton)
                     },
                 },
             },
-            actionButton,
+            BuildActionButtonWithVersion(actionButton),
             UI.Panel {
                 width = 90,
                 height = 190,

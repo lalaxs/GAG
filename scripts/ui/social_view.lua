@@ -820,10 +820,12 @@ local function BuildFriendsSection()
     local system = GetSystem()
     local friends = system.GetFriends()
     local rows = {}
-    for _, entry in ipairs(friends) do
-        table.insert(rows, BuildFriendRow(entry))
-    end
-    if #rows == 0 then
+    local waitingFirstSync = system.IsSocialStateLoading
+        and system.IsSocialStateLoading()
+        and system.HasSocialStateSynced
+        and not system.HasSocialStateSynced()
+
+    if waitingFirstSync then
         table.insert(rows, UI.Panel {
             height = 160,
             alignItems = "center",
@@ -833,9 +835,27 @@ local function BuildFriendsSection()
             borderWidth = 3,
             borderColor = COLORS.border,
             children = {
-                UI.Label { text = "暂无好友数据", fontSize = 15, fontWeight = "bold", fontColor = COLORS.text },
+                UI.Label { text = "正在同步好友资料...", fontSize = 15, fontWeight = "bold", fontColor = COLORS.text },
             },
         })
+    else
+        for _, entry in ipairs(friends) do
+            table.insert(rows, BuildFriendRow(entry))
+        end
+        if #rows == 0 then
+            table.insert(rows, UI.Panel {
+                height = 160,
+                alignItems = "center",
+                justifyContent = "center",
+                backgroundColor = COLORS.surfaceRaised,
+                borderRadius = 20,
+                borderWidth = 3,
+                borderColor = COLORS.border,
+                children = {
+                    UI.Label { text = "暂无好友数据", fontSize = 15, fontWeight = "bold", fontColor = COLORS.text },
+                },
+            })
+        end
     end
 
     return UI.Panel {
@@ -941,10 +961,12 @@ local function BuildMessageRow(text, actions)
 end
 
 local function BuildSocialNoticeText(notice)
-    local name = tostring(notice.fromNickname or notice.fromUserId or "玩家")
     if notice.type == "friend_request_sent" then
+        local name = tostring(notice.targetNickname or notice.targetUserId or "玩家")
         return "已向 " .. name .. " 发送好友申请"
-    elseif notice.type == "friend_request_accepted" then
+    end
+    local name = tostring(notice.fromNickname or notice.fromUserId or "玩家")
+    if notice.type == "friend_request_accepted" then
         return name .. " 已同意你的好友申请"
     elseif notice.type == "friend_request_rejected" then
         return name .. " 已拒绝你的好友申请"

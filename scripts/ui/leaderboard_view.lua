@@ -7,6 +7,7 @@
 -- ============================================================================
 
 local UI = require("urhox-libs/UI")
+local UserId = require("utils.user_id")
 local EventBus = require("utils.event_bus")
 local UIEvents = require("utils.ui_events")
 local ModalAnim = require("ui.modal_anim")
@@ -203,8 +204,17 @@ local function GetAvatarImagePath(avatar)
     return nil
 end
 
+local function IsSelfEntry(entry)
+    if entry == nil then return false end
+    local myUserId = deps_.getMyUserId and deps_.getMyUserId() or nil
+    if entry.userId ~= nil and myUserId ~= nil then
+        return UserId.Same(entry.userId, myUserId)
+    end
+    return entry.isMe == true
+end
+
 local function ResolveAvatar(entry)
-    if entry ~= nil and entry.isMe == true and deps_.getMyAvatar ~= nil then
+    if entry ~= nil and IsSelfEntry(entry) and deps_.getMyAvatar ~= nil then
         return deps_.getMyAvatar() or entry.avatar
     end
     return entry and entry.avatar or nil
@@ -260,7 +270,7 @@ local function VisitPlayer(userId)
 end
 
 local function BuildVisitButton(entry)
-    if entry == nil or entry.userId == nil or entry.isMe == true then
+    if entry == nil or entry.userId == nil or IsSelfEntry(entry) then
         return UI.Panel { width = 72, height = 40 }
     end
     return UI.Button {
@@ -305,10 +315,10 @@ local function BuildLeaderboardRow(entry)
         gap = 12,
         paddingLeft = 14,
         paddingRight = 12,
-        backgroundColor = entry.isMe and {255, 248, 222, 255} or {255, 252, 242, 248},
+        backgroundColor = IsSelfEntry(entry) and {255, 248, 222, 255} or {255, 252, 242, 248},
         borderRadius = 18,
-        borderWidth = entry.isMe and 3 or 2,
-        borderColor = entry.isMe and COLORS.borderStrong or COLORS.border,
+        borderWidth = IsSelfEntry(entry) and 3 or 2,
+        borderColor = IsSelfEntry(entry) and COLORS.borderStrong or COLORS.border,
         children = {
             BuildRankLabel(entry.rank),
             BuildAvatar(entry, 68),
@@ -318,7 +328,7 @@ local function BuildLeaderboardRow(entry)
                 gap = 5,
                 children = {
                     UI.Label {
-                        text = entry.isMe and ((entry.nickname or "你") .. "  我") or (entry.nickname or tostring(entry.userId or "Tap玩家")),
+                        text = IsSelfEntry(entry) and ((entry.nickname or "你") .. "  我") or (entry.nickname or tostring(entry.userId or "Tap玩家")),
                         fontSize = 14,
                         fontWeight = "bold",
                         fontColor = COLORS.text,

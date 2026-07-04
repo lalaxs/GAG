@@ -8,35 +8,24 @@
 local ServerRewards = {}
 
 local deps_ = {}
+local ServerConfig = require("config.server_tuning")
+local ServerCloudStore = require("server.server_cloud_store")
 
-local TALENT_LEVEL_EXP_TABLE = {
-    [1]  = 30, [2]  = 50, [3]  = 80, [4]  = 120, [5]  = 170,
-    [6]  = 230, [7]  = 300, [8]  = 380, [9]  = 470, [10] = 570,
-    [11] = 680, [12] = 800, [13] = 940, [14] = 1100, [15] = 1280,
-    [16] = 1480, [17] = 1700, [18] = 1950, [19] = 2230, [20] = 2550,
-    [21] = 2900, [22] = 3280, [23] = 3700, [24] = 4160, [25] = 4660,
-    [26] = 5200, [27] = 5780, [28] = 6400, [29] = 7060,
-}
-local TALENT_MAX_LEVEL = 30
-local RARITY_BASE_EXP = { ["普通"] = 5, ["罕见"] = 10, ["稀有"] = 18, ["史诗"] = 30, ["传奇"] = 50 }
-local TALENT_CONFIG = {
-    { id = "drop_rate_1", cost = 1, goldCost = 500, requires = nil }, { id = "drop_rate_2", cost = 1, goldCost = 2000, requires = "drop_rate_1" }, { id = "drop_rate_3", cost = 2, goldCost = 8000, requires = "drop_rate_2" }, { id = "drop_rate_4", cost = 2, goldCost = 30000, requires = "drop_rate_3" }, { id = "drop_rate_5", cost = 3, goldCost = 100000, requires = "drop_rate_4" },
-    { id = "grow_speed_1", cost = 1, goldCost = 800, requires = nil }, { id = "grow_speed_2", cost = 1, goldCost = 3000, requires = "grow_speed_1" }, { id = "grow_speed_3", cost = 2, goldCost = 12000, requires = "grow_speed_2" }, { id = "grow_speed_4", cost = 2, goldCost = 50000, requires = "grow_speed_3" }, { id = "grow_speed_5", cost = 3, goldCost = 160000, requires = "grow_speed_4" },
-    { id = "sell_bonus_1", cost = 1, goldCost = 1000, requires = nil }, { id = "sell_bonus_2", cost = 1, goldCost = 4000, requires = "sell_bonus_1" }, { id = "sell_bonus_3", cost = 2, goldCost = 16000, requires = "sell_bonus_2" }, { id = "sell_bonus_4", cost = 2, goldCost = 70000, requires = "sell_bonus_3" }, { id = "sell_bonus_5", cost = 3, goldCost = 220000, requires = "sell_bonus_4" },
-    { id = "mutation_1", cost = 1, goldCost = 1200, requires = nil }, { id = "mutation_2", cost = 1, goldCost = 5000, requires = "mutation_1" }, { id = "mutation_3", cost = 2, goldCost = 20000, requires = "mutation_2" }, { id = "mutation_4", cost = 2, goldCost = 90000, requires = "mutation_3" }, { id = "mutation_5", cost = 3, goldCost = 300000, requires = "mutation_4" },
-    { id = "bag_capacity_1", cost = 1, goldCost = 600, requires = nil }, { id = "bag_capacity_2", cost = 1, goldCost = 2500, requires = "bag_capacity_1" }, { id = "bag_capacity_3", cost = 2, goldCost = 10000, requires = "bag_capacity_2" }, { id = "bag_capacity_4", cost = 2, goldCost = 40000, requires = "bag_capacity_3" }, { id = "bag_capacity_5", cost = 3, goldCost = 120000, requires = "bag_capacity_4" },
-}
-local DAILY_REWARD_PACK_WEIGHTS = {
-    { packId = "pack_common", weight = 35 }, { packId = "pack_uncommon", weight = 32 },
-    { packId = "pack_rare", weight = 22 }, { packId = "pack_epic", weight = 9 },
-    { packId = "pack_legendary", weight = 2 },
-}
-local SYNTHESIS_MAP = { pack_common = "pack_uncommon", pack_uncommon = "pack_rare", pack_rare = "pack_epic", pack_epic = "pack_legendary" }
+local TALENT_LEVEL_EXP_TABLE = ServerConfig.Talent.LEVEL_EXP_TABLE
+local TALENT_MAX_LEVEL = ServerConfig.Talent.MAX_LEVEL
+local RARITY_BASE_EXP = ServerConfig.Talent.RARITY_BASE_EXP
+local TALENT_CONFIG = ServerConfig.Talent.CONFIG
+local DAILY_REWARD_PACK_WEIGHTS = ServerConfig.DailyReward.PACK_WEIGHTS
+local SYNTHESIS_MAP = ServerConfig.DailyReward.SYNTHESIS_MAP
 
 ServerRewards.TALENT_MAX_LEVEL = TALENT_MAX_LEVEL
 
 function ServerRewards.Init(deps)
     deps_ = deps or {}
+end
+
+local function CloudUid(uid)
+    return ServerCloudStore.CloudPlayerId(uid) or ServerCloudStore.CanonicalUid(uid)
 end
 
 local function Now()
@@ -172,10 +161,11 @@ function ServerRewards.MatureAllCropsInPlot(farmState, plotIndex)
 end
 
 function ServerRewards.GrantAdReward(uid, payload, connection)
+    uid = CloudUid(uid)
     payload = payload or {}
     local rewardType = tostring(payload.rewardType or "")
     if rewardType == "steal_attempts" then
-        serverCloud.quota:Get(uid, "daily_steal_ad", {
+        ServerCloudStore.QuotaGet(uid, "daily_steal_ad", {
             ok = function(rows)
                 local row = rows and rows[1]
                 local watched = math.max(0, math.floor(tonumber(row and row.value or 0) or 0))
@@ -199,7 +189,7 @@ function ServerRewards.GrantAdReward(uid, payload, connection)
     end
 
     if rewardType == "rare_seed_pack" then
-        serverCloud.quota:Get(uid, "daily_seed_pack_ad", {
+        ServerCloudStore.QuotaGet(uid, "daily_seed_pack_ad", {
             ok = function(rows)
                 local row = rows and rows[1]
                 local watched = math.max(0, math.floor(tonumber(row and row.value or 0) or 0))
@@ -207,7 +197,7 @@ function ServerRewards.GrantAdReward(uid, payload, connection)
                     Send(connection, deps_.Shared.EVENTS.AD_REWARD_RESPONSE, { success = false, code = "AD_LIMIT_REACHED", message = "今日广告种子包已领取完", requestId = payload.requestId, rewardType = rewardType, daily = { seedPackAdCount = watched, seedPackAdLimit = deps_.dailySeedPackAdLimit } })
                     return
                 end
-                serverCloud:Get(uid, deps_.Shared.KEYS.ECONOMY_STATE, {
+                ServerCloudStore.Get(uid, deps_.Shared.KEYS.ECONOMY_STATE, {
                     ok = function(scores)
                         local state = GetExistingEconomyState(scores)
                         if state == nil then
@@ -219,7 +209,7 @@ function ServerRewards.GrantAdReward(uid, payload, connection)
                         NextRevision(state)
                         local response = { success = true, message = "获得稀有种子包 x" .. tostring(deps_.adRarePackCount), requestId = payload.requestId, rewardType = rewardType, state = state, rewards = { { packId = "pack_rare", count = deps_.adRarePackCount } }, daily = { seedPackAdCount = watched + 1, seedPackAdLimit = deps_.dailySeedPackAdLimit } }
                         local c = serverCloud:BatchCommit("广告奖励：稀有种子包")
-                        c:ScoreSet(uid, deps_.Shared.KEYS.ECONOMY_STATE, state)
+                        ServerCloudStore.BatchScoreSet(c, uid, deps_.Shared.KEYS.ECONOMY_STATE, state)
                         c:QuotaAdd(uid, "daily_seed_pack_ad", 1, deps_.dailySeedPackAdLimit, "day", 1)
                         deps_.RequestGuard.AddToCommit(c, uid, payload._requestRecordKey, response)
                         c:Commit({
@@ -237,7 +227,7 @@ function ServerRewards.GrantAdReward(uid, payload, connection)
 
     if rewardType == "mature_plot" then
         local plotIndex = NormalizePlotIndex(payload.plotIndex)
-        serverCloud.quota:Get(uid, "daily_mature_ad", {
+        ServerCloudStore.QuotaGet(uid, "daily_mature_ad", {
             ok = function(rows)
                 local row = rows and rows[1]
                 local watched = math.max(0, math.floor(tonumber(row and row.value or 0) or 0))
@@ -245,7 +235,7 @@ function ServerRewards.GrantAdReward(uid, payload, connection)
                     Send(connection, deps_.Shared.EVENTS.AD_REWARD_RESPONSE, { success = false, code = "AD_LIMIT_REACHED", message = "今日快速成熟广告已达上限", requestId = payload.requestId, rewardType = rewardType, daily = { matureAdCount = watched, matureAdLimit = deps_.dailyMatureAdLimit } })
                     return
                 end
-                serverCloud:Get(uid, deps_.Shared.KEYS.AUTH_FARM_STATE, {
+                ServerCloudStore.Get(uid, deps_.Shared.KEYS.AUTH_FARM_STATE, {
                     ok = function(farmScores)
                         local farmState = NormalizeFarmState(farmScores[deps_.Shared.KEYS.AUTH_FARM_STATE])
                         local changed = ServerRewards.MatureAllCropsInPlot(farmState, plotIndex)
@@ -253,7 +243,7 @@ function ServerRewards.GrantAdReward(uid, payload, connection)
                             Send(connection, deps_.Shared.EVENTS.AD_REWARD_RESPONSE, { success = false, message = "该地块没有可加速成熟的作物", requestId = payload.requestId, rewardType = rewardType, farm = farmState, daily = { matureAdCount = watched, matureAdLimit = deps_.dailyMatureAdLimit } })
                             return
                         end
-                        serverCloud:Get(uid, deps_.Shared.KEYS.ECONOMY_STATE, {
+                        ServerCloudStore.Get(uid, deps_.Shared.KEYS.ECONOMY_STATE, {
                             ok = function(scores)
                                 local state = GetExistingEconomyState(scores)
                                 if state == nil then
@@ -267,8 +257,8 @@ function ServerRewards.GrantAdReward(uid, payload, connection)
                                 NextRevision(state)
                                 local response = { success = true, message = "地块作物已全部成熟", requestId = payload.requestId, rewardType = rewardType, plotIndex = plotIndex, maturedCount = changed, farm = farmState, state = state, daily = { matureAdCount = watched + 1, matureAdLimit = deps_.dailyMatureAdLimit } }
                                 local c = serverCloud:BatchCommit("广告奖励：快速成熟")
-                                c:ScoreSet(uid, deps_.Shared.KEYS.AUTH_FARM_STATE, farmState)
-                                c:ScoreSet(uid, deps_.Shared.KEYS.ECONOMY_STATE, state)
+                                ServerCloudStore.BatchScoreSet(c, uid, deps_.Shared.KEYS.AUTH_FARM_STATE, farmState)
+                                ServerCloudStore.BatchScoreSet(c, uid, deps_.Shared.KEYS.ECONOMY_STATE, state)
                                 c:QuotaAdd(uid, "daily_mature_ad", 1, deps_.dailyMatureAdLimit, "day", 1)
                                 AddTourRankCommit(c, uid, state)
                                 deps_.RequestGuard.AddToCommit(c, uid, payload._requestRecordKey, response)
@@ -292,7 +282,8 @@ function ServerRewards.GrantAdReward(uid, payload, connection)
 end
 
 function ServerRewards.ClaimDailyRewardAuthority(uid, payload, connection)
-    serverCloud:Get(uid, deps_.Shared.KEYS.ECONOMY_STATE, {
+    uid = CloudUid(uid)
+    ServerCloudStore.Get(uid, deps_.Shared.KEYS.ECONOMY_STATE, {
         ok = function(scores)
             local state = GetExistingEconomyState(scores)
             if state == nil then
@@ -316,7 +307,7 @@ function ServerRewards.ClaimDailyRewardAuthority(uid, payload, connection)
             state.updatedAt = Now()
             NextRevision(state)
             local response = { success = true, message = "每日奖励已领取", requestId = payload.requestId, rewards = rewards, state = state }
-            serverCloud:Set(uid, deps_.Shared.KEYS.ECONOMY_STATE, state, {
+            ServerCloudStore.SetScore(uid, deps_.Shared.KEYS.ECONOMY_STATE, state, {
                 ok = function() Send(connection, deps_.Shared.EVENTS.CLAIM_DAILY_REWARD_RESPONSE, response) end,
                 error = function(_, reason) Send(connection, deps_.Shared.EVENTS.CLAIM_DAILY_REWARD_RESPONSE, { success = false, message = "领取失败: " .. tostring(reason), requestId = payload.requestId, state = state }) end,
             })
@@ -326,6 +317,7 @@ function ServerRewards.ClaimDailyRewardAuthority(uid, payload, connection)
 end
 
 function ServerRewards.SynthesizePackAuthority(uid, payload, connection)
+    uid = CloudUid(uid)
     local packId = tostring(payload.packId or "")
     local targetId = SYNTHESIS_MAP[packId]
     local requestedCount = math.max(1, math.floor(tonumber(payload.count or 1) or 1))
@@ -333,7 +325,7 @@ function ServerRewards.SynthesizePackAuthority(uid, payload, connection)
         Send(connection, deps_.Shared.EVENTS.SYNTHESIZE_PACK_RESPONSE, { success = false, message = "该种子包不可合成", requestId = payload.requestId })
         return
     end
-    serverCloud:Get(uid, deps_.Shared.KEYS.ECONOMY_STATE, {
+    ServerCloudStore.Get(uid, deps_.Shared.KEYS.ECONOMY_STATE, {
         ok = function(scores)
             local state = GetExistingEconomyState(scores)
             if state == nil then
@@ -353,7 +345,7 @@ function ServerRewards.SynthesizePackAuthority(uid, payload, connection)
             state.updatedAt = Now()
             NextRevision(state)
             local response = { success = true, message = "合成成功 x" .. synthCount, requestId = payload.requestId, packId = packId, targetId = targetId, count = synthCount, state = state }
-            serverCloud:Set(uid, deps_.Shared.KEYS.ECONOMY_STATE, state, {
+            ServerCloudStore.SetScore(uid, deps_.Shared.KEYS.ECONOMY_STATE, state, {
                 ok = function() Send(connection, deps_.Shared.EVENTS.SYNTHESIZE_PACK_RESPONSE, response) end,
                 error = function(_, reason) Send(connection, deps_.Shared.EVENTS.SYNTHESIZE_PACK_RESPONSE, { success = false, message = "合成失败: " .. tostring(reason), requestId = payload.requestId, state = state }) end,
             })
@@ -363,13 +355,14 @@ function ServerRewards.SynthesizePackAuthority(uid, payload, connection)
 end
 
 function ServerRewards.UnlockTalentAuthority(uid, payload, connection)
+    uid = CloudUid(uid)
     local talentId = tostring(payload.talentId or "")
     local talentCfg = ServerRewards.FindTalentConfig(talentId)
     if talentCfg == nil then
         Send(connection, deps_.Shared.EVENTS.UNLOCK_TALENT_RESPONSE, { success = false, message = "天赋不存在", requestId = payload.requestId })
         return
     end
-    serverCloud:Get(uid, deps_.Shared.KEYS.ECONOMY_STATE, {
+    ServerCloudStore.Get(uid, deps_.Shared.KEYS.ECONOMY_STATE, {
         ok = function(scores)
             local state = GetExistingEconomyState(scores)
             if state == nil then
@@ -400,7 +393,7 @@ function ServerRewards.UnlockTalentAuthority(uid, payload, connection)
             state.updatedAt = Now()
             NextRevision(state)
             local response = { success = true, message = "天赋已解锁", requestId = payload.requestId, talentId = talentId, state = state }
-            serverCloud:Set(uid, deps_.Shared.KEYS.ECONOMY_STATE, state, {
+            ServerCloudStore.SetScore(uid, deps_.Shared.KEYS.ECONOMY_STATE, state, {
                 ok = function() Send(connection, deps_.Shared.EVENTS.UNLOCK_TALENT_RESPONSE, response) end,
                 error = function(_, reason) Send(connection, deps_.Shared.EVENTS.UNLOCK_TALENT_RESPONSE, { success = false, message = "解锁失败: " .. tostring(reason), requestId = payload.requestId, state = state }) end,
             })
@@ -410,7 +403,8 @@ function ServerRewards.UnlockTalentAuthority(uid, payload, connection)
 end
 
 function ServerRewards.ExpandPlotAuthority(uid, payload, connection)
-    serverCloud:Get(uid, deps_.Shared.KEYS.ECONOMY_STATE, {
+    uid = CloudUid(uid)
+    ServerCloudStore.Get(uid, deps_.Shared.KEYS.ECONOMY_STATE, {
         ok = function(scores)
             local state = GetExistingEconomyState(scores)
             if state == nil then
@@ -433,7 +427,7 @@ function ServerRewards.ExpandPlotAuthority(uid, payload, connection)
                 Send(connection, deps_.Shared.EVENTS.EXPAND_PLOT_RESPONSE, { success = false, message = "金币不足", requestId = payload.requestId, state = state })
                 return
             end
-            serverCloud:Get(uid, deps_.Shared.KEYS.AUTH_FARM_STATE, {
+            ServerCloudStore.Get(uid, deps_.Shared.KEYS.AUTH_FARM_STATE, {
                 ok = function(farmScores)
                     local farmState = NormalizeFarmState(farmScores[deps_.Shared.KEYS.AUTH_FARM_STATE])
                     SyncProgressionTourValueFromFarm(state, farmState)
@@ -453,9 +447,9 @@ function ServerRewards.ExpandPlotAuthority(uid, payload, connection)
                     NextRevision(farmState)
                     local response = { success = true, message = "扩地成功", requestId = payload.requestId, plotIndex = nextPlot, state = state, farm = farmState }
                     local c = serverCloud:BatchCommit("权威扩地")
-                    c:ScoreSet(uid, deps_.Shared.KEYS.ECONOMY_STATE, state)
+                    ServerCloudStore.BatchScoreSet(c, uid, deps_.Shared.KEYS.ECONOMY_STATE, state)
                     AddTourRankCommit(c, uid, state)
-                    c:ScoreSet(uid, deps_.Shared.KEYS.AUTH_FARM_STATE, farmState)
+                    ServerCloudStore.BatchScoreSet(c, uid, deps_.Shared.KEYS.AUTH_FARM_STATE, farmState)
                     c:Commit({
                         ok = function() Send(connection, deps_.Shared.EVENTS.EXPAND_PLOT_RESPONSE, response) end,
                         error = function(_, reason) Send(connection, deps_.Shared.EVENTS.EXPAND_PLOT_RESPONSE, { success = false, message = "扩地失败: " .. tostring(reason), requestId = payload.requestId, state = state }) end,

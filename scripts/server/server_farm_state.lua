@@ -7,6 +7,10 @@
 
 local ServerFarmState = {}
 
+local ServerCloudStore = require("server.server_cloud_store")
+local SaveLoginReconcile = require("server.save_login_reconcile")
+local UserId = require("utils.user_id")
+
 local deps_ = {}
 
 function ServerFarmState.Init(deps)
@@ -88,6 +92,10 @@ function ServerFarmState.GetFarmPlot(state, plotIndex)
     return state.plots[plotIndex]
 end
 
+function ServerFarmState.ScoreFarmState(state)
+    return ScoreFarmState(state)
+end
+
 function ServerFarmState.FindFarmCrop(state, cropId)
     if cropId == nil then return nil, nil, nil end
     for plotIndex, plot in pairs(state.plots or {}) do
@@ -110,10 +118,6 @@ function ServerFarmState.FindFarmCropFromHarvestPayload(state, payload)
 
     local plotIndex = NormalizePlotIndex(payload.plotIndex)
     local plot = ServerFarmState.GetFarmPlot(state, plotIndex)
-    local cropIndex = math.floor(tonumber(payload.cropIndex or 0) or 0)
-    if cropIndex >= 1 and plot.plants[cropIndex] ~= nil then
-        return plot.plants[cropIndex], plotIndex, cropIndex
-    end
 
     local posSource = payload.localPos or (payload.crop and payload.crop.localPos)
     if type(posSource) == "table" then
@@ -131,7 +135,31 @@ function ServerFarmState.FindFarmCropFromHarvestPayload(state, payload)
                 bestDist = dist
             end
         end
-        if bestCrop ~= nil then return bestCrop, plotIndex, bestIndex end
+        if bestCrop ~= nil then
+            if requestedCropId ~= nil and requestedCropId ~= "" then
+                print(string.format(
+                    "[权威收获] cropId 未命中，按 localPos 回退 cropId=%s -> %s",
+                    tostring(requestedCropId),
+                    tostring(bestCrop.cropId or bestCrop.serverCropId)
+                ))
+            end
+            return bestCrop, plotIndex, bestIndex
+        end
+    end
+
+    if requestedCropId ~= nil and requestedCropId ~= "" then
+        print(string.format(
+            "[权威收获] cropId/localPos 均未命中 cropId=%s plot=%s cropIndex=%s",
+            tostring(requestedCropId),
+            tostring(payload.plotIndex),
+            tostring(payload.cropIndex)
+        ))
+        return nil, nil, nil
+    end
+
+    local cropIndex = math.floor(tonumber(payload.cropIndex or 0) or 0)
+    if cropIndex >= 1 and plot.plants[cropIndex] ~= nil then
+        return plot.plants[cropIndex], plotIndex, cropIndex
     end
 
     return nil, nil, nil
@@ -196,7 +224,7 @@ function ServerFarmState.BuildVisitGardenFromAuthFarm(uid, nickname, farmState, 
     return {
         version = 3,
         source = "auth_farm",
-        userId = uid,
+        userId = UserId.Normalize(uid) or uid,
         nickname = nickname or snapshot and snapshot.nickname or "Tap玩家",
         avatar = snapshot and snapshot.avatar or nil,
         visitablePlotIndex = plotIndex,
@@ -209,14 +237,25 @@ function ServerFarmState.BuildVisitGardenFromAuthFarm(uid, nickname, farmState, 
     }
 end
 
-function ServerFarmState.RequestAuthFarmState(uid, connection)
-    local canonicalUid = GetCanonicalUidKey(uid)
-    local candidates = BuildUidKeyCandidates(uid)
-    local bestKey = nil
-    local bestFarm = nil
-    local bestScore = -1
-    local index = 1
-    local hadReadError = false
+local function DeliverAuthFarm(uid, connection, farm, bestKey)
+    uid = ServerCloudStore.CanonicalUid(uid) or uid
+    local canonicalUid = ServerCloudStore.GetCanonicalUidKey(uid)
+
+    if not UserId.IsOwnedSave(canonicalUid, farm) then
+        print(string.format(
+            "[存档隔离] 拒绝下发权威农场 uid=%s owner=%s embedded=%s bestKey=%s",
+            tostring(canonicalUid),
+            tostring(farm and farm.ownerUserId),
+            tostring(farm and farm.userId),
+            tostring(bestKey)
+        ))
+        Send(connection, deps_.Shared.EVENTS.AUTH_FARM_RESPONSE, {
+            success = false,
+            retryable = true,
+            message = "农场存档归属校验失败，请稍后重试",
+        })
+        return
+    end
 
     local function refreshFarm(farmState)
         for _, plot in pairs(farmState.plots or {}) do
@@ -227,67 +266,71 @@ function ServerFarmState.RequestAuthFarmState(uid, connection)
         return farmState
     end
 
-    local function finishWithFarm()
-        if bestFarm == nil then
-            if hadReadError then
-                print("[存档] 权威农场读取失败，保留原云端农场等待客户端重试")
-                Send(connection, deps_.Shared.EVENTS.AUTH_FARM_RESPONSE, {
-                    success = false,
-                    retryable = true,
-                    message = "权威农场读取失败，请稍后重试",
-                })
-                return
+    farm = refreshFarm(farm)
+    ServerCloudStore.MigrateScoreIfNeeded(canonicalUid, bestKey, deps_.Shared.KEYS.AUTH_FARM_STATE, farm, {
+        migrationLabel = "权威农场",
+        onReady = function(resolved)
+            Send(connection, deps_.Shared.EVENTS.AUTH_FARM_RESPONSE, { success = true, farm = resolved })
+        end,
+    })
+end
+
+local function LoadAuthFarmState(uid, connection)
+    uid = ServerCloudStore.CanonicalUid(uid) or uid
+
+    local function refreshFarm(farmState)
+        for _, plot in pairs(farmState.plots or {}) do
+            for _, crop in ipairs(plot.plants or {}) do
+                ServerFarmState.RefreshAuthCrop(crop)
             end
-            Send(connection, deps_.Shared.EVENTS.AUTH_FARM_RESPONSE, { success = true, farm = refreshFarm(ServerFarmState.NormalizeFarmState(nil)) })
+        end
+        return farmState
+    end
+
+    ServerCloudStore.ReadBestScore(uid, deps_.Shared.KEYS.AUTH_FARM_STATE, {
+        normalize = ServerFarmState.NormalizeFarmState,
+        score = ScoreFarmState,
+        requireOwner = true,
+        logLabel = "权威农场",
+    }, function(bestFarm, bestKey, hadReadError)
+        if bestFarm ~= nil and not UserId.IsOwnedSave(uid, bestFarm) then
+            print(string.format(
+                "[存档隔离] 拒绝下发权威农场 uid=%s owner=%s bestKey=%s",
+                tostring(uid),
+                tostring(bestFarm.ownerUserId),
+                tostring(bestKey)
+            ))
+            bestFarm = nil
+            bestKey = nil
+        end
+        if bestFarm ~= nil then
+            DeliverAuthFarm(uid, connection, bestFarm, bestKey)
             return
         end
-        bestFarm = refreshFarm(bestFarm)
-        if bestKey ~= canonicalUid then
-            print(string.format("[存档兼容] 权威农场命中历史 uid key=%s，迁移到当前 key=%s", tostring(bestKey), tostring(canonicalUid)))
-            serverCloud:Set(canonicalUid, deps_.Shared.KEYS.AUTH_FARM_STATE, bestFarm, {
-                ok = function()
-                    Send(connection, deps_.Shared.EVENTS.AUTH_FARM_RESPONSE, { success = true, farm = bestFarm })
-                end,
-                error = function(_, reason)
-                    print("[存档兼容] 权威农场迁移失败，使用历史 key 数据返回: " .. tostring(reason))
-                    Send(connection, deps_.Shared.EVENTS.AUTH_FARM_RESPONSE, { success = true, farm = bestFarm })
-                end,
+        if hadReadError then
+            Send(connection, deps_.Shared.EVENTS.AUTH_FARM_RESPONSE, {
+                success = false,
+                retryable = true,
+                message = "权威农场读取失败，请稍后重试",
             })
             return
         end
-        Send(connection, deps_.Shared.EVENTS.AUTH_FARM_RESPONSE, { success = true, farm = bestFarm })
-    end
-
-    local function readNext()
-        local key = candidates[index]
-        index = index + 1
-        if key == nil then
-            finishWithFarm()
-            return
-        end
-        serverCloud:Get(key, deps_.Shared.KEYS.AUTH_FARM_STATE, {
-            ok = function(scores)
-                local rawFarm = scores and scores[deps_.Shared.KEYS.AUTH_FARM_STATE]
-                if type(rawFarm) == "table" then
-                    local farmState = ServerFarmState.NormalizeFarmState(rawFarm)
-                    local score = ScoreFarmState(farmState)
-                    if score > bestScore then
-                        bestScore = score
-                        bestFarm = farmState
-                        bestKey = key
-                    end
-                end
-                readNext()
-            end,
-            error = function(_, reason)
-                hadReadError = true
-                print(string.format("[存档兼容] 权威农场读取失败 key=%s reason=%s", tostring(key), tostring(reason)))
-                readNext()
-            end,
+        Send(connection, deps_.Shared.EVENTS.AUTH_FARM_RESPONSE, {
+            success = true,
+            farm = refreshFarm(ServerFarmState.NormalizeFarmState(nil)),
         })
-    end
+    end)
+end
 
-    readNext()
+function ServerFarmState.RequestAuthFarmState(uid, connection)
+    print(string.format(
+        "[存档] 请求权威农场 uid=%s cloudId=%s",
+        tostring(ServerCloudStore.GetCanonicalUidKey(uid)),
+        tostring(ServerCloudStore.CloudPlayerId(uid))
+    ))
+    SaveLoginReconcile.Ensure(uid, function()
+        LoadAuthFarmState(uid, connection)
+    end)
 end
 
 return ServerFarmState

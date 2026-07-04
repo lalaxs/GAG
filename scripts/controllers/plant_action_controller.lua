@@ -10,6 +10,7 @@ local FloatingToast = require("ui.floating_toast")
 local AudioSystem = require("systems.audio_system")
 local EventBus = require("utils.event_bus")
 local UIEvents = require("utils.ui_events")
+local NetworkClient = require("client.network_client")
 
 local PlantActionController = {}
 
@@ -132,7 +133,7 @@ local function GetPlots()
 end
 
 local function IsAuthoritativeClient()
-    return network ~= nil and IsClientMode ~= nil and IsClientMode() and network:GetServerConnection() ~= nil
+    return NetworkClient.IsRawConnected()
 end
 
 local function RequireServerUnavailable(reason)
@@ -154,6 +155,9 @@ function PlantActionController.PlantSeedAt(plotIndex, plantIndex, centerLocalPos
         return false, "plot_full"
     end
     if options.serverConfirmed ~= true and deps_.EconomyCloudSystem ~= nil and deps_.EconomyCloudSystem.PlantSeed ~= nil then
+        if deps_.EconomyCloudSystem.IsPlantPending ~= nil and deps_.EconomyCloudSystem.IsPlantPending() then
+            return true, "pending_server"
+        end
         local requested = deps_.EconomyCloudSystem.PlantSeed({
             requestId = NextRequestId("plant"),
             plotIndex = plotIndex,
@@ -344,17 +348,13 @@ end
 function PlantActionController.ApplyConfirmedPlantSeed(data)
     local plotIndex = tonumber(data.plotIndex or GetSelectedPlot()) or GetSelectedPlot()
     local plantIndex = tonumber(data.plantIndex or GetSelectedSeed()) or GetSelectedSeed()
-    local localPos = DecodeLocalPos(data.localPos)
-    local success = false
-    local reason = nil
-    if data.crop ~= nil and deps_.CropSystem.PlantCropFromServer ~= nil then
-        success = deps_.CropSystem.PlantCropFromServer(GetPlots(), plotIndex, data.crop)
-    else
-        success, reason = PlantActionController.PlantSeedAt(plotIndex, plantIndex, localPos, {
-            serverConfirmed = true,
-            seedBuff = data.seedBuff or 0,
-        })
+    if data.crop == nil or deps_.CropSystem.PlantCropFromServer == nil then
+        ShowToast("服务器播种数据不完整，请重试")
+        print("[播种] 服务端响应缺少 crop 字段，拒绝本地 Roll")
+        return false
     end
+    data.crop.requestId = data.requestId
+    local success = deps_.CropSystem.PlantCropFromServer(GetPlots(), plotIndex, data.crop)
     if success then
         RefreshTourValue()
         AudioSystem.PlaySFX("plant_seed")
@@ -364,7 +364,7 @@ function PlantActionController.ApplyConfirmedPlantSeed(data)
         RebuildUI()
         return true
     end
-    ShowToast(reason == "occupied" and "请换个地方播种" or "播种失败")
+    ShowToast("播种失败")
     return false
 end
 
@@ -376,7 +376,7 @@ function PlantActionController.ApplyConfirmedHarvestCrop(data)
     local removeIndex = nil
     local cropId = data.cropId or (data.crop and (data.crop.cropId or data.crop.serverCropId))
 
-    if plot ~= nil then
+    if data.farmSynced ~= true and plot ~= nil then
         if cropId ~= nil and cropId ~= "" then
             for index, item in ipairs(plot.plants or {}) do
                 if item.cropId == cropId or item.serverCropId == cropId then
@@ -396,14 +396,14 @@ function PlantActionController.ApplyConfirmedHarvestCrop(data)
         end
     end
 
+    local exp = tonumber(data.exp or 0) or 0
+    local cropName = data.crop and data.crop.name or (crop and crop.name) or "作物"
+
     if crop ~= nil and removeIndex ~= nil then
-        local exp = tonumber(data.exp or 0) or 0
-        -- 纯服务器游戏：经验、活动奖励等权威进度必须来自服务端响应，不在客户端本地结算。
         if crop.root ~= nil then crop.root:Remove() end
         table.remove(plot.plants, removeIndex)
         RefreshTourValue()
         AudioSystem.PlaySFX("harvest_crop")
-        local cropName = data.crop and data.crop.name or crop.name or "作物"
         local text = "收获了" .. cropName .. "，获得了" .. exp .. "经验"
         ShowToast(text, true)
         FloatingToast.Show(text, { fontSize = 19, duration = 1.6, yRatio = 0.42, priority = 0 })
@@ -425,6 +425,16 @@ function PlantActionController.ApplyConfirmedHarvestCrop(data)
                 FloatingToast.Show(rewardText, { fontSize = 18, duration = 1.5, yRatio = 0.32, priority = 2 })
             end
         end
+        if deps_.markDirty then deps_.markDirty() end
+        RebuildUI()
+        return true
+    end
+    if data.farm ~= nil and deps_.EconomyCloudSystem ~= nil and deps_.EconomyCloudSystem.ForceSyncAuthFarm ~= nil then
+        deps_.EconomyCloudSystem.ForceSyncAuthFarm(data.farm, "harvest_resync")
+        AudioSystem.PlaySFX("harvest_crop")
+        local text = "收获了" .. cropName .. "，获得了" .. exp .. "经验"
+        ShowToast(text, true)
+        FloatingToast.Show(text, { fontSize = 19, duration = 1.6, yRatio = 0.42, priority = 0 })
         if deps_.markDirty then deps_.markDirty() end
         RebuildUI()
         return true
@@ -465,6 +475,11 @@ function PlantActionController.PerformPlotAction(plotIndex, localPos)
         return
     end
     if clickedMatureCrop ~= nil then
+        if deps_.EconomyCloudSystem ~= nil and deps_.EconomyCloudSystem.IsHarvestPending ~= nil and deps_.EconomyCloudSystem.IsHarvestPending() then
+            ShowToast("收获请求处理中，请稍后", true)
+            RebuildUI()
+            return
+        end
         local success, harvestInfo = PlantActionController.HarvestNearestMature(GetSelectedPlot(), localPos)
         if success then
             if harvestInfo and harvestInfo.pendingServer then

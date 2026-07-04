@@ -79,7 +79,11 @@ function UiRuntime.EnsureInitialUiReady()
         deps_.SocialGardenSystem.UploadSnapshot()
         SetInitialSocialSnapshotUploaded(true)
     end
+    if deps_.initBGM ~= nil then
+        deps_.initBGM()
+    end
     print("[启动同步] 初始权威数据已同步，显示主界面")
+    print("=== Grow A Garden 核心玩法原型启动 ===")
     return true
 end
 

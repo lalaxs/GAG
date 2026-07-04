@@ -5,7 +5,14 @@
 -- 从 server_main.lua 拆出的经济/天赋/成长/每日任务/活动状态归一化与排行榜提交逻辑。
 -- ============================================================================
 
+local UserId = require("utils.user_id")
+
 local ServerEconomyState = {}
+
+--- 经济档选档优先级：schema(1e15) > saveEpoch(1e9) > 内容分
+ServerEconomyState.SAVE_SCHEMA_VERSION = 3
+ServerEconomyState.SAVE_SCHEMA_SCALE = 1e15
+ServerEconomyState.SAVE_EPOCH_SCALE = 1e9
 
 local deps_ = {}
 
@@ -98,7 +105,61 @@ function ServerEconomyState.NormalizeActivityState(activity)
     return activity
 end
 
-function ServerEconomyState.NormalizeEconomyState(state)
+local function CountMapEntries(map)
+    local count = 0
+    if type(map) ~= "table" then return 0 end
+    for _, value in pairs(map) do
+        if type(value) == "number" then
+            count = count + math.max(0, value)
+        else
+            count = count + 1
+        end
+    end
+    return count
+end
+
+function ServerEconomyState.GetSaveEpoch(state)
+    if type(state) ~= "table" then return 0 end
+    local epoch = math.floor(tonumber(state.saveEpoch or 0) or 0)
+    if epoch > 0 then return epoch end
+    return math.max(0, math.floor(tonumber(state.updatedAt or 0) or 0))
+end
+
+function ServerEconomyState.ScoreEconomyContent(state)
+    if type(state) ~= "table" then return -1 end
+    local score = 0
+    score = score + math.max(0, tonumber(state.gold or 0) or 0)
+    score = score + CountMapEntries(state.seedBag) * 10
+    score = score + CountMapEntries(state.seedPacks) * 50
+    score = score + #(type(state.harvested) == "table" and state.harvested or {}) * 100
+    local talent = type(state.talent) == "table" and state.talent or {}
+    score = score + math.max(0, tonumber(talent.level or 1) or 1) * 1000
+    local progression = type(state.progression) == "table" and state.progression or {}
+    score = score + math.max(0, tonumber(progression.bestTourValue or 0) or 0) * 2
+    score = score + math.max(0, tonumber(progression.unlockedPlotCount or 1) or 1) * 500
+    return score
+end
+
+function ServerEconomyState.ScoreEconomyRecord(state)
+    if type(state) ~= "table" then return -1 end
+    local schema = math.max(0, math.floor(tonumber(state.saveSchemaVersion or 0) or 0))
+    local epoch = ServerEconomyState.GetSaveEpoch(state)
+    return schema * ServerEconomyState.SAVE_SCHEMA_SCALE
+        + epoch * ServerEconomyState.SAVE_EPOCH_SCALE
+        + ServerEconomyState.ScoreEconomyContent(state)
+end
+
+function ServerEconomyState.TouchEconomyState(state)
+    if type(state) ~= "table" then return state end
+    local now = Now()
+    state.saveSchemaVersion = ServerEconomyState.SAVE_SCHEMA_VERSION
+    state.saveEpoch = now
+    state.updatedAt = now
+    return state
+end
+
+function ServerEconomyState.NormalizeEconomyState(state, options)
+    options = options or {}
     state = type(state) == "table" and state or {}
     state.gold = math.max(0, math.floor(tonumber(state.gold or deps_.startGold) or deps_.startGold))
     state.seedBag = CopyNumericKeyMap(state.seedBag)
@@ -115,12 +176,20 @@ function ServerEconomyState.NormalizeEconomyState(state)
     state.talent = ServerEconomyState.NormalizeTalentState(state.talent)
     state.progression = ServerEconomyState.NormalizeProgressionState(state.progression)
     state.activity = ServerEconomyState.NormalizeActivityState(state.activity)
-    state.updatedAt = Now()
+    if options.bumpEpoch == true then
+        ServerEconomyState.TouchEconomyState(state)
+    else
+        state.saveSchemaVersion = math.max(0, math.floor(tonumber(state.saveSchemaVersion or 0) or 0))
+        state.saveEpoch = ServerEconomyState.GetSaveEpoch(state)
+        state.updatedAt = math.max(state.saveEpoch, math.floor(tonumber(state.updatedAt or 0) or 0))
+    end
     return state
 end
 
-function ServerEconomyState.BuildInitialEconomyState()
-    return ServerEconomyState.NormalizeEconomyState({
+function ServerEconomyState.BuildInitialEconomyState(options)
+    options = options or {}
+    local now = Now()
+    local state = {
         gold = deps_.startGold,
         seedBag = { [1] = 6, [21] = 4, [2] = 2 },
         seedBagBuffs = {},
@@ -131,7 +200,11 @@ function ServerEconomyState.BuildInitialEconomyState()
         talent = { unlockedTalents = {}, talentPoints = 1, level = 1, exp = 0 },
         progression = { unlockedPlotCount = 1, gardenLevel = 1, currentTourValue = 0, bestTourValue = 0 },
         activity = nil,
-    })
+        saveSchemaVersion = ServerEconomyState.SAVE_SCHEMA_VERSION,
+        saveEpoch = math.floor(tonumber(options.saveEpoch or now) or now),
+        cleared = options.cleared == true,
+    }
+    return ServerEconomyState.NormalizeEconomyState(state)
 end
 
 function ServerEconomyState.GetServerMutationTalentBonus(state)
@@ -166,9 +239,11 @@ function ServerEconomyState.SyncProgressionTourValueFromFarm(state, farmState)
 end
 
 function ServerEconomyState.AddTourRankCommit(commit, uid, state)
+    local rankUid = UserId.ForRankCloud(uid)
+    if rankUid == nil then return end
     local progression = ServerEconomyState.NormalizeProgressionState(state and state.progression)
     local score = math.max(0, math.floor(tonumber(progression.currentTourValue or 0) or 0))
-    commit:ScoreSetInt(uid, deps_.Shared.KEYS.TOUR_RANK, score)
+    commit:ScoreSetInt(rankUid, deps_.Shared.KEYS.TOUR_RANK, score)
 end
 
 function ServerEconomyState.GetActivityRankScore(activityId, activity)
@@ -185,16 +260,20 @@ function ServerEconomyState.GetActivityRankScore(activityId, activity)
 end
 
 function ServerEconomyState.AddActivityRankCommit(commit, uid, state)
+    local rankUid = UserId.ForRankCloud(uid)
+    if rankUid == nil then return end
     local activity = ServerEconomyState.NormalizeActivityState(state and state.activity)
     local activityId = activity.activeId or (deps_.GameConfig.GetActiveActivityId and deps_.GameConfig.GetActiveActivityId(Now())) or "sweet"
     local info = GetActivityRankInfo(activityId, { activityId = activityId, cycleId = activity.cycleId, timeLeft = 0 })
-    commit:ScoreSetInt(uid, info.key, ServerEconomyState.GetActivityRankScore(activityId, activity))
+    commit:ScoreSetInt(rankUid, info.key, ServerEconomyState.GetActivityRankScore(activityId, activity))
 end
 
 function ServerEconomyState.AddIncomeRankCommit(commit, uid, amount)
+    local rankUid = UserId.ForRankCloud(uid)
+    if rankUid == nil then return end
     amount = math.max(0, math.floor(tonumber(amount or 0) or 0))
     if amount <= 0 then return end
-    commit:ScoreAddInt(uid, GetIncomeRankInfo().key, amount)
+    commit:ScoreAddInt(rankUid, GetIncomeRankInfo().key, amount)
 end
 
 return ServerEconomyState

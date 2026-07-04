@@ -238,6 +238,8 @@ function InteractionSystem.UpdateTouchCameraGesture()
 end
 
 function InteractionSystem.HandleInput(dt)
+    if IsUIBlocking() then return end
+
     if input:GetKeyPress(KEY_LEFT) then deps_.selectPlotByDelta(-1, 0) end
     if input:GetKeyPress(KEY_RIGHT) then deps_.selectPlotByDelta(1, 0) end
     if input:GetKeyPress(KEY_UP) then deps_.selectPlotByDelta(0, -1) end

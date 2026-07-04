@@ -8,6 +8,7 @@ local Shared = require("network.shared")
 local EventBus = require("utils.event_bus")
 local UIEvents = require("utils.ui_events")
 local RequestStateMachine = require("client.request_state_machine")
+local NetworkClient = require("client.network_client")
 
 local LeaderboardSystem = {}
 
@@ -23,7 +24,7 @@ local state_ = {
 }
 
 local function IsClientNetworkAvailable()
-    return network ~= nil and IsClientMode ~= nil and IsClientMode() and network:GetServerConnection() ~= nil
+    return NetworkClient.IsRawConnected()
 end
 
 local function BeginRequest(requestType, payload)
@@ -41,10 +42,7 @@ local function EmitChanged(reason)
 end
 
 local function SendRequest(eventName, payload)
-    if IsClientNetworkAvailable() then
-        return Shared.SendToServer(eventName, payload)
-    end
-    return false
+    return NetworkClient.SendRequest(eventName, payload)
 end
 
 local function BuildListKey(kind, activityId)
@@ -57,7 +55,7 @@ end
 function LeaderboardSystem.Init(deps)
     deps_ = deps or {}
     Shared.RegisterClientEvents()
-    if network ~= nil and IsClientMode ~= nil and IsClientMode() then
+    if NetworkClient.IsClientMode() then
         SubscribeToEvent(Shared.EVENTS.LEADERBOARD_RESPONSE, "HandleGardenLeaderboardResponse")
         SubscribeToEvent(Shared.EVENTS.CLAIM_ACTIVITY_RANK_REWARD_RESPONSE, "HandleGardenClaimActivityRankRewardResponse")
     end

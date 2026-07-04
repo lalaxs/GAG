@@ -8,6 +8,8 @@
 
 local ServerEventHandlers = {}
 
+local UserId = require("utils.user_id")
+
 local deps_ = {}
 local Shared = nil
 local RequestGuard = nil
@@ -19,6 +21,7 @@ local scene_ = nil
 local connKeyToUserId_ = {}
 local disconnectedPlayers_ = {}
 local pendingReconnect_ = {}
+local readyConnections_ = {}
 local DISCONNECTED_KEEP_SECONDS = 300
 
 function ServerEventHandlers.Init(deps)
@@ -60,6 +63,15 @@ local function NormalizeUserId(uid)
     if deps_.NormalizeUserId then return deps_.NormalizeUserId(uid) end
     if uid == nil then return nil end
     return tostring(uid)
+end
+
+local function SameUserId(left, right)
+    return UserId.Same(left, right)
+end
+
+local function ResolveConnectionUserId(connection)
+    local key = GetConnectionKey(connection)
+    return NormalizeUserId(connKeyToUserId_[key] or connectionUsers_[key] or GetConnectionUserId(connection))
 end
 
 local function CleanupDisconnectedPlayers()
@@ -167,15 +179,27 @@ function ServerEventHandlers.HandleClientConnected(eventType, eventData)
     CleanupDisconnectedPlayers()
     local connection = eventData["Connection"]:GetPtr("Connection")
     connections_[GetConnectionKey(connection)] = connection
+    -- 不在 ClientConnected 设置 connection.scene，否则会早于客户端绑定 scene 触发 LoadScene。
 end
 
 function ServerEventHandlers.HandleClientIdentity(eventType, eventData)
     local connection = eventData["Connection"]:GetPtr("Connection")
     local key = GetConnectionKey(connection)
-    local uid = NormalizeUserId(GetConnectionUserId(connection))
+    local rawUid = deps_.ReadConnectionIdentity and deps_.ReadConnectionIdentity(connection) or nil
+    local uid = NormalizeUserId(rawUid)
     if uid ~= nil then
+        if deps_.RegisterConnectionUserId ~= nil then
+            deps_.RegisterConnectionUserId(connection, uid)
+        end
         connectionUsers_[key] = uid
         connKeyToUserId_[key] = uid
+        local ServerCloudStore = require("server.server_cloud_store")
+        print(string.format(
+            "[服务端] ClientIdentity userId=%s cloudId=%s addr=%s",
+            tostring(uid),
+            tostring(ServerCloudStore.CloudPlayerId(uid)),
+            tostring(connection:GetAddress()) .. ":" .. tostring(connection:GetPort())
+        ))
         if disconnectedPlayers_[uid] ~= nil then
             pendingReconnect_[key] = uid
             print("[服务端重连] 识别到玩家重连 userId=" .. tostring(uid))
@@ -198,33 +222,63 @@ function ServerEventHandlers.HandleClientDisconnected(eventType, eventData)
     connections_[key] = nil
     connectionUsers_[key] = nil
     connKeyToUserId_[key] = nil
+    if deps_.ClearConnectionUserId ~= nil then
+        deps_.ClearConnectionUserId(connection)
+    end
     pendingReconnect_[key] = nil
+    readyConnections_[key] = nil
+end
+
+local function SendFullSync(uid, connection, reason)
+    SendPlayerProfile(uid, connection)
+    SocialServer.RequestSocialState(uid, connection)
+    RequestEconomyState(uid, connection)
+    SendSeedShopState(connection)
+    RequestAuthFarmState(uid, connection)
+    print("[服务端同步] 已下发完整权威状态 userId=" .. tostring(uid) .. " reason=" .. tostring(reason or "unknown"))
 end
 
 function ServerEventHandlers.HandleGardenClientReady(eventType, eventData)
     local connection = eventData["Connection"]:GetPtr("Connection")
     local data = ReadRequest(eventData)
     local key = GetConnectionKey(connection)
-    local uid = GetRequestUserId(connection, data)
+    local uid = ResolveConnectionUserId(connection)
     local normalizedUid = NormalizeUserId(uid)
     if normalizedUid == nil then
-        Send(connection, Shared.EVENTS.ECONOMY_STATE_RESPONSE, { success = false, message = "玩家身份未就绪，请稍后重试", retryable = true })
-        Send(connection, Shared.EVENTS.AUTH_FARM_RESPONSE, { success = false, message = "玩家身份未就绪，请稍后重试", retryable = true })
-        SendSeedShopState(connection)
+        print("[服务端就绪] 等待 ClientIdentity 认证完成后再同步存档 addr=" .. tostring(connection:GetAddress()))
         return
     end
-    connection.scene = scene_
+    local firstReady = readyConnections_[key] ~= true
+    if firstReady or connection.scene ~= scene_ then
+        connection.scene = scene_
+    end
+    readyConnections_[key] = true
     local reconnectUid = pendingReconnect_[key]
     if reconnectUid ~= nil and reconnectUid == normalizedUid then
         pendingReconnect_[key] = nil
         disconnectedPlayers_[normalizedUid] = nil
         print("[服务端重连] 已恢复玩家连接 userId=" .. tostring(normalizedUid))
     end
-    SendPlayerProfile(uid, connection)
-    SocialServer.RequestSocialState(uid, connection)
-    RequestEconomyState(uid, connection)
-    SendSeedShopState(connection)
-    RequestAuthFarmState(uid, connection)
+    if not firstReady then
+        print("[服务端就绪] 忽略重复 CLIENT_READY userId=" .. tostring(normalizedUid))
+        return
+    end
+    SendFullSync(uid, connection, data.reason or "client_ready")
+end
+
+function ServerEventHandlers.HandleGardenRequestFullSync(eventType, eventData)
+    local connection = eventData["Connection"]:GetPtr("Connection")
+    local data = ReadRequest(eventData)
+    local uid = ResolveConnectionUserId(connection)
+    local normalizedUid = NormalizeUserId(uid)
+    if normalizedUid == nil then
+        print("[服务端同步] 等待 ClientIdentity 认证完成后再全量同步 addr=" .. tostring(connection:GetAddress()))
+        return
+    end
+    if connection.scene == nil or connection.scene ~= scene_ then
+        connection.scene = scene_
+    end
+    SendFullSync(uid, connection, data.reason or "request_full_sync")
 end
 
 function ServerEventHandlers.HandleGardenSaveSnapshot(eventType, eventData)
@@ -236,18 +290,39 @@ end
 
 function ServerEventHandlers.HandleGardenRequestSnapshot(eventType, eventData)
     local connection = eventData["Connection"]:GetPtr("Connection")
-    local uid = GetConnectionUserId(connection)
     local data = ReadRequest(eventData)
-    if uid ~= nil then
-        RequestGuard.Check(uid, "visit", data.requestId, function(recordKey)
-            SocialServer.RequestGardenSnapshot(uid, tonumber(data.targetUserId or 0) or 0, connection, data.requestId, recordKey)
+    local uid = ResolveConnectionUserId(connection)
+    if uid == nil then
+        Send(connection, Shared.EVENTS.GARDEN_RESPONSE, {
+            success = false,
+            message = "玩家身份未就绪，请稍后重试",
+            requestId = data.requestId,
+            retryable = true,
+        })
+        return
+    end
+    RequestGuard.Check(uid, "visit", data.requestId, function(recordKey)
+            SocialServer.RequestGardenSnapshot(uid, data.targetUserId, connection, data.requestId, recordKey)
         end, function(record)
             local response = record.response or record
+            local expectedTarget = NormalizeUserId(data.targetUserId)
+            local cachedTarget = NormalizeUserId(response.targetUserId)
+                or (type(response.garden) == "table" and NormalizeUserId(response.garden.userId))
+            if expectedTarget ~= nil and cachedTarget ~= nil and not SameUserId(expectedTarget, cachedTarget) then
+                print(string.format(
+                    "[社交] 拜访去重缓存 target 不匹配 expected=%s cached=%s，重新请求",
+                    tostring(expectedTarget),
+                    tostring(cachedTarget)
+                ))
+                SocialServer.RequestGardenSnapshot(uid, data.targetUserId, connection, data.requestId, nil)
+                return
+            end
+            response.requestId = data.requestId or response.requestId
+            response.targetUserId = expectedTarget or response.targetUserId
             Send(connection, Shared.EVENTS.GARDEN_RESPONSE, response)
         end, function(reason)
             Send(connection, Shared.EVENTS.GARDEN_RESPONSE, { success = false, message = "请求去重检查失败: " .. tostring(reason), requestId = data.requestId })
         end)
-    end
 end
 
 function ServerEventHandlers.HandleGardenRequestRank(eventType, eventData)
@@ -290,7 +365,7 @@ function ServerEventHandlers.HandleGardenRequestSteal(eventType, eventData)
     if uid ~= nil then
         RequestGuard.Check(uid, "steal", data.requestId, function(recordKey)
             data._requestRecordKey = recordKey
-            RequestSteal(uid, tonumber(data.targetUserId or 0) or 0, data.cropIndex, data.cropId, connection, data.requestId, recordKey)
+            RequestSteal(uid, data.targetUserId, data.cropIndex, data.cropId, connection, data.requestId, recordKey)
         end, function(record)
             local response = record.response or record
             Send(connection, Shared.EVENTS.STEAL_RESPONSE, response)
@@ -669,6 +744,7 @@ function ServerEventHandlers.Register()
     SubscribeToEvent("ClientIdentity", "HandleClientIdentity")
     SubscribeToEvent("ClientDisconnected", "HandleClientDisconnected")
     SubscribeToEvent(Shared.EVENTS.CLIENT_READY, "HandleGardenClientReady")
+    SubscribeToEvent(Shared.EVENTS.REQUEST_FULL_SYNC, "HandleGardenRequestFullSync")
     SubscribeToEvent(Shared.EVENTS.SAVE_GARDEN, "HandleGardenSaveSnapshot")
     SubscribeToEvent(Shared.EVENTS.REQUEST_GARDEN, "HandleGardenRequestSnapshot")
     SubscribeToEvent(Shared.EVENTS.REQUEST_RANK, "HandleGardenRequestRank")

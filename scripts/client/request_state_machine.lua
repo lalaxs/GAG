@@ -37,7 +37,7 @@ end
 function RequestStateMachine:Begin(requestType, payload, options)
     requestType = tostring(requestType or "request")
     payload = payload or {}
-    local requestId = payload.requestId or self:NextId(requestType)
+    local requestId = tostring(payload.requestId or self:NextId(requestType))
     payload.requestId = requestId
     local record = {
         id = requestId,
@@ -52,7 +52,10 @@ function RequestStateMachine:Begin(requestType, payload, options)
 end
 
 function RequestStateMachine:Finish(requestId, fallbackType)
-    local record = requestId ~= nil and self.byId[requestId] or nil
+    if requestId ~= nil and requestId ~= "" then
+        requestId = tostring(requestId)
+    end
+    local record = requestId ~= nil and requestId ~= "" and self.byId[requestId] or nil
     if record == nil and fallbackType ~= nil then
         record = self.byType[fallbackType]
     end

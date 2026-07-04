@@ -11,6 +11,7 @@ local EventBus = require("utils.event_bus")
 local UIEvents = require("utils.ui_events")
 local GameConfig = require("config.game_config")
 local Shared = require("network.shared")
+local UserId = require("utils.user_id")
 
 local SAVE_PATH = "player_profile.json"
 local NICKNAME_MIN_LENGTH = 2
@@ -74,6 +75,7 @@ local callbacks_ = {}
 local subscribedProfileEvent_ = false
 local nicknameFetchAttempts_ = 0
 local nicknameRetryTimer_ = 0
+local serverUserIdCertified_ = false
 local MAX_NICKNAME_FETCH_ATTEMPTS = 5
 
 local function NotifyChanged()
@@ -149,24 +151,11 @@ local function TrimName(name)
 end
 
 local function NormalizeUserId(userId)
-    if userId == nil or userId == 0 or userId == "" then return nil end
-    local text = tostring(userId)
-    text = string.gsub(text, "^%s+", "")
-    text = string.gsub(text, "%s+$", "")
-    if text == "" or text == "0" then return nil end
-    local integerText = string.match(text, "^(%-?%d+)%.0+$")
-    if integerText ~= nil then return integerText end
-    local numericId = tonumber(text)
-    if numericId ~= nil and numericId == math.floor(numericId) and math.abs(numericId) < 9007199254740992 then
-        return string.format("%.0f", numericId)
-    end
-    return text
+    return UserId.Normalize(userId)
 end
 
 local function SameUserId(left, right)
-    local leftId = NormalizeUserId(left)
-    local rightId = NormalizeUserId(right)
-    return leftId ~= nil and rightId ~= nil and leftId == rightId
+    return UserId.Same(left, right)
 end
 
 local function GetNicknameRows(response)
@@ -215,20 +204,16 @@ end
 
 local function GetCurrentUserId()
     if clientCloud ~= nil and clientCloud.userId ~= nil and clientCloud.userId ~= 0 and clientCloud.userId ~= "" then
-        return clientCloud.userId
+        return UserId.Normalize(clientCloud.userId)
     end
     local lobbyService = rawget(_G, "lobby")
     if lobbyService ~= nil and lobbyService.GetMyUserId ~= nil then
         local ok, userId = pcall(function() return lobbyService:GetMyUserId() end)
-        if ok and userId ~= nil and userId ~= 0 and userId ~= "" then
-            return userId
-        end
+        if ok then return UserId.Normalize(userId) end
     end
     if common ~= nil and common.get_user_id ~= nil then
         local ok, userId = pcall(common.get_user_id)
-        if ok and userId ~= nil and userId ~= 0 and userId ~= "" then
-            return userId
-        end
+        if ok then return UserId.Normalize(userId) end
     end
     return nil
 end
@@ -271,9 +256,67 @@ local function SaveLocalProfile()
     return true
 end
 
+local function IsDefaultAvatarProfile(avatar)
+    if type(avatar) ~= "table" then return true end
+    local plantIndex = tonumber(avatar.plantIndex or avatar.selectedAvatar or avatar.index)
+    if plantIndex ~= nil then return math.floor(plantIndex) == 1 end
+    return tostring(avatar.image or "") == "image/plants/plants (1).png"
+end
+
+local function ResolveAvatarIndexFromProfile(avatar)
+    if type(avatar) ~= "table" then return nil end
+    local index = FindAvatarIndex(avatar.plantIndex or avatar.selectedAvatar or avatar.index or avatar.avatarId or avatar.visualId)
+    if index ~= nil then return index end
+    local image = tostring(avatar.image or "")
+    local plantNumber = string.match(image, "plants %((%d+)%)%.png")
+    if plantNumber ~= nil then return FindAvatarIndex(tonumber(plantNumber)) end
+    return nil
+end
+
+local function ApplyCloudAvatar(avatar, source)
+    local index = ResolveAvatarIndexFromProfile(avatar)
+    if index == nil then return false end
+
+    local avatarEntry = AVATARS[index]
+    if avatarEntry == nil then return false end
+
+    local cloudIsDefault = IsDefaultAvatarProfile(avatar)
+    local localIsDefault = IsDefaultAvatarProfile({ plantIndex = state_.selectedAvatar })
+    local changed = false
+
+    if not IsAvatarUnlockedIndex(index) then
+        state_.unlockedAvatars[avatarEntry.id] = true
+        changed = true
+    end
+
+    if cloudIsDefault and not localIsDefault then
+        if changed then
+            EnsureSelectedAvatarUnlocked()
+            SaveLocalProfile()
+            NotifyChanged()
+        end
+        return changed
+    end
+
+    if index ~= state_.selectedAvatar then
+        state_.selectedAvatar = index
+        changed = true
+    end
+
+    if changed then
+        EnsureSelectedAvatarUnlocked()
+        SaveLocalProfile()
+        NotifyChanged()
+        print(string.format("[玩家资料] 已从%s同步头像: %s", source or "云端", avatarEntry.name or tostring(index)))
+    end
+    return changed
+end
+
 local function FetchTapNickname()
     local userId = GetCurrentUserId()
-    state_.userId = NormalizeUserId(userId) or userId
+    if serverUserIdCertified_ ~= true then
+        state_.userId = UserId.Normalize(userId)
+    end
     nicknameFetchAttempts_ = nicknameFetchAttempts_ + 1
     if userId == nil then
         if nicknameFetchAttempts_ >= MAX_NICKNAME_FETCH_ATTEMPTS then
@@ -322,10 +365,15 @@ local function ApplyServerProfile(data)
     if nickname == "Tap玩家" and state_.tapNickname ~= nil and state_.tapNickname ~= "" and state_.tapNickname ~= "Tap玩家" then
         nickname = state_.tapNickname
     end
-    if SameUserId(state_.userId, userId) and state_.tapNickname == nickname then
+    local avatarChanged = false
+    if data.avatar ~= nil then
+        avatarChanged = ApplyCloudAvatar(data.avatar, "服务器")
+    end
+    if SameUserId(state_.userId, userId) and state_.tapNickname == nickname and not avatarChanged then
         return true
     end
-    state_.userId = NormalizeUserId(userId) or userId
+    state_.userId = UserId.Normalize(userId)
+    serverUserIdCertified_ = true
     state_.tapNickname = nickname
     print("[玩家资料] 已从服务器认证资料读取 Tap 账号: " .. tostring(state_.userId) .. " / " .. tostring(state_.tapNickname))
     NotifyChanged()
@@ -340,6 +388,7 @@ function PlayerSystem.Init(callbacks)
     callbacks_ = callbacks or {}
     nicknameFetchAttempts_ = 0
     nicknameRetryTimer_ = 0
+    serverUserIdCertified_ = false
     state_ = {
         userId = nil,
         tapNickname = "Tap玩家",
@@ -372,6 +421,10 @@ end
 
 function PlayerSystem.GetUserId()
     return state_.userId
+end
+
+function PlayerSystem.IsServerUserIdCertified()
+    return serverUserIdCertified_ == true
 end
 
 function PlayerSystem.GetTapNickname()
@@ -541,6 +594,10 @@ function PlayerSystem.LoadSaveData(data)
     EnsureSelectedAvatarUnlocked()
     SaveLocalProfile()
     NotifyChanged()
+end
+
+function PlayerSystem.ApplyCloudAvatarProfile(avatar, source)
+    return ApplyCloudAvatar(avatar, source)
 end
 
 return PlayerSystem

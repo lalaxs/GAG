@@ -13,14 +13,12 @@ local UIEvents = require("utils.ui_events")
 local cfg_ = nil
 local inventory_ = nil
 local callbacks_ = {}
-local localRewardsEnabled_ = true
 
 local function IsClientRuntime()
     return IsClientMode ~= nil and IsClientMode()
 end
 
 local function CanApplyLocalReward(actionName)
-    if localRewardsEnabled_ == true then return true end
     if IsClientRuntime() then
         print("[活动] 已阻止客户端本地活动结算: " .. tostring(actionName or "unknown"))
         return false
@@ -129,7 +127,6 @@ function ActivitySystem.Init(config, inventorySystem, callbacks)
     cfg_ = config
     inventory_ = inventorySystem
     callbacks_ = callbacks or {}
-    localRewardsEnabled_ = callbacks_.allowLocalRewards ~= false
 end
 
 function ActivitySystem.GetState()
@@ -185,10 +182,10 @@ function ActivitySystem.ApplyPlantingMutation(plant, mutation, mutationBonus)
 
     local added = nil
     if id == "sweet" then
-        if math.random() <= (activity.candyChance or 0.045) then
+        if math.random() <= (activity.candyChance or 0.095) then
             added = AddSpecial(mutation, "candy") and "candy" or added
         end
-        if math.random() <= (activity.honeyChance or 0.025) then
+        if math.random() <= (activity.honeyChance or 0.075) then
             added = AddSpecial(mutation, "honey") and "honey" or added
         end
     elseif id == "dark" then

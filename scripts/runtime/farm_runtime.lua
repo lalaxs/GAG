@@ -86,8 +86,10 @@ end
 
 function FarmRuntime.BuildVisitPlots(garden)
     FarmRuntime.DisposeCurrentFarm()
+    initialHidden_ = false
     local plotIndex = tonumber(garden and garden.visitablePlotIndex or 1) or 1
     SetPlots(deps_.FarmSystem.CreateFarm(deps_.getScene(), 1, LOCAL))
+    SetFarmEnabled(true)
     SetUnlockedPlotCount(1)
     SetSelectedPlot(1)
     local plotData = garden and garden.plot or nil
@@ -99,6 +101,9 @@ function FarmRuntime.BuildVisitPlots(garden)
     deps_.PlotDisplayController.SetDisplayMode("all")
     deps_.CameraSystem.EnterFarmView()
     deps_.refreshSelection()
+    if deps_.updateCameraTargetForPlotDisplay ~= nil then
+        deps_.updateCameraTargetForPlotDisplay()
+    end
     deps_.updateCamera()
     print(string.format("[社交花园] 已加载玩家 %s 的可参观地块 %d", tostring(garden and garden.nickname or "好友"), plotIndex))
 end

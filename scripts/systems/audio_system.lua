@@ -17,6 +17,7 @@ local BGM_TRACKS = {
 AudioSystem.SFX = {
     plant_seed = "audio/sfx/plant_seed.ogg",
     harvest_crop = "audio/sfx/harvest_crop.ogg",
+    sell_coin = "audio/sfx/sell_coin.ogg",
 }
 
 local bgmPlaylist_ = {}
@@ -33,10 +34,12 @@ local currentTime_ = 0
 
 local SFX_DEFAULT_GAIN = {
     plant_seed = 0.65,
+    sell_coin = 0.85,
 }
 
 local SFX_MIN_INTERVAL = {
     plant_seed = 0.12,
+    sell_coin = 0.10,
 }
 
 local function ShuffleBGMPlaylist()
@@ -107,6 +110,7 @@ end
 local ENABLED_SFX = {
     plant_seed = true,
     harvest_crop = true,
+    sell_coin = true,
 }
 
 function AudioSystem.PlaySFX(idOrPath, gain, minInterval)

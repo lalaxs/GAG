@@ -408,6 +408,7 @@ function UiBindings.InitLeaderboardView()
         SocialGardenSystem = deps_.SocialGardenSystem,
         getActiveActivityId = function() return deps_.ActivitySystem.GetActiveActivityId() end,
         getMyNickname = function() return deps_.PlayerSystem.GetDisplayName() end,
+        getMyUserId = function() return deps_.PlayerSystem.GetUserId() end,
         getMyAvatar = function() return deps_.PlayerSystem.GetSelectedAvatarProfile() end,
         visitPlayer = function(userId)
             local ok = deps_.SocialGardenSystem.VisitPlayer(userId)

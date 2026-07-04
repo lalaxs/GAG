@@ -9,6 +9,7 @@
 
 local UI = require("urhox-libs/UI")
 local ModalAnim = require("ui.modal_anim")
+local NetworkClient = require("client.network_client")
 
 local NetworkRecovery = {}
 
@@ -27,6 +28,9 @@ local state_ = {
     disconnectedNoticeElapsed = 0,
     disconnectedNoticeInterval = 10.0,
     rawReadyFallbackDelay = 1.5,
+    syncCooldown = 0,
+    minSyncInterval = 1.5,
+    pendingSyncReason = nil,
     retrying = false,
     retryMessage = nil,
 }
@@ -48,21 +52,18 @@ local function GetSocialGardenSystem()
     return deps_.SocialGardenSystem
 end
 
-local function GetEconomyCloudSystem()
-    return deps_.EconomyCloudSystem
+local function EnsureConnectionScene()
+    if deps_.getScene ~= nil then
+        NetworkClient.EnsureConnectionScene(deps_.getScene)
+    end
 end
 
 local function BindServerConnection(forceReady)
-    local socialGardenSystem = GetSocialGardenSystem()
-    if socialGardenSystem ~= nil and socialGardenSystem.BindServerConnection ~= nil then
-        return socialGardenSystem.BindServerConnection(forceReady == true)
-    end
-    return false
+    return NetworkClient.BindServerConnection(forceReady)
 end
 
 local function GetServerConnection()
-    if network == nil or IsClientMode == nil or not IsClientMode() then return nil end
-    return network:GetServerConnection()
+    return NetworkClient.GetConnection()
 end
 
 local function GetConnectionKey(connection)
@@ -71,7 +72,7 @@ local function GetConnectionKey(connection)
 end
 
 local function IsRawServerConnectionAvailable()
-    return GetServerConnection() ~= nil
+    return NetworkClient.IsRawConnected()
 end
 
 local function IsReadyServerConnectionAvailable()
@@ -162,21 +163,20 @@ end
 function NetworkRecovery.RequestSync(reason)
     if not IsReadyServerConnectionAvailable() then
         state_.syncPending = true
+        state_.pendingSyncReason = reason or state_.pendingSyncReason
+        return false
+    end
+    local syncReason = reason or state_.pendingSyncReason or "network_recovered"
+    if state_.syncCooldown > 0 then
+        state_.syncPending = true
+        state_.pendingSyncReason = syncReason
+        print("[网络恢复] 同步请求过于频繁，已延后: " .. tostring(syncReason))
         return false
     end
     state_.syncPending = false
-    local syncReason = reason or "network_recovered"
-    local socialGardenSystem = GetSocialGardenSystem()
-    local economyCloudSystem = GetEconomyCloudSystem()
-    BindServerConnection(true)
-    economyCloudSystem.RequestState({ force = true, reason = syncReason })
-    economyCloudSystem.RequestSeedShop()
-    economyCloudSystem.RequestAuthFarm({ force = true, reason = syncReason })
-    socialGardenSystem.RequestSocialState({ force = true, reason = syncReason })
-    if economyCloudSystem.IsReady(false) then
-        economyCloudSystem.RequestCommissions()
-    end
-    socialGardenSystem.UploadSnapshot()
+    state_.pendingSyncReason = nil
+    state_.syncCooldown = state_.minSyncInterval
+    NetworkClient.RequestAuthoritySync(syncReason)
     CloseDisconnectModal()
     print("[网络恢复] 已请求服务器权威数据重同步: " .. tostring(syncReason))
     return true
@@ -187,6 +187,7 @@ function NetworkRecovery.RetryNow()
     if IsRawServerConnectionAvailable() then
         state_.serverReady = true
         state_.rawConnectedWithoutReadyElapsed = 0
+        state_.syncCooldown = 0
         state_.syncPending = true
         if NetworkRecovery.RequestSync("manual_retry") then
             ShowToast("网络已恢复，正在同步数据")
@@ -209,15 +210,30 @@ end
 
 local function ForceReadyFromRawConnection(reason)
     if not IsRawServerConnectionAvailable() then return false end
-    state_.serverReady = true
+    local socialGardenSystem = GetSocialGardenSystem()
+    if socialGardenSystem ~= nil
+        and socialGardenSystem.IsServerBound ~= nil
+        and socialGardenSystem.IsServerBound() ~= true then
+        BindServerConnection(true)
+    end
+    state_.serverReady = socialGardenSystem ~= nil
+        and socialGardenSystem.IsServerBound ~= nil
+        and socialGardenSystem.IsServerBound() == true
+    if state_.serverReady ~= true then
+        state_.syncPending = true
+        return false
+    end
     state_.syncPending = true
     NetworkRecovery.RestoreOwnFarm("网络已恢复，正在同步我的花园")
     return NetworkRecovery.RequestSync(reason or "raw_connection_ready")
 end
 
 function NetworkRecovery.Update(dt)
-    if network == nil or IsClientMode == nil or not IsClientMode() then return end
+    if not NetworkClient.IsClientMode() then return end
     dt = dt or 0
+    if state_.syncCooldown > 0 then
+        state_.syncCooldown = math.max(0, state_.syncCooldown - dt)
+    end
     state_.timer = state_.timer - dt
     if state_.timer > 0 then return end
     local tick = state_.checkInterval
@@ -228,6 +244,7 @@ function NetworkRecovery.Update(dt)
     local connectionKey = GetConnectionKey(rawConnection)
 
     if rawAvailable then
+        EnsureConnectionScene()
         state_.rawDisconnectedElapsed = 0
         if state_.lastConnectionKey ~= connectionKey then
             state_.lastConnectionKey = connectionKey
@@ -236,6 +253,15 @@ function NetworkRecovery.Update(dt)
             state_.syncPending = true
             state_.wasConnected = false
             print("[网络恢复] 检测到服务器连接，准备重新绑定")
+            local socialGardenSystem = GetSocialGardenSystem()
+            if socialGardenSystem ~= nil
+                and socialGardenSystem.IsServerBound ~= nil
+                and socialGardenSystem.IsServerBound() ~= true then
+                BindServerConnection(true)
+                if socialGardenSystem.IsServerBound() == true then
+                    state_.serverReady = true
+                end
+            end
         elseif state_.serverReady ~= true then
             state_.rawConnectedWithoutReadyElapsed = state_.rawConnectedWithoutReadyElapsed + tick
         end
@@ -284,6 +310,17 @@ function NetworkRecovery.Update(dt)
 end
 
 function NetworkRecovery.HandleServerReady()
+    local socialGardenSystem = GetSocialGardenSystem()
+    if socialGardenSystem ~= nil
+        and socialGardenSystem.IsServerBound ~= nil
+        and socialGardenSystem.IsServerBound() == true then
+        state_.serverReady = true
+        state_.rawConnectedWithoutReadyElapsed = 0
+        state_.wasConnected = IsReadyServerConnectionAvailable()
+        state_.syncPending = false
+        CloseDisconnectModal()
+        return
+    end
     BindServerConnection(true)
     state_.serverReady = true
     state_.rawConnectedWithoutReadyElapsed = 0
@@ -301,6 +338,8 @@ function NetworkRecovery.HandleServerDisconnected()
     state_.rawConnectedWithoutReadyElapsed = 0
     state_.rawDisconnectedElapsed = 0
     state_.disconnectedNoticeElapsed = 0
+    state_.syncCooldown = 0
+    state_.pendingSyncReason = nil
     ShowDisconnectModal("网络连接已断开，请检查网络后点击重试")
     ShowToast("网络连接已断开，等待恢复")
 end
@@ -313,6 +352,8 @@ function NetworkRecovery.ResetConnectionState()
     state_.rawDisconnectedElapsed = 0
     state_.rawConnectedWithoutReadyElapsed = 0
     state_.disconnectedNoticeElapsed = 0
+    state_.syncCooldown = 0
+    state_.pendingSyncReason = nil
 end
 
 function NetworkRecovery.ResetLoadingState()

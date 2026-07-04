@@ -7,7 +7,13 @@
 
 local ServerActivity = {}
 
+local ServerCloudStore = require("server.server_cloud_store")
+
 local deps_ = {}
+
+local function CloudUid(uid)
+    return ServerCloudStore.CloudPlayerId(uid) or ServerCloudStore.CanonicalUid(uid)
+end
 
 function ServerActivity.Init(deps)
     deps_ = deps or {}
@@ -173,7 +179,8 @@ function ServerActivity.ApplyActivityHarvestReward(state, crop)
 end
 
 function ServerActivity.SubmitActivityCropAuthority(uid, payload, connection)
-    serverCloud:Get(uid, deps_.Shared.KEYS.ECONOMY_STATE, {
+    uid = CloudUid(uid)
+    ServerCloudStore.Get(uid, deps_.Shared.KEYS.ECONOMY_STATE, {
         ok = function(scores)
             local state = GetExistingEconomyState(scores)
             if state == nil then
@@ -199,7 +206,7 @@ function ServerActivity.SubmitActivityCropAuthority(uid, payload, connection)
             NextRevision(state)
             local response = { success = true, message = "上交成功，甜蜜值 +" .. value, requestId = payload.requestId, value = value, state = state }
             local c = serverCloud:BatchCommit("活动作物上交")
-            c:ScoreSet(uid, deps_.Shared.KEYS.ECONOMY_STATE, state)
+            ServerCloudStore.BatchScoreSet(c, uid, deps_.Shared.KEYS.ECONOMY_STATE, state)
             AddActivityRankCommit(c, uid, state)
             deps_.RequestGuard.AddToCommit(c, uid, payload._requestRecordKey, response)
             c:Commit({
@@ -212,7 +219,8 @@ function ServerActivity.SubmitActivityCropAuthority(uid, payload, connection)
 end
 
 function ServerActivity.ExchangeActivityRewardAuthority(uid, payload, connection)
-    serverCloud:Get(uid, deps_.Shared.KEYS.ECONOMY_STATE, {
+    uid = CloudUid(uid)
+    ServerCloudStore.Get(uid, deps_.Shared.KEYS.ECONOMY_STATE, {
         ok = function(scores)
             local state = GetExistingEconomyState(scores)
             if state == nil then
@@ -254,7 +262,7 @@ function ServerActivity.ExchangeActivityRewardAuthority(uid, payload, connection
             NextRevision(state)
             local response = { success = true, message = "兑换成功: " .. tostring(reward.name or "奖励"), requestId = payload.requestId, reward = reward, state = state }
             local c = serverCloud:BatchCommit("活动奖励兑换")
-            c:ScoreSet(uid, deps_.Shared.KEYS.ECONOMY_STATE, state)
+            ServerCloudStore.BatchScoreSet(c, uid, deps_.Shared.KEYS.ECONOMY_STATE, state)
             deps_.RequestGuard.AddToCommit(c, uid, payload._requestRecordKey, response)
             c:Commit({
                 ok = function() Send(connection, deps_.Shared.EVENTS.EXCHANGE_ACTIVITY_REWARD_RESPONSE, response) end,
@@ -266,7 +274,8 @@ function ServerActivity.ExchangeActivityRewardAuthority(uid, payload, connection
 end
 
 function ServerActivity.DrawActivityPackAuthority(uid, payload, connection)
-    serverCloud:Get(uid, deps_.Shared.KEYS.ECONOMY_STATE, {
+    uid = CloudUid(uid)
+    ServerCloudStore.Get(uid, deps_.Shared.KEYS.ECONOMY_STATE, {
         ok = function(scores)
             local state = GetExistingEconomyState(scores)
             if state == nil then
@@ -319,7 +328,7 @@ function ServerActivity.DrawActivityPackAuthority(uid, payload, connection)
             NextRevision(state)
             local response = { success = true, message = "基因抽取完成", requestId = payload.requestId, rewards = rewards, state = state }
             local c = serverCloud:BatchCommit("活动基因抽取")
-            c:ScoreSet(uid, deps_.Shared.KEYS.ECONOMY_STATE, state)
+            ServerCloudStore.BatchScoreSet(c, uid, deps_.Shared.KEYS.ECONOMY_STATE, state)
             deps_.RequestGuard.AddToCommit(c, uid, payload._requestRecordKey, response)
             c:Commit({
                 ok = function() Send(connection, deps_.Shared.EVENTS.DRAW_ACTIVITY_PACK_RESPONSE, response) end,

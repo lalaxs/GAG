@@ -1,0 +1,57 @@
+-- ============================================================================
+-- 客户端主循环
+-- Grow A Garden
+-- ============================================================================
+
+local GameLoop = {}
+
+local deps_ = {}
+
+function GameLoop.Init(deps)
+    deps_ = deps or {}
+end
+
+function GameLoop.HandleUpdate(eventType, eventData)
+    local dt = eventData["TimeStep"]:GetFloat()
+    deps_.updateNetworkRecovery(dt)
+
+    if not deps_.isInitialUiReady() then
+        deps_.PlayerSystem.Update(dt)
+        deps_.EconomyCloudSystem.Update(dt)
+        deps_.AdRewardSystem.Update(dt)
+        deps_.SocialGardenSystem.Update(dt)
+        deps_.LeaderboardSystem.Update(dt)
+        if deps_.NetworkRecovery.UpdateLoading(dt) then
+            deps_.UIController.ShowLoading("服务器响应较慢，正在重试同步...")
+            deps_.requestNetworkRecoverySync("loading_timeout")
+        end
+        deps_.ensureInitialUiReady()
+        deps_.FloatingToast.Update(dt)
+        deps_.UIController.Update(dt)
+        deps_.AudioSystem.Update(dt)
+        return
+    end
+
+    if not deps_.ModelPreviewSystem.IsOpen() then
+        deps_.handleInput(dt)
+        deps_.updateTouchCameraGesture()
+    end
+    deps_.updatePlotBounceAnimation(dt)
+    deps_.updatePlants(dt)
+    deps_.updateSeedPackOpening(dt)
+    deps_.ModelPreviewSystem.Update(dt)
+    deps_.Shop.Update(dt)
+    deps_.PlayerSystem.Update(dt)
+    deps_.EconomyCloudSystem.Update(dt)
+    deps_.AdRewardSystem.Update(dt)
+    deps_.SocialGardenSystem.Update(dt)
+    deps_.LeaderboardSystem.Update(dt)
+    deps_.CommissionSystem.Update(dt)
+    deps_.FloatingToast.Update(dt)
+    deps_.UIController.Update(dt)
+    deps_.flushPendingRebuildUI()
+    deps_.AudioSystem.Update(dt)
+    deps_.refreshUI(false)
+end
+
+return GameLoop

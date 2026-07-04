@@ -10,7 +10,6 @@ logs/.nfs*
 
 # Temp & swap files
 .tmp/
-_uploads/
 *.crswap
 .DS_Store
 
@@ -24,13 +23,9 @@ ossutil_output/
 .codex/
 .gemini/
 .claude/
-.agent/
 .emmylua/
 .installer/
 .maker/
-
-# Local repository mirror, no longer used
-GAG/
 
 # Maker engine assets & agent files (provided by ai-dev-kit, not user source)
 engine-docs/

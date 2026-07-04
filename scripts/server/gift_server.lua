@@ -4,6 +4,9 @@
 -- 处理种子礼物发送、列表读取、领取与领取幂等。
 -- ============================================================================
 
+local UserId = require("utils.user_id")
+local ServerCloudStore = require("server.server_cloud_store")
+
 local GiftServer = {}
 
 local deps_ = {}
@@ -13,18 +16,12 @@ local function Now()
 end
 
 local function NormalizeUserId(userId)
-    if userId == nil or userId == 0 or userId == "" then return nil end
-    local text = tostring(userId)
-    text = string.gsub(text, "^%s+", "")
-    text = string.gsub(text, "%s+$", "")
-    if text == "" or text == "0" then return nil end
-    local integerText = string.match(text, "^(%-?%d+)%.0+$")
-    if integerText ~= nil then return integerText end
-    local numericId = tonumber(text)
-    if numericId ~= nil and numericId == math.floor(numericId) and math.abs(numericId) < 9007199254740992 then
-        return string.format("%.0f", numericId)
-    end
-    return text
+    if deps_.NormalizeUserId ~= nil then return deps_.NormalizeUserId(userId) end
+    return UserId.Normalize(userId)
+end
+
+local function CloudUid(uid)
+    return ServerCloudStore.CloudPlayerId(uid) or ServerCloudStore.CanonicalUid(uid)
 end
 
 local function NormalizeListId(value)
@@ -135,7 +132,7 @@ local function SameUserId(left, right)
 end
 
 local function CheckFriendship(uid, targetUid, done)
-    serverCloud.list:Get(uid, deps_.Shared.KEYS.FRIENDS, {
+    ServerCloudStore.ListGet(uid, deps_.Shared.KEYS.FRIENDS, {
         ok = function(rows)
             for _, row in ipairs(rows or {}) do
                 local value = row.value or row
@@ -206,10 +203,12 @@ end
 function GiftServer.SendSeedGift(uid, targetUid, _seedId, count, connection, requestId, requestRecordKey, profile)
     local Shared = deps_.Shared
     profile = type(profile) == "table" and profile or {}
-    targetUid = tonumber(targetUid or 0) or 0
+    local fromUid = NormalizeUserId(uid)
+    targetUid = NormalizeUserId(targetUid)
+    local fromCloudUid = CloudUid(fromUid or uid)
     local seedId = PickRandomGiftSeedId()
     count = NormalizePositiveCount(count, deps_.maxGiftCount)
-    if targetUid <= 0 then
+    if fromUid == nil or targetUid == nil then
         SendError(connection, Shared.EVENTS.SEND_SEED_GIFT_RESPONSE, "INVALID_TARGET", "好友玩家 ID 无效", { requestId = requestId })
         return
     end
@@ -217,26 +216,27 @@ function GiftServer.SendSeedGift(uid, targetUid, _seedId, count, connection, req
         SendError(connection, Shared.EVENTS.SEND_SEED_GIFT_RESPONSE, "INVALID_PLANT", "种子配置不存在", { requestId = requestId })
         return
     end
-    if tostring(uid) == tostring(targetUid) then
+    if fromUid == targetUid then
         SendError(connection, Shared.EVENTS.SEND_SEED_GIFT_RESPONSE, "SELF_GIFT", "不能给自己赠送种子", { requestId = requestId })
         return
     end
+    local targetCloudUid = CloudUid(targetUid)
 
     local now = Now()
     local today = DayKey(now)
     local giftTargetRecordKey = BuildGiftTargetRecordKey(targetUid, today)
-    CheckFriendship(uid, targetUid, function(isFriend)
+    CheckFriendship(fromCloudUid, targetUid, function(isFriend)
         if isFriend ~= true then
             SendError(connection, Shared.EVENTS.SEND_SEED_GIFT_RESPONSE, "NOT_FRIEND", "只能给好友赠送种子", { requestId = requestId, targetUserId = targetUid })
             return
         end
-        serverCloud.list:Get(uid, giftTargetRecordKey, {
+        ServerCloudStore.ListGet(fromCloudUid, giftTargetRecordKey, {
             ok = function(targetRows)
                 if targetRows ~= nil and #targetRows > 0 then
                     SendError(connection, Shared.EVENTS.SEND_SEED_GIFT_RESPONSE, "GIFT_ALREADY_SENT", "今天已经给这位好友送过礼了", { requestId = requestId, targetUserId = targetUid })
                     return
                 end
-                serverCloud.list:Get(uid, Shared.KEYS.GIFT_SENT_TARGETS, {
+                ServerCloudStore.ListGet(fromCloudUid, Shared.KEYS.GIFT_SENT_TARGETS, {
                     ok = function(rows)
                         for _, row in ipairs(rows or {}) do
                             local value = row.value or row
@@ -246,7 +246,7 @@ function GiftServer.SendSeedGift(uid, targetUid, _seedId, count, connection, req
                             end
                         end
                         local gift = {
-                            fromUserId = uid,
+                            fromUserId = fromUid,
                             fromNickname = profile.nickname,
                             seedId = seedId,
                             count = count,
@@ -263,14 +263,15 @@ function GiftServer.SendSeedGift(uid, targetUid, _seedId, count, connection, req
                         }
                         local sentRecord = { targetUserId = targetUid, seedId = seedId, time = now, day = today }
                         local c = serverCloud:BatchCommit("发送种子礼物")
-                        c:ListAdd(targetUid, Shared.KEYS.SEED_REWARDS, gift)
-                        c:ListAdd(uid, giftTargetRecordKey, sentRecord)
-                        c:ListAdd(uid, Shared.KEYS.GIFT_SENT_TARGETS, sentRecord)
-                        c:QuotaAdd(uid, "daily_seed_gift", 1, deps_.dailyGiftLimit, "day", 1)
+                        c:QuotaAdd(fromCloudUid, giftTargetRecordKey, 1, 1, "day", 1)
+                        c:ListAdd(targetCloudUid, Shared.KEYS.SEED_REWARDS, gift)
+                        c:ListAdd(fromCloudUid, giftTargetRecordKey, sentRecord)
+                        c:ListAdd(fromCloudUid, Shared.KEYS.GIFT_SENT_TARGETS, sentRecord)
+                        c:QuotaAdd(fromCloudUid, "daily_seed_gift", 1, deps_.dailyGiftLimit, "day", 1)
                         deps_.RequestGuard.AddToCommit(c, uid, requestRecordKey, response)
                         c:Commit({
                             ok = function()
-                                serverCloud.quota:Get(uid, "daily_seed_gift", {
+                                ServerCloudStore.QuotaGet(fromCloudUid, "daily_seed_gift", {
                                     ok = function(quotaRows)
                                         local row = quotaRows and quotaRows[1]
                                         response.daily.giftSentCount = math.max(0, math.floor(tonumber(row and row.value or 0) or 0))
@@ -300,7 +301,8 @@ end
 
 function GiftServer.RequestGifts(uid, connection)
     local Shared = deps_.Shared
-    serverCloud.list:Get(uid, Shared.KEYS.SEED_REWARDS, {
+    local cloudUid = CloudUid(uid)
+    ServerCloudStore.ListGet(cloudUid, Shared.KEYS.SEED_REWARDS, {
         ok = function(rows)
             local gifts = NormalizeGiftRows(rows)
             local userIds = {}
@@ -323,13 +325,14 @@ end
 
 function GiftServer.ClaimGift(uid, giftId, fallbackSeedId, fallbackCount, connection, requestId, requestRecordKey)
     local Shared = deps_.Shared
+    local cloudUid = CloudUid(uid)
     giftId = NormalizeListId(giftId)
     if giftId == nil then
         SendError(connection, Shared.EVENTS.CLAIM_GIFT_RESPONSE, "INVALID_GIFT", "礼物不存在", { requestId = requestId, giftId = giftId })
         return
     end
     local claimRecordKey = BuildGiftClaimRecordKey(giftId)
-    serverCloud.list:Get(uid, claimRecordKey, {
+    ServerCloudStore.ListGet(cloudUid, claimRecordKey, {
         ok = function(claimRows)
             if claimRows ~= nil and #claimRows > 0 then
                 local record = claimRows[1].value or claimRows[1]
@@ -345,7 +348,7 @@ function GiftServer.ClaimGift(uid, giftId, fallbackSeedId, fallbackCount, connec
                 Send(connection, Shared.EVENTS.CLAIM_GIFT_RESPONSE, response)
                 return
             end
-            serverCloud.list:Get(uid, Shared.KEYS.SEED_REWARDS, {
+            ServerCloudStore.ListGet(cloudUid, Shared.KEYS.SEED_REWARDS, {
                 ok = function(rows)
                     local found = nil
                     local listId = nil
@@ -368,7 +371,7 @@ function GiftServer.ClaimGift(uid, giftId, fallbackSeedId, fallbackCount, connec
                         SendError(connection, Shared.EVENTS.CLAIM_GIFT_RESPONSE, "INVALID_GIFT_CONTENT", "礼物内容无效", { requestId = requestId, giftId = giftId })
                         return
                     end
-                    serverCloud:Get(uid, Shared.KEYS.ECONOMY_STATE, {
+                    ServerCloudStore.Get(cloudUid, Shared.KEYS.ECONOMY_STATE, {
                         ok = function(scores)
                             local state = GetExistingEconomyState(scores)
                             if state == nil then
@@ -382,9 +385,9 @@ function GiftServer.ClaimGift(uid, giftId, fallbackSeedId, fallbackCount, connec
                             local reward = BuildReward(seedId, count)
                             local response = { success = true, message = "已领取" .. reward.description, requestId = requestId, giftId = giftId, gift = reward, state = state }
                             local c = serverCloud:BatchCommit("领取种子礼物")
-                            c:QuotaAdd(uid, claimRecordKey, 1, 1)
-                            c:ScoreSet(uid, Shared.KEYS.ECONOMY_STATE, state)
-                            c:ListAdd(uid, claimRecordKey, { giftId = giftId, reward = reward, claimedAt = Now() })
+                            c:QuotaAdd(cloudUid, claimRecordKey, 1, 1)
+                            ServerCloudStore.BatchScoreSet(c, cloudUid, Shared.KEYS.ECONOMY_STATE, state)
+                            c:ListAdd(cloudUid, claimRecordKey, { giftId = giftId, reward = reward, claimedAt = Now() })
                             c:ListDelete(listId)
                             deps_.RequestGuard.AddToCommit(c, uid, requestRecordKey, response)
                             c:Commit({

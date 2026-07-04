@@ -8,6 +8,17 @@
 local ServerLeaderboard = {}
 
 local deps_ = {}
+local ServerCloudStore = require("server.server_cloud_store")
+local LeaderboardSanitize = require("server.leaderboard_sanitize")
+local UserId = require("utils.user_id")
+
+local function CloudUid(uid)
+    return ServerCloudStore.CloudPlayerId(uid) or ServerCloudStore.CanonicalUid(uid)
+end
+
+local function RankUid(uid)
+    return UserId.ForRankCloud(uid) or CloudUid(uid)
+end
 
 function ServerLeaderboard.Init(deps)
     deps_ = deps or {}
@@ -79,6 +90,7 @@ function ServerLeaderboard.GetRankItemScore(item, key)
 end
 
 function ServerLeaderboard.AddPreviousActivityRewardStatus(uid, data, done)
+    uid = CloudUid(uid)
     if data.kind ~= "activity" then
         done(data)
         return
@@ -95,13 +107,14 @@ function ServerLeaderboard.AddPreviousActivityRewardStatus(uid, data, done)
     data.previousCycleId = previousInfo.cycleId
     data.previousCycleStart = previousInfo.cycleStart
     data.previousCycleEnd = previousInfo.cycleEnd
-    serverCloud:GetUserRank(uid, previousInfo.key, {
+    ---@diagnostic disable-next-line: param-type-mismatch
+    serverCloud:GetUserRank(RankUid(uid), previousInfo.key, {
         ok = function(previousRank, previousScore)
             previousScore = math.max(0, math.floor(tonumber(previousScore or 0) or 0))
             data.previousRank = previousRank
             data.previousScore = previousScore
             data.previousRewardEligible = previousRank ~= nil and previousRank <= deps_.activityRankRewardTop and previousScore > 0
-            serverCloud:Get(uid, previousInfo.rewardKey, {
+            ServerCloudStore.Get(uid, previousInfo.rewardKey, {
                 ok = function(scores)
                     data.previousRewardClaimed = type(scores[previousInfo.rewardKey]) == "table"
                     done(data)
@@ -123,8 +136,18 @@ function ServerLeaderboard.AddPreviousActivityRewardStatus(uid, data, done)
 end
 
 function ServerLeaderboard.SendLeaderboardWithMyRank(uid, connection, requestId, info, list)
-    serverCloud:GetUserRank(uid, info.key, {
+    uid = CloudUid(uid)
+    ---@diagnostic disable-next-line: param-type-mismatch
+    serverCloud:GetUserRank(RankUid(uid), info.key, {
         ok = function(myRank, myScore)
+            local myScoreValue = math.max(0, math.floor(tonumber(myScore or 0) or 0))
+            for _, entry in ipairs(list or {}) do
+                if UserId.Same(entry.userId, uid) then
+                    entry.score = myScoreValue
+                    entry.isMe = true
+                end
+            end
+
             local function SendWithRewardStatus(rewardClaimed)
                 local data = {
                     success = true,
@@ -139,7 +162,7 @@ function ServerLeaderboard.SendLeaderboardWithMyRank(uid, connection, requestId,
                     title = info.title,
                     list = list,
                     myRank = myRank,
-                    myScore = math.max(0, math.floor(tonumber(myScore or 0) or 0)),
+                    myScore = myScoreValue,
                     rewardEligible = info.kind == "activity" and myRank ~= nil and myRank <= deps_.activityRankRewardTop,
                     rewardClaimed = rewardClaimed == true,
                 }
@@ -151,7 +174,7 @@ function ServerLeaderboard.SendLeaderboardWithMyRank(uid, connection, requestId,
                 SendWithRewardStatus(false)
                 return
             end
-            serverCloud:Get(uid, info.rewardKey, {
+            ServerCloudStore.Get(uid, info.rewardKey, {
                 ok = function(scores)
                     SendWithRewardStatus(type(scores[info.rewardKey]) == "table")
                 end,
@@ -170,6 +193,7 @@ function ServerLeaderboard.SendLeaderboardWithMyRank(uid, connection, requestId,
 end
 
 function ServerLeaderboard.RequestLeaderboardAuthority(uid, payload, connection)
+    uid = CloudUid(uid)
     payload = payload or {}
     local info = ServerLeaderboard.ResolveLeaderboardInfo(payload.kind, payload.activityId)
     local count = deps_.NormalizePositiveCount(payload.count or 20, 50)
@@ -178,7 +202,7 @@ function ServerLeaderboard.RequestLeaderboardAuthority(uid, payload, connection)
             local userIds = {}
             local result = {}
             for i, item in ipairs(rankList or {}) do
-                local userId = item.userId or item.player
+                local userId = LeaderboardSanitize.ResolveRankUserId(item)
                 if userId ~= nil then
                     userIds[#userIds + 1] = userId
                     result[#result + 1] = {
@@ -186,18 +210,13 @@ function ServerLeaderboard.RequestLeaderboardAuthority(uid, payload, connection)
                         userId = userId,
                         nickname = "Tap玩家",
                         score = ServerLeaderboard.GetRankItemScore(item, info.key),
-                        isMe = tostring(userId) == tostring(uid),
                     }
                 end
             end
             deps_.GetNicknameMap(userIds, function(nickMap)
                 deps_.SocialServer.FetchGardenProfiles(userIds, function(profileMap)
-                    for _, entry in ipairs(result) do
-                        local profile = profileMap[tostring(entry.userId)] or {}
-                        entry.nickname = profile.nickname or nickMap[entry.userId] or nickMap[tostring(entry.userId)] or entry.nickname
-                        entry.avatar = profile.avatar
-                    end
-                    ServerLeaderboard.SendLeaderboardWithMyRank(uid, connection, payload.requestId, info, result)
+                    local filtered = LeaderboardSanitize.FilterForDisplay(uid, result, profileMap, nickMap, info.kind)
+                    ServerLeaderboard.SendLeaderboardWithMyRank(uid, connection, payload.requestId, info, filtered)
                 end)
             end)
         end,
@@ -221,21 +240,24 @@ function ServerLeaderboard.PickLockedAvatar(unlocked)
 end
 
 function ServerLeaderboard.ClaimActivityRankRewardAuthority(uid, payload, connection)
+    uid = CloudUid(uid)
     payload = payload or {}
     local cycleInfo = deps_.GetPreviousActivityCycleInfo()
     if cycleInfo == nil then
         Send(connection, deps_.Shared.EVENTS.CLAIM_ACTIVITY_RANK_REWARD_RESPONSE, { success = false, requestId = payload.requestId, message = "没有上期活动奖励可领" })
         return
     end
+    ---@diagnostic disable-next-line: param-type-mismatch
     local info = ServerLeaderboard.GetActivityRankInfo(cycleInfo.activityId, cycleInfo)
-    serverCloud:GetUserRank(uid, info.key, {
+    ---@diagnostic disable-next-line: param-type-mismatch
+    serverCloud:GetUserRank(RankUid(uid), info.key, {
         ok = function(rank, score)
             score = math.max(0, math.floor(tonumber(score or 0) or 0))
             if rank == nil or rank > deps_.activityRankRewardTop or score <= 0 then
                 Send(connection, deps_.Shared.EVENTS.CLAIM_ACTIVITY_RANK_REWARD_RESPONSE, { success = false, requestId = payload.requestId, activityId = info.activityId, cycleId = info.cycleId, message = "上期没有进入活动榜前20，没有奖励可领" })
                 return
             end
-            serverCloud:Get(uid, info.rewardKey, {
+            ServerCloudStore.Get(uid, info.rewardKey, {
                 ok = function(rewardRows)
                     if type(rewardRows[info.rewardKey]) == "table" then
                         Send(connection, deps_.Shared.EVENTS.CLAIM_ACTIVITY_RANK_REWARD_RESPONSE, { success = false, requestId = payload.requestId, activityId = info.activityId, cycleId = info.cycleId, message = "上期活动排行奖励已领取" })

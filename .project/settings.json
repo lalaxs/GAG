@@ -23,16 +23,16 @@
   "@runtime": {
     "multiplayer": {
       "enabled": true,
-      "max_players": 4,
-      "background_match": true,
+      "max_players": 8,
+      "background_match": false,
       "match_info": {
         "desc_name": "free_match",
         "immediately_start": true,
         "match_timeout": 0,
-        "player_number": 1
+        "player_number": 2
       },
       "persistent_world": {
-        "enabled": false
+        "enabled": true
       }
     },
     "ad": {

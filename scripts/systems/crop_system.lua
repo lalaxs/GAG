@@ -253,7 +253,7 @@ local function IsSeedPositionUsable(plot, localPos)
     for _, crop in ipairs(plot.plants) do
         local dx = crop.localPos.x - localPos.x
         local dz = crop.localPos.z - localPos.z
-        local minDist = math.max(cfg_.CONFIG.SeedMinDistance, ((crop.seedRadius or 0.12) + 0.07) * 0.72)
+        local minDist = math.max(cfg_.CONFIG.SeedMinDistance, ((crop.seedRadius or 0.09) + 0.04) * 0.55)
         if dx * dx + dz * dz < minDist * minDist then
             return false
         end
@@ -728,6 +728,10 @@ end
 
 function CropSystem.PlantSeedAt(plots, plotIndex, plantIndex, centerLocalPos, options)
     options = options or {}
+    if IsClientMode ~= nil and IsClientMode() then
+        print("[CropSystem] 纯服务器模式禁止客户端本地 PlantSeedAt/RollMutation")
+        return false, "server_authoritative_only"
+    end
     local plot = plots[plotIndex]
     if plot == nil or not plot.unlocked then return false end
     if plot.plants == nil then plot.plants = {} end

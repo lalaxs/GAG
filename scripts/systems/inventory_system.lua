@@ -14,14 +14,12 @@ local InventorySystem = {}
 
 local cfg_ = nil
 local callbacks_ = {}
-local localMutationsEnabled_ = true
 
 local function IsClientRuntime()
     return IsClientMode ~= nil and IsClientMode()
 end
 
 local function CanMutateLocalState(actionName)
-    if localMutationsEnabled_ == true then return true end
     if IsClientRuntime() then
         print("[背包] 已阻止客户端本地权威写入: " .. tostring(actionName or "unknown"))
         return false
@@ -158,15 +156,6 @@ end
 function InventorySystem.Init(config, callbacks)
     cfg_ = config
     callbacks_ = callbacks or {}
-    localMutationsEnabled_ = callbacks_.allowLocalMutations ~= false
-end
-
-function InventorySystem.SetLocalMutationsEnabled(enabled)
-    localMutationsEnabled_ = enabled == true
-end
-
-function InventorySystem.AreLocalMutationsEnabled()
-    return localMutationsEnabled_ == true
 end
 
 function InventorySystem.GetState()

@@ -19,10 +19,77 @@ local labels_ = {}
 local uiInitialized_ = false
 local uiRefreshTimer_ = 0
 local toastTimer_ = 0
+local modalInputGuardInstalled_ = false
+
+local function InstallModalInputGuard()
+    if modalInputGuardInstalled_ then return end
+    modalInputGuardInstalled_ = true
+
+    local Modal = UI.Modal
+    if Modal == nil or Modal.OnPointerDown == nil then return end
+    local originalModalPointerDown = Modal.OnPointerDown
+    local originalHandleGestureEvent = UI.HandleGestureEvent
+    local originalHandlePointerUp = UI.HandlePointerUp
+    local originalHandlePointerCancel = UI.HandlePointerCancel
+    local GestureEvent = UI.GestureEvent
+    local suppressTapByPointer = {}
+
+    local function ShouldSuppressModalTap(modal, event)
+        if modal == nil or event == nil or not modal.isOpen_ then return false end
+
+        local cbl = modal.closeButtonLayout_
+        if cbl ~= nil and event.x >= cbl.x and event.x <= cbl.x + cbl.w
+            and event.y >= cbl.y and event.y <= cbl.y + cbl.h then
+            return true
+        end
+
+        local ml = modal.modalLayout_
+        if ml == nil then return false end
+        local insideModal = event.x >= ml.x and event.x <= ml.x + ml.w
+            and event.y >= ml.y and event.y <= ml.y + ml.h
+        return not insideModal and modal.closeOnOverlay_ == true
+    end
+
+    function Modal:OnPointerDown(event)
+        if ShouldSuppressModalTap(self, event) then
+            suppressTapByPointer[event.pointerId or 0] = true
+            if event.StopPropagation then event:StopPropagation() end
+        end
+        return originalModalPointerDown(self, event)
+    end
+
+    function UI.HandleGestureEvent(event)
+        if event ~= nil and GestureEvent ~= nil then
+            local pointerId = event.pointerId or 0
+            local eventType = event.type
+            if suppressTapByPointer[pointerId]
+                and (eventType == GestureEvent.Types.Tap or eventType == GestureEvent.Types.DoubleTap) then
+                suppressTapByPointer[pointerId] = nil
+                if event.StopPropagation then event:StopPropagation() end
+                return
+            end
+        end
+        return originalHandleGestureEvent(event)
+    end
+
+    function UI.HandlePointerUp(event)
+        if event ~= nil then
+            suppressTapByPointer[event.pointerId or 0] = nil
+        end
+        return originalHandlePointerUp(event)
+    end
+
+    function UI.HandlePointerCancel(event)
+        if event ~= nil then
+            suppressTapByPointer[event.pointerId or 0] = nil
+        end
+        return originalHandlePointerCancel(event)
+    end
+end
 
 local function EnsureUIInitialized()
     if uiInitialized_ then return end
-    local ACNHTheme = require("ui_theme_acnh")
+    local ACNHTheme = require("ui.theme_acnh")
     UI.Init({
         theme = ACNHTheme.theme,
         fonts = {
@@ -33,6 +100,7 @@ local function EnsureUIInitialized()
         },
         scale = UI.Scale.DEFAULT,
     })
+    InstallModalInputGuard()
     uiInitialized_ = true
 end
 
@@ -43,7 +111,7 @@ end
 function UIController.Init(deps)
     deps_ = deps or {}
     labels_ = {}
-    uiInitialized_ = false
+    -- 保留 uiInitialized_：ShowLoading 可能已调用 UI.Init，此处仅注入 deps。
     uiRefreshTimer_ = 0
     toastTimer_ = 0
 end

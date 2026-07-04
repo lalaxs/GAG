@@ -7,28 +7,23 @@
 
 local ServerCommission = {}
 
-local deps_ = {}
+local ServerCloudStore = require("server.server_cloud_store")
 
-local COMMISSION_STATE_KEY = "garden_commission_state_v1"
-local COMMISSION_REFRESH_INTERVAL = 30 * 60
-local COMMISSION_COUNT = 4
-local COMMISSION_CUSTOMERS = { "露露", "阿麦", "青木", "莓莓", "小枫", "云朵商人", "花园旅人", "星屑收藏家" }
-local COMMISSION_COLOR_REQUIREMENTS = { "yellow", "blue", "red", "white", "purple", "black" }
-local COMMISSION_SPECIAL_REQUIREMENTS = { "wet", "frozen", "cloud", "chocolate", "pollen", "glow", "stardust", "ceramic", "rainbow", "void", "gold" }
-local COMMISSION_PACK_DIFFICULTY = {
-    pack_common = { mutationKinds = { "basic" }, minWeightScale = { 0.90, 1.20 } },
-    pack_uncommon = { mutationKinds = { "color", "basic" }, minWeightScale = { 1.00, 1.40 } },
-    pack_rare = { mutationKinds = { "color", "basic" }, minWeightScale = { 1.05, 1.55 } },
-    pack_epic = { mutationKinds = { "color", "special" }, minWeightScale = { 1.35, 2.20 } },
-    pack_legendary = { mutationKinds = { "special", "giant" }, minWeightScale = { 2.00, 3.60 } },
-}
-local COMMISSION_REWARD_POOLS = {
-    ["普通"] = { { packId = "pack_common", weight = 94 }, { packId = "pack_uncommon", weight = 6 } },
-    ["罕见"] = { { packId = "pack_common", weight = 35 }, { packId = "pack_uncommon", weight = 55 }, { packId = "pack_rare", weight = 10 } },
-    ["稀有"] = { { packId = "pack_common", weight = 18 }, { packId = "pack_uncommon", weight = 30 }, { packId = "pack_rare", weight = 45 }, { packId = "pack_epic", weight = 7 } },
-    ["史诗"] = { { packId = "pack_common", weight = 8 }, { packId = "pack_uncommon", weight = 18 }, { packId = "pack_rare", weight = 32 }, { packId = "pack_epic", weight = 38 }, { packId = "pack_legendary", weight = 4 } },
-    ["传奇"] = { { packId = "pack_common", weight = 3 }, { packId = "pack_uncommon", weight = 10 }, { packId = "pack_rare", weight = 22 }, { packId = "pack_epic", weight = 40 }, { packId = "pack_legendary", weight = 25 } },
-}
+local deps_ = {}
+local ServerConfig = require("config.server_tuning")
+
+local function CloudUid(uid)
+    return ServerCloudStore.CloudPlayerId(uid) or ServerCloudStore.CanonicalUid(uid)
+end
+
+local COMMISSION_STATE_KEY = ServerConfig.Commission.STATE_KEY
+local COMMISSION_REFRESH_INTERVAL = ServerConfig.Commission.REFRESH_INTERVAL
+local COMMISSION_COUNT = ServerConfig.Commission.COUNT
+local COMMISSION_CUSTOMERS = ServerConfig.Commission.CUSTOMERS
+local COMMISSION_COLOR_REQUIREMENTS = ServerConfig.Commission.COLOR_REQUIREMENTS
+local COMMISSION_SPECIAL_REQUIREMENTS = ServerConfig.Commission.SPECIAL_REQUIREMENTS
+local COMMISSION_PACK_DIFFICULTY = ServerConfig.Commission.PACK_DIFFICULTY
+local COMMISSION_REWARD_POOLS = ServerConfig.Commission.REWARD_POOLS
 
 ServerCommission.COMMISSION_STATE_KEY = COMMISSION_STATE_KEY
 
@@ -198,22 +193,23 @@ function ServerCommission.CommissionItemMatches(commission, item)
 end
 
 function ServerCommission.RequestCommissionsAuthority(uid, payload, connection)
-    serverCloud:Get(uid, deps_.Shared.KEYS.ECONOMY_STATE, {
+    uid = CloudUid(uid)
+    ServerCloudStore.Get(uid, deps_.Shared.KEYS.ECONOMY_STATE, {
         ok = function(scores)
             local economy = GetExistingEconomyState(scores)
             if economy == nil then
                 SendMissingEconomyState(connection, deps_.Shared.EVENTS.COMMISSIONS_RESPONSE, payload.requestId)
                 return
             end
-            serverCloud:Get(uid, COMMISSION_STATE_KEY, {
+            ServerCloudStore.Get(uid, COMMISSION_STATE_KEY, {
                 ok = function(rows)
                     local commissionState = ServerCommission.NormalizeCommissionState(rows[COMMISSION_STATE_KEY], economy.talent and economy.talent.level or 1)
-                    serverCloud:Set(uid, COMMISSION_STATE_KEY, commissionState)
+                    ServerCloudStore.SetScore(uid, COMMISSION_STATE_KEY, commissionState)
                     Send(connection, deps_.Shared.EVENTS.COMMISSIONS_RESPONSE, { success = true, requestId = payload.requestId, commission = commissionState })
                 end,
                 error = function()
                     local commissionState = ServerCommission.NormalizeCommissionState(nil, economy.talent and economy.talent.level or 1)
-                    serverCloud:Set(uid, COMMISSION_STATE_KEY, commissionState)
+                    ServerCloudStore.SetScore(uid, COMMISSION_STATE_KEY, commissionState)
                     Send(connection, deps_.Shared.EVENTS.COMMISSIONS_RESPONSE, { success = true, requestId = payload.requestId, commission = commissionState })
                 end,
             })
@@ -223,14 +219,15 @@ function ServerCommission.RequestCommissionsAuthority(uid, payload, connection)
 end
 
 function ServerCommission.CompleteCommissionAuthority(uid, payload, connection)
-    serverCloud:Get(uid, deps_.Shared.KEYS.ECONOMY_STATE, {
+    uid = CloudUid(uid)
+    ServerCloudStore.Get(uid, deps_.Shared.KEYS.ECONOMY_STATE, {
         ok = function(scores)
             local economy = GetExistingEconomyState(scores)
             if economy == nil then
                 SendMissingEconomyState(connection, deps_.Shared.EVENTS.COMPLETE_COMMISSION_RESPONSE, payload.requestId)
                 return
             end
-            serverCloud:Get(uid, COMMISSION_STATE_KEY, {
+            ServerCloudStore.Get(uid, COMMISSION_STATE_KEY, {
                 ok = function(rows)
                     local commissionState = ServerCommission.NormalizeCommissionState(rows[COMMISSION_STATE_KEY], economy.talent and economy.talent.level or 1)
                     local commission = nil
@@ -251,8 +248,8 @@ function ServerCommission.CompleteCommissionAuthority(uid, payload, connection)
                     local message = string.format("完成%s的委托，获得%s", commission.customer or "客人", commission.rewardPackName or "种子包")
                     local response = { success = true, message = message, requestId = payload.requestId, state = economy, commission = commissionState }
                     local c = serverCloud:BatchCommit("权威委托")
-                    c:ScoreSet(uid, deps_.Shared.KEYS.ECONOMY_STATE, economy)
-                    c:ScoreSet(uid, COMMISSION_STATE_KEY, commissionState)
+                    ServerCloudStore.BatchScoreSet(c, uid, deps_.Shared.KEYS.ECONOMY_STATE, economy)
+                    ServerCloudStore.BatchScoreSet(c, uid, COMMISSION_STATE_KEY, commissionState)
                     c:Commit({
                         ok = function() Send(connection, deps_.Shared.EVENTS.COMPLETE_COMMISSION_RESPONSE, response) end,
                         error = function(_, reason) Send(connection, deps_.Shared.EVENTS.COMPLETE_COMMISSION_RESPONSE, { success = false, message = "委托提交失败: " .. tostring(reason), requestId = payload.requestId, state = economy, commission = commissionState }) end,

@@ -5,6 +5,9 @@
 -- 从 server_main.lua 拆出的偷菜次数、作物领取记录和偷菜奖励逻辑。
 -- ============================================================================
 
+local UserId = require("utils.user_id")
+local ServerCloudStore = require("server.server_cloud_store")
+
 local ServerSteal = {}
 
 local deps_ = {}
@@ -31,6 +34,15 @@ end
 
 local function NormalizeEconomyState(state)
     return deps_.NormalizeEconomyState(state)
+end
+
+local function NormalizeUserId(userId)
+    if deps_.NormalizeUserId ~= nil then return deps_.NormalizeUserId(userId) end
+    return UserId.Normalize(userId)
+end
+
+local function CloudUid(uid)
+    return ServerCloudStore.CloudPlayerId(uid) or ServerCloudStore.CanonicalUid(uid)
 end
 
 local function BuildInitialEconomyState()
@@ -90,7 +102,7 @@ function ServerSteal.RollStealReward(crop)
 end
 
 function ServerSteal.BuildStealRecordKey(targetUid, cropId)
-    return "steal_record_" .. tostring(targetUid) .. "_" .. tostring(cropId or "unknown")
+    return "steal_record_" .. tostring(NormalizeUserId(targetUid) or targetUid) .. "_" .. tostring(cropId or "unknown")
 end
 
 function ServerSteal.BuildStealCropClaimKey(cropId)
@@ -98,20 +110,24 @@ function ServerSteal.BuildStealCropClaimKey(cropId)
 end
 
 function ServerSteal.RequestStealWithQuotaAvailable(uid, targetUid, cropIndex, cropId, connection, requestId, requestRecordKey, stealLimit)
+    local thiefUid = NormalizeUserId(uid)
+    local targetUserId = NormalizeUserId(targetUid)
+    local thiefCloudUid = CloudUid(thiefUid or uid)
+    local targetCloudUid = CloudUid(targetUserId)
     cropIndex = NormalizePositiveCount(cropIndex or 1, GetMaxCropsPerPlot())
     cropId = tostring(cropId or "")
-    if targetUid == nil or targetUid <= 0 then
-        Send(connection, deps_.Shared.EVENTS.STEAL_RESPONSE, { success = false, message = "目标花园无效" })
+    if thiefUid == nil or targetUserId == nil then
+        Send(connection, deps_.Shared.EVENTS.STEAL_RESPONSE, { success = false, message = "目标花园无效", requestId = requestId })
         return
     end
-    if tostring(uid) == tostring(targetUid) then
-        Send(connection, deps_.Shared.EVENTS.STEAL_RESPONSE, { success = false, message = "不能偷自己的菜" })
+    if thiefUid == targetUserId then
+        Send(connection, deps_.Shared.EVENTS.STEAL_RESPONSE, { success = false, message = "不能偷自己的菜", requestId = requestId })
         return
     end
 
-    serverCloud:Get(targetUid, deps_.Shared.KEYS.AUTH_FARM_STATE, {
-        ok = function(scores)
-            local farmState = NormalizeFarmState(scores[deps_.Shared.KEYS.AUTH_FARM_STATE])
+    ServerCloudStore.Get(targetCloudUid, deps_.Shared.KEYS.AUTH_FARM_STATE, {
+        ok = function(farmScores)
+            local farmState = NormalizeFarmState(farmScores[deps_.Shared.KEYS.AUTH_FARM_STATE])
             local crop, actualPlotIndex, actualIndex = FindFarmCrop(farmState, cropId)
             if crop == nil and cropId == "" then
                 local plot = GetFarmPlot(farmState, 1)
@@ -134,15 +150,15 @@ function ServerSteal.RequestStealWithQuotaAvailable(uid, targetUid, cropIndex, c
                 return
             end
 
-            local recordKey = ServerSteal.BuildStealRecordKey(targetUid, actualCropId)
+            local recordKey = ServerSteal.BuildStealRecordKey(targetUserId, actualCropId)
             local cropClaimKey = ServerSteal.BuildStealCropClaimKey(actualCropId)
-            serverCloud.list:Get(uid, recordKey, {
+            ServerCloudStore.ListGet(thiefCloudUid, recordKey, {
                 ok = function(records)
                     if records ~= nil and #records > 0 then
                         Send(connection, deps_.Shared.EVENTS.STEAL_RESPONSE, { success = false, message = "这株作物你已经偷过了", requestId = requestId })
                         return
                     end
-                    serverCloud.list:Get(targetUid, cropClaimKey, {
+                    ServerCloudStore.ListGet(targetCloudUid, cropClaimKey, {
                         ok = function(claimRows)
                             if claimRows ~= nil and #claimRows > 0 then
                                 Send(connection, deps_.Shared.EVENTS.STEAL_RESPONSE, { success = false, message = "这株作物已经被偷过了", requestId = requestId })
@@ -150,7 +166,7 @@ function ServerSteal.RequestStealWithQuotaAvailable(uid, targetUid, cropIndex, c
                             end
 
                             local reward = ServerSteal.RollStealReward(crop)
-                            serverCloud:Get(uid, deps_.Shared.KEYS.ECONOMY_STATE, {
+                            ServerCloudStore.Get(thiefCloudUid, deps_.Shared.KEYS.ECONOMY_STATE, {
                                 ok = function(economyRows)
                                     local economy = GetExistingEconomyState(economyRows)
                                     if economy == nil then
@@ -167,7 +183,7 @@ function ServerSteal.RequestStealWithQuotaAvailable(uid, targetUid, cropIndex, c
 
                                     local now = Now()
                                     crop.stolen = true
-                                    crop.stolenBy = uid
+                                    crop.stolenBy = thiefUid
                                     crop.stolenAt = now
                                     crop.stealable = false
                                     crop.stealReward = reward
@@ -177,8 +193,8 @@ function ServerSteal.RequestStealWithQuotaAvailable(uid, targetUid, cropIndex, c
                                     NextRevision(economy)
 
                                     local log = {
-                                        thiefUserId = uid,
-                                        targetUserId = targetUid,
+                                        thiefUserId = thiefUid,
+                                        targetUserId = targetUserId,
                                         cropId = actualCropId,
                                         cropIndex = actualIndex,
                                         cropName = crop.name or "作物",
@@ -204,12 +220,18 @@ function ServerSteal.RequestStealWithQuotaAvailable(uid, targetUid, cropIndex, c
                                         state = economy,
                                     }
                                     local c = serverCloud:BatchCommit("权威偷菜")
-                                    c:ScoreSet(uid, deps_.Shared.KEYS.ECONOMY_STATE, economy)
-                                    c:ScoreSet(targetUid, deps_.Shared.KEYS.AUTH_FARM_STATE, farmState)
-                                    c:ListAdd(uid, recordKey, { targetUserId = targetUid, cropId = actualCropId, stolenAt = now })
-                                    c:ListAdd(targetUid, cropClaimKey, { thiefUserId = uid, cropId = actualCropId, stolenAt = now })
-                                    c:ListAdd(targetUid, deps_.Shared.KEYS.STEAL_LOGS, log)
-                                    c:QuotaAdd(uid, "daily_steal", 1, stealLimit or deps_.dailyStealLimit, "day", 1)
+                                    ---@diagnostic disable-next-line: param-type-mismatch
+                                    c:QuotaAdd(targetCloudUid, cropClaimKey, 1, 1)
+                                    ServerCloudStore.BatchScoreSet(c, thiefUid, deps_.Shared.KEYS.ECONOMY_STATE, economy)
+                                    ServerCloudStore.BatchScoreSet(c, targetUserId, deps_.Shared.KEYS.AUTH_FARM_STATE, farmState)
+                                    ---@diagnostic disable-next-line: param-type-mismatch
+                                    c:ListAdd(thiefCloudUid, recordKey, { targetUserId = targetUserId, cropId = actualCropId, stolenAt = now })
+                                    ---@diagnostic disable-next-line: param-type-mismatch
+                                    c:ListAdd(targetCloudUid, cropClaimKey, { thiefUserId = thiefUid, cropId = actualCropId, stolenAt = now })
+                                    ---@diagnostic disable-next-line: param-type-mismatch
+                                    c:ListAdd(targetCloudUid, deps_.Shared.KEYS.STEAL_LOGS, log)
+                                    ---@diagnostic disable-next-line: param-type-mismatch
+                                    c:QuotaAdd(thiefCloudUid, "daily_steal", 1, stealLimit or deps_.dailyStealLimit, "day", 1)
                                     deps_.RequestGuard.AddToCommit(c, uid, requestRecordKey, response)
                                     c:Commit({
                                         ok = function()
@@ -242,12 +264,13 @@ function ServerSteal.RequestStealWithQuotaAvailable(uid, targetUid, cropIndex, c
 end
 
 function ServerSteal.RequestSteal(uid, targetUid, cropIndex, cropId, connection, requestId, requestRecordKey)
-    serverCloud.quota:Get(uid, "daily_steal_ad_bonus", {
+    local thiefCloudUid = CloudUid(NormalizeUserId(uid) or uid)
+    ServerCloudStore.QuotaGet(thiefCloudUid, "daily_steal_ad_bonus", {
         ok = function(bonusRows)
             local bonusRow = bonusRows and bonusRows[1]
             local bonus = math.max(0, math.floor(tonumber(bonusRow and bonusRow.value or 0) or 0))
             local stealLimit = deps_.dailyStealLimit + bonus
-            serverCloud.quota:Get(uid, "daily_steal", {
+            ServerCloudStore.QuotaGet(thiefCloudUid, "daily_steal", {
                 ok = function(quotaRows)
                     local row = quotaRows and quotaRows[1]
                     local stealCount = math.max(0, math.floor(tonumber(row and row.value or 0) or 0))

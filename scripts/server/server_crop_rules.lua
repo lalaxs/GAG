@@ -175,16 +175,25 @@ end
 
 function ServerCropRules.ApplyServerActivityPlantingMutation(mutation, mutationBonus)
     local activityId = deps_.GameConfig.GetActiveActivityId and deps_.GameConfig.GetActiveActivityId(Now()) or nil
-    if activityId ~= "dark" then return end
+    if activityId == nil then return end
     local activity = (((deps_.GameConfig.ACTIVITY_CONFIG or {}).activities or {})[activityId])
     if activity == nil then return end
-    local devourMultiplier = 1.0 + math.max(0, tonumber(mutationBonus or 0) or 0)
-    local devourChance = math.min((activity.devourChance or 0.04) * devourMultiplier, activity.devourChanceMax or 0.12)
-    if math.random() <= devourChance then
-        ServerCropRules.AddServerSpecialMutation(mutation, "devour")
-    end
-    if math.random() <= (activity.extraVoidChance or 0.05) then
-        ServerCropRules.AddServerSpecialMutation(mutation, "void")
+    if activityId == "sweet" then
+        if math.random() <= (activity.candyChance or 0.095) then
+            ServerCropRules.AddServerSpecialMutation(mutation, "candy")
+        end
+        if math.random() <= (activity.honeyChance or 0.075) then
+            ServerCropRules.AddServerSpecialMutation(mutation, "honey")
+        end
+    elseif activityId == "dark" then
+        local devourMultiplier = 1.0 + math.max(0, tonumber(mutationBonus or 0) or 0)
+        local devourChance = math.min((activity.devourChance or 0.04) * devourMultiplier, activity.devourChanceMax or 0.12)
+        if math.random() <= devourChance then
+            ServerCropRules.AddServerSpecialMutation(mutation, "devour")
+        end
+        if math.random() <= (activity.extraVoidChance or 0.05) then
+            ServerCropRules.AddServerSpecialMutation(mutation, "void")
+        end
     end
 end
 

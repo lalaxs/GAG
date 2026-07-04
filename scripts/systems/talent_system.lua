@@ -100,14 +100,12 @@ local state_ = {
 }
 
 local callbacks_ = {}
-local localMutationsEnabled_ = true
 
 local function IsClientRuntime()
     return IsClientMode ~= nil and IsClientMode()
 end
 
 local function CanMutateLocalState(actionName)
-    if localMutationsEnabled_ == true then return true end
     if IsClientRuntime() then
         print("[天赋] 已阻止客户端本地权威写入: " .. tostring(actionName or "unknown"))
         return false
@@ -117,21 +115,12 @@ end
 
 function TalentSystem.Init(callbacks)
     callbacks_ = callbacks or {}
-    localMutationsEnabled_ = callbacks_.allowLocalMutations ~= false
     state_ = {
         unlockedTalents = {},
         talentPoints = 1,
         level = 1,
         exp = 0,
     }
-end
-
-function TalentSystem.SetLocalMutationsEnabled(enabled)
-    localMutationsEnabled_ = enabled == true
-end
-
-function TalentSystem.AreLocalMutationsEnabled()
-    return localMutationsEnabled_ == true
 end
 
 function TalentSystem.GetLevelUpTalentPoints(level)

@@ -7,10 +7,11 @@ local Shared = {}
 Shared.KEYS = {
     GARDEN_SNAPSHOT = "garden_snapshot_v1",
     SOCIAL_SAVE = "garden_social_save_v1",
-    TOUR_RANK = "garden_tour_rank",
-    INCOME_RANK_PREFIX = "garden_income_rank_w",
-    ACTIVITY_RANK_PREFIX = "garden_activity_rank_",
-    ACTIVITY_RANK_REWARD_PREFIX = "garden_activity_rank_reward_",
+    -- v2/v3：2026-07 串档污染后换 key 弃用旧榜；观光/活动榜不在登录时灌分，仅玩法行为更新。
+    TOUR_RANK = "garden_tour_rank_v3",
+    INCOME_RANK_PREFIX = "garden_income_rank_v2_w",
+    ACTIVITY_RANK_PREFIX = "garden_activity_rank_v3_",
+    ACTIVITY_RANK_REWARD_PREFIX = "garden_activity_rank_reward_v3_",
     LIKE_COUNT = "garden_like_count",
     STEAL_LOGS = "garden_steal_logs_v1",
     RECENT_VISITORS = "garden_recent_visitors_v1",
@@ -22,11 +23,13 @@ Shared.KEYS = {
     SOCIAL_GOLD = "gold",
     ECONOMY_STATE = "garden_economy_state_v1",
     AUTH_FARM_STATE = "garden_auth_farm_state_v1",
+    SAVE_UID_RECONCILED = "garden_save_uid_reconciled_v2",
     SHARED_SEED_SHOP = "garden_shared_seed_shop_v1",
 }
 
 Shared.EVENTS = {
     CLIENT_READY = "GardenClientReady",
+    REQUEST_FULL_SYNC = "GardenRequestFullSync",
     PLAYER_PROFILE = "GardenPlayerProfile",
     SAVE_GARDEN = "GardenSaveSnapshot",
     SAVE_GARDEN_RESULT = "GardenSaveSnapshotResult",
@@ -100,6 +103,7 @@ Shared.EVENTS = {
 
 Shared.SERVER_EVENTS = {
     Shared.EVENTS.CLIENT_READY,
+    Shared.EVENTS.REQUEST_FULL_SYNC,
     Shared.EVENTS.SAVE_GARDEN,
     Shared.EVENTS.REQUEST_GARDEN,
     Shared.EVENTS.REQUEST_RANK,
