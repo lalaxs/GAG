@@ -9,11 +9,13 @@ local UserId = require("utils.user_id")
 local ServerCloudStore = require("server.server_cloud_store")
 local SaveEconomyHealth = require("server.save_economy_health")
 local ServerEconomyState = require("server.server_economy_state")
+local PlayerStateService = require("server.player_state_service")
 
 local SaveLoginReconcile = {}
 
 local deps_ = {}
 local sessionDone_ = {}
+local inFlight_ = {}
 
 local function Now()
     return os and os.time and os.time() or 0
@@ -36,7 +38,9 @@ function SaveLoginReconcile.Init(deps)
 end
 
 function SaveLoginReconcile.ClearSession(uid)
-    sessionDone_[ServerCloudStore.CanonicalUid(uid) or uid] = nil
+    uid = ServerCloudStore.CanonicalUid(uid) or uid
+    sessionDone_[uid] = nil
+    inFlight_[uid] = nil
 end
 
 local function BuildRecordSpecs()
@@ -50,7 +54,6 @@ local function BuildRecordSpecs()
             normalize = deps_.NormalizeEconomyState,
             score = ServerEconomyState.ScoreEconomyRecord,
             requireOwner = true,
-            minSchemaVersion = ServerEconomyState.SAVE_SCHEMA_VERSION,
         },
         {
             key = shared.KEYS.AUTH_FARM_STATE,
@@ -99,10 +102,28 @@ local function RunMigration(uid, done)
     local hadReadError = false
 
     local function finishMigration()
+        -- 迁移读云期间若会话已建立，禁止用旧云档覆盖；以内存为准并 flush
+        if PlayerStateService.HasLoadedSession(uid) then
+            sessionDone_[uid] = true
+            print(string.format("[存档兼容] 登录归一中止：内存会话已存在 uid=%s", tostring(uid)))
+            PlayerStateService.Flush(uid, function()
+                if done ~= nil then done(true, { skipped = true, reason = "session_loaded" }) end
+            end)
+            return
+        end
         local canonicalUid = uid
         local migratedCount = 0
-        local commit = serverCloud:BatchCommit("登录存档UID归一")
         local economyKey = deps_.Shared and deps_.Shared.KEYS.ECONOMY_STATE
+        local farmKey = deps_.Shared and deps_.Shared.KEYS.AUTH_FARM_STATE
+        local economyInfo = economyKey ~= nil and migrations[economyKey] or nil
+        local farmInfo = farmKey ~= nil and migrations[farmKey] or nil
+        if economyInfo ~= nil and farmInfo ~= nil
+            and type(economyInfo.value) == "table"
+            and type(farmInfo.value) == "table" then
+            ServerEconomyState.SyncProgressionTourValueFromFarm(economyInfo.value, farmInfo.value)
+        end
+        local commit = serverCloud:BatchCommit("登录存档UID归一")
+        local writtenKeys = {}
         for _, spec in ipairs(specs) do
             local info = migrations[spec.key]
             if info == nil or info.value == nil then
@@ -116,30 +137,11 @@ local function RunMigration(uid, done)
             local cloudUid = ServerCloudStore.CloudPlayerId(canonicalUid)
             if spec.key == economyKey then
                 stamped = ServerEconomyState.TouchEconomyState(stamped)
-                ---@diagnostic disable-next-line: param-type-mismatch
-                commit:ScoreSet(cloudUid, spec.key, stamped)
-                if info.bestKey ~= nil and not UserId.Same(info.bestKey, canonicalUid) then
-                    migratedCount = migratedCount + 1
-                    print(string.format(
-                        "[存档兼容] 登录归一 %s: %s -> %s",
-                        tostring(spec.label or spec.key),
-                        tostring(info.bestKey),
-                        tostring(canonicalUid)
-                    ))
-                else
-                    print(string.format(
-                        "[存档兼容] 登录归一 %s: normalize 后写回 canonical uid=%s",
-                        tostring(spec.label or spec.key),
-                        tostring(canonicalUid)
-                    ))
-                end
-                SaveEconomyHealth.AuditSuspiciousEmpty(canonicalUid, info.value, {
-                    source = "login_reconcile",
-                    bestKey = info.bestKey,
-                })
-            elseif info.bestKey ~= nil and not UserId.Same(info.bestKey, canonicalUid) then
-                ---@diagnostic disable-next-line: param-type-mismatch
-                commit:ScoreSet(cloudUid, spec.key, stamped)
+            end
+            ---@diagnostic disable-next-line: param-type-mismatch
+            commit:ScoreSet(cloudUid, spec.key, stamped)
+            writtenKeys[spec.key] = true
+            if info.bestKey ~= nil and not UserId.Same(info.bestKey, canonicalUid) then
                 migratedCount = migratedCount + 1
                 print(string.format(
                     "[存档兼容] 登录归一 %s: %s -> %s",
@@ -147,43 +149,91 @@ local function RunMigration(uid, done)
                     tostring(info.bestKey),
                     tostring(canonicalUid)
                 ))
+            else
+                print(string.format(
+                    "[存档兼容] 登录归一 %s: normalize 后写回 canonical uid=%s",
+                    tostring(spec.label or spec.key),
+                    tostring(canonicalUid)
+                ))
+            end
+            if spec.key == economyKey then
+                SaveEconomyHealth.AuditSuspiciousEmpty(canonicalUid, info.value, {
+                    source = "login_reconcile",
+                    bestKey = info.bestKey,
+                })
             end
             ::continue_spec::
         end
-        ---@diagnostic disable-next-line: param-type-mismatch
-        commit:ScoreSet(ServerCloudStore.CloudPlayerId(canonicalUid), deps_.Shared.KEYS.SAVE_UID_RECONCILED, {
-            version = 2,
-            at = Now(),
-            migrated = migratedCount,
-            hadReadError = hadReadError == true,
-            saveSchemaVersion = ServerEconomyState.SAVE_SCHEMA_VERSION,
-        })
+        local canFinalizeMigration = hadReadError ~= true
+        if hadReadError == true then
+            print(string.format("[存档兼容] 登录归一检测到云读失败 uid=%s：本次只尝试写回 canonical，不写完成标记，不清理旧副本", tostring(canonicalUid)))
+        end
+        if canFinalizeMigration then
+            ---@diagnostic disable-next-line: param-type-mismatch
+            commit:ScoreSet(ServerCloudStore.CloudPlayerId(canonicalUid), deps_.Shared.KEYS.SAVE_UID_RECONCILED, {
+                version = 3,
+                at = Now(),
+                migrated = migratedCount,
+                hadReadError = false,
+                repaired = true,
+                saveSchemaVersion = ServerEconomyState.SAVE_SCHEMA_VERSION,
+            })
+        end
         commit:Commit({
             ok = function()
-                sessionDone_[uid] = true
-                SaveEconomyHealth.MarkWriteBackDone(uid)
-                print(string.format("[存档兼容] 登录归一完成 uid=%s migrated=%d", tostring(uid), migratedCount))
-                if done ~= nil then done(true, { migrated = migratedCount, hadReadError = hadReadError }) end
+                if canFinalizeMigration then
+                    sessionDone_[uid] = true
+                    SaveEconomyHealth.MarkWriteBackDone(uid)
+                end
+                print(string.format("[存档兼容] 登录归一提交成功 uid=%s migrated=%d finalized=%s", tostring(uid), migratedCount, tostring(canFinalizeMigration)))
+                local purgeKeys = {}
+                if canFinalizeMigration and economyKey ~= nil and writtenKeys[economyKey] == true then
+                    purgeKeys[#purgeKeys + 1] = economyKey
+                end
+                if canFinalizeMigration and farmKey ~= nil and writtenKeys[farmKey] == true then
+                    purgeKeys[#purgeKeys + 1] = farmKey
+                end
+                local socialKey = deps_.Shared and deps_.Shared.KEYS.SOCIAL_SAVE
+                if canFinalizeMigration and socialKey ~= nil and writtenKeys[socialKey] == true then
+                    purgeKeys[#purgeKeys + 1] = socialKey
+                end
+                if #purgeKeys <= 0 then
+                    if done ~= nil then
+                        done(canFinalizeMigration, { migrated = migratedCount, hadReadError = hadReadError, finalized = canFinalizeMigration })
+                    end
+                    return
+                end
+                local purgePending = #purgeKeys
+                local function onPurged()
+                    purgePending = purgePending - 1
+                    if purgePending <= 0 and done ~= nil then
+                        done(true, { migrated = migratedCount, hadReadError = false, finalized = true })
+                    end
+                end
+                for _, scoreKey in ipairs(purgeKeys) do
+                    ServerCloudStore.DeleteNonCanonicalScoreCopies(uid, scoreKey, onPurged)
+                end
             end,
             error = function(_, reason)
-                sessionDone_[uid] = true
-                print(string.format("[存档兼容] 登录归一提交失败 uid=%s reason=%s（仍继续登录）", tostring(uid), tostring(reason)))
-                if done ~= nil then done(true, { migrated = migratedCount, hadReadError = hadReadError, commitError = reason }) end
+                print(string.format("[存档兼容] 登录归一提交失败 uid=%s reason=%s（不写完成标记，保留旧副本，下次重试）", tostring(uid), tostring(reason)))
+                if done ~= nil then done(false, { migrated = migratedCount, hadReadError = hadReadError, commitError = reason }) end
             end,
         })
     end
 
     local function acceptSpecValue(spec, value, bestKey)
         if value == nil or bestKey == nil then return nil end
-        local minSchema = math.floor(tonumber(spec.minSchemaVersion or 0) or 0)
-        if minSchema > 0 and (math.floor(tonumber(value.saveSchemaVersion or 0) or 0) < minSchema) then
-            print(string.format(
-                "[存档兼容] 登录归一忽略旧 schema %s key=%s schema=%s",
-                tostring(spec.label or spec.key),
-                tostring(bestKey),
-                tostring(value.saveSchemaVersion)
-            ))
-            return nil
+        if spec.key == (deps_.Shared and deps_.Shared.KEYS.ECONOMY_STATE) then
+            local schema = math.floor(tonumber(value.saveSchemaVersion or 0) or 0)
+            if schema < ServerEconomyState.SAVE_SCHEMA_VERSION then
+                print(string.format(
+                    "[存档兼容] 登录归一升级旧 schema %s key=%s schema=%s -> %s",
+                    tostring(spec.label or spec.key),
+                    tostring(bestKey),
+                    tostring(value.saveSchemaVersion),
+                    tostring(ServerEconomyState.SAVE_SCHEMA_VERSION)
+                ))
+            end
         end
         return value, bestKey
     end
@@ -200,12 +250,21 @@ local function RunMigration(uid, done)
 
     for _, spec in ipairs(specs) do
         if spec.mode == "best" then
-            ServerCloudStore.ReadBestScore(uid, spec.key, {
+            local economyKey = deps_.Shared and deps_.Shared.KEYS.ECONOMY_STATE
+            local farmKey = deps_.Shared and deps_.Shared.KEYS.AUTH_FARM_STATE
+            ServerCloudStore.ReadPlayerScore(uid, spec.key, {
                 normalize = spec.normalize,
                 score = spec.score,
+                compareScore = spec.key == economyKey and ServerEconomyState.ScoreEconomyContent or spec.score,
                 requireOwner = spec.requireOwner,
+                allowLegacyRescue = true,
+                shouldLegacyRescue = spec.key == economyKey and SaveEconomyHealth.LooksLikeFreshAccount
+                    or (spec.key == farmKey and deps_.FarmLooksEmpty),
                 logLabel = spec.label,
-            }, function(value, bestKey, specHadError)
+            }, function(value, bestKey, specHadError, meta)
+                if meta ~= nil and meta.legacyRescued == true and value ~= nil then
+                    value = ServerCloudStore.StampOwner(value, uid)
+                end
                 onSpecDone(spec, value, bestKey, specHadError)
             end)
         else
@@ -219,6 +278,7 @@ local function RunMigration(uid, done)
     end
 end
 
+
 --- 确保当前会话已执行登录 UID 归一（幂等，每 uid 每会话一次）。
 function SaveLoginReconcile.Ensure(uid, done)
     uid = ServerCloudStore.CanonicalUid(uid)
@@ -231,24 +291,97 @@ function SaveLoginReconcile.Ensure(uid, done)
         return
     end
 
+    -- 会话已在内存中：禁止再用云端旧副本 remigrate 覆盖；优先 flush 脏档
+    if PlayerStateService.HasLoadedSession(uid) then
+        sessionDone_[uid] = true
+        PlayerStateService.Flush(uid, function(ok, reason)
+            print(string.format(
+                "[存档兼容] 已有内存会话，跳过登录归一 uid=%s flushOk=%s reason=%s",
+                tostring(uid),
+                tostring(ok),
+                tostring(reason)
+            ))
+            if done ~= nil then done(true) end
+        end)
+        return
+    end
+
+    local pending = inFlight_[uid]
+    if pending ~= nil then
+        pending[#pending + 1] = done
+        return
+    end
+    inFlight_[uid] = { done }
+
+    local function complete(...)
+        local waiters = inFlight_[uid] or {}
+        inFlight_[uid] = nil
+        for _, waiter in ipairs(waiters) do
+            if waiter ~= nil then waiter(...) end
+        end
+    end
+
     local markerKey = deps_.Shared and deps_.Shared.KEYS.SAVE_UID_RECONCILED
     if markerKey == nil then
-        RunMigration(uid, done)
+        RunMigration(uid, function(...)
+            complete(...)
+        end)
         return
     end
 
     ServerCloudStore.Get(uid, markerKey, {
         ok = function(scores)
             local marker = scores and scores[markerKey]
-            if type(marker) == "table" and (tonumber(marker.version or 0) or 0) >= 2 then
-                sessionDone_[uid] = true
-                if done ~= nil then done(true) end
+            if type(marker) == "table" and (tonumber(marker.version or 0) or 0) >= 3 then
+                if marker.repaired == true then
+                    if marker.cleared == true then
+                        sessionDone_[uid] = true
+                        complete(true)
+                        return
+                    end
+                    local economyKey = deps_.Shared and deps_.Shared.KEYS.ECONOMY_STATE
+                    ServerCloudStore.ReadPlayerScore(uid, economyKey, {
+                        normalize = deps_.NormalizeEconomyState,
+                        score = ServerEconomyState.ScoreEconomyRecord,
+                        compareScore = ServerEconomyState.ScoreEconomyContent,
+                        requireOwner = true,
+                        allowLegacyRescue = true,
+                        shouldLegacyRescue = SaveEconomyHealth.LooksLikeFreshAccount,
+                        logLabel = "经济状态",
+                    }, function(state, _bestKey, _readErr, meta)
+                        if state ~= nil and SaveEconomyHealth.LooksLikeFreshAccount(state) ~= true then
+                            sessionDone_[uid] = true
+                            complete(true)
+                            return
+                        end
+                        print(string.format(
+                            "[存档兼容] repaired 标记但经济像新号/空档，强制补迁移 uid=%s legacyRescued=%s",
+                            tostring(uid),
+                            tostring(meta ~= nil and meta.legacyRescued == true)
+                        ))
+                        RunMigration(uid, function(...)
+                            complete(...)
+                        end)
+                    end)
+                    return
+                end
+                print(string.format(
+                    "[存档兼容] 检测到未补迁移标记 uid=%s，重新执行登录归一",
+                    tostring(uid)
+                ))
+                RunMigration(uid, function(...)
+                    complete(...)
+                end)
                 return
             end
-            RunMigration(uid, done)
+            RunMigration(uid, function(...)
+                complete(...)
+            end)
         end,
         error = function()
-            RunMigration(uid, done)
+            RunMigration(uid, function(...)
+                complete(...)
+            end)
         end,
     })
 end

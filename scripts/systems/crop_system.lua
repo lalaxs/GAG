@@ -312,6 +312,19 @@ local function CreateCropFromSave(plot, data)
     root.rotation = Quaternion(tonumber(data.rotationYaw or 0) or 0, Vector3.UP)
 
     local material = deps_.PlantVisual.ResolvePlantMaterial(plant, mutation)
+    local savedGrowTime = math.max(0.1, tonumber(data.growTime or plant.growTime or 1.0) or 1.0)
+    local savedPlantedAt = tonumber(data.plantedAt)
+    local savedMatureAt = tonumber(data.matureAt)
+    local now = os and os.time and os.time() or nil
+    local restoredElapsed = tonumber(data.elapsed or 0) or 0
+    if now ~= nil and savedPlantedAt ~= nil then
+        restoredElapsed = math.max(restoredElapsed, now - savedPlantedAt)
+    elseif now ~= nil and savedMatureAt ~= nil then
+        restoredElapsed = math.max(restoredElapsed, savedGrowTime - math.max(0, savedMatureAt - now))
+    end
+    restoredElapsed = Clamp(restoredElapsed, 0, savedGrowTime)
+    local restoredMature = data.mature == true or restoredElapsed >= savedGrowTime or (now ~= nil and savedMatureAt ~= nil and now >= savedMatureAt)
+
     local crop = {
         config = plant,
         cropId = data.cropId,
@@ -336,9 +349,9 @@ local function CreateCropFromSave(plot, data)
         weightTier = data.weightTier or "Normal",
         weightBonus = tonumber(data.weightBonus or 1.0) or 1.0,
         weightMultiplier = cropWeightMultiplier,
-        elapsed = tonumber(data.elapsed or 0) or 0,
-        growTime = math.max(0.1, tonumber(data.growTime or plant.growTime or 1.0) or 1.0),
-        mature = data.mature == true,
+        elapsed = restoredElapsed,
+        growTime = savedGrowTime,
+        mature = restoredMature,
         sprouted = data.sprouted == true,
         localPos = localPos,
         seedRadius = tonumber(data.seedRadius or 0.09) or 0.09,
@@ -437,11 +450,43 @@ function CropSystem.PlantCropFromServer(plots, plotIndex, cropData)
     local plot = plots[plotIndex]
     if plot == nil or not plot.unlocked then return false end
     if plot.plants == nil then plot.plants = {} end
+    local cropId = cropData and (cropData.cropId or cropData.serverCropId) or nil
+    if cropId ~= nil and cropId ~= "" then
+        for _, crop in ipairs(plot.plants) do
+            if crop.cropId == cropId or crop.serverCropId == cropId then
+                print(string.format("服务端播种已存在，跳过重复添加: 田地%d cropId=%s", plotIndex, tostring(cropId)))
+                return true
+            end
+        end
+    end
     if #plot.plants >= cfg_.CONFIG.MaxCropsPerPlot then return false end
     local crop = CreateCropFromSave(plot, cropData)
     if crop == nil then return false end
     table.insert(plot.plants, crop)
     print(string.format("服务端播种: 田地%d %s cropId=%s", plotIndex, tostring(crop.name), tostring(crop.cropId)))
+    return true
+end
+
+function CropSystem.RemoveCropFromServer(plots, plotIndex, cropId, cropIndex)
+    local plot = plots and plots[plotIndex] or nil
+    if plot == nil or plot.plants == nil then return false end
+    local removeIndex = nil
+    if cropId ~= nil and cropId ~= "" then
+        for index, crop in ipairs(plot.plants) do
+            if crop.cropId == cropId or crop.serverCropId == cropId then
+                removeIndex = index
+                break
+            end
+        end
+    end
+    if removeIndex == nil and cropIndex ~= nil and cropIndex > 0 then
+        removeIndex = cropIndex
+    end
+    local crop = removeIndex ~= nil and plot.plants[removeIndex] or nil
+    if crop == nil then return false end
+    if crop.root ~= nil then crop.root:Remove() end
+    table.remove(plot.plants, removeIndex)
+    print(string.format("服务端收获移除: 田地%d cropId=%s", plotIndex, tostring(cropId)))
     return true
 end
 

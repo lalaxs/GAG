@@ -258,7 +258,7 @@ RefreshDetailPanel = function(successText)
                 if deps_.unlockTalent and deps_.unlockTalent(unlockedTalentId) then
                     if deps_.onTalentUnlockRequested then deps_.onTalentUnlockRequested(unlockedTalentId) end
                 elseif deps_.showToast then
-                    deps_.showToast("服务器尚未就绪，无法解锁天赋")
+                    deps_.showToast("同步中")
                 end
             end,
         })

@@ -24,7 +24,7 @@ function ExpansionController.ExpandNextPlot()
         ShowToast("正在请求服务器扩地...")
         return true
     end
-    ShowToast("服务器尚未就绪，无法扩地")
+    ShowToast("同步中")
     return false, "server_required"
 end
 

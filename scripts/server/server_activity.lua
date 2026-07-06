@@ -2,7 +2,7 @@
 -- 服务端活动系统
 -- Grow A Garden
 -- ============================================================================
--- 从 server_main.lua 拆出的活动周期、活动奖励、活动兑换和活动抽取权威逻辑。
+-- 活动消耗/奖励统一修改 PlayerStateService 内存经济状态。
 -- ============================================================================
 
 local ServerActivity = {}
@@ -31,24 +31,6 @@ local function NormalizeActivityState(activity)
     return deps_.NormalizeActivityState(activity)
 end
 
-local function NormalizeEconomyState(state)
-    return deps_.NormalizeEconomyState(state)
-end
-
-local function BuildInitialEconomyState()
-    return deps_.BuildInitialEconomyState()
-end
-
-local function GetExistingEconomyState(scores)
-    local state = scores and scores[deps_.Shared.KEYS.ECONOMY_STATE]
-    if type(state) ~= "table" then return nil end
-    return NormalizeEconomyState(state)
-end
-
-local function SendMissingEconomyState(connection, eventName, requestId)
-    Send(connection, eventName, { success = false, message = "存档尚未初始化，请重新进入游戏", requestId = requestId })
-end
-
 local function NormalizePositiveCount(value, maxValue)
     return deps_.NormalizePositiveCount(value, maxValue)
 end
@@ -65,12 +47,34 @@ local function RollWeighted(pool)
     return deps_.RollWeighted(pool)
 end
 
-local function NextRevision(state)
-    deps_.NextRevision(state)
+local function RecordResponse(uid, recordKey, response)
+    if deps_.RequestGuard ~= nil and deps_.RequestGuard.Record ~= nil then
+        deps_.RequestGuard.Record(uid, recordKey, response)
+    end
 end
 
-local function AddActivityRankCommit(commit, uid, state)
-    deps_.AddActivityRankCommit(commit, uid, state)
+local function CommitActivityRank(uid, state)
+    local c = serverCloud:BatchCommit("活动排行更新")
+    deps_.AddActivityRankCommit(c, uid, state)
+    c:Commit({
+        ok = function() end,
+        error = function(_, reason)
+            print("[活动] 排行更新失败 uid=" .. tostring(uid) .. " reason=" .. tostring(reason))
+        end,
+    })
+end
+
+local function SendMutationResult(connection, eventName, result, requestId)
+    if type(result) == "table" and type(result.response) == "table" then
+        Send(connection, eventName, result.response)
+        return
+    end
+    Send(connection, eventName, {
+        success = false,
+        message = type(result) == "table" and result.message or "同步失败",
+        retryable = type(result) == "table" and result.retryable == true,
+        requestId = requestId,
+    })
 end
 
 function ServerActivity.GetActiveActivityId()
@@ -166,8 +170,7 @@ function ServerActivity.ApplyActivityHarvestReward(state, crop)
         local rates = activity.darkSeedDropRates or { 0.40, 0.55, 0.70, 0.85, 1.00 }
         if math.random() <= (rates[rarityOrder] or 0.40) then
             local plantIndex = ServerActivity.RollDarkSeed(activity)
-            local current = tonumber(state.seedBag[plantIndex] or 0) or 0
-            state.seedBag[plantIndex] = current + 1
+            state.seedBag[plantIndex] = (tonumber(state.seedBag[plantIndex] or 0) or 0) + 1
             state.collectedPlants[plantIndex] = true
             state.activity.dark.darkSeedDrops = state.activity.dark.darkSeedDrops + 1
             local plant = deps_.GameConfig.PLANTS[plantIndex]
@@ -180,163 +183,120 @@ end
 
 function ServerActivity.SubmitActivityCropAuthority(uid, payload, connection)
     uid = CloudUid(uid)
-    ServerCloudStore.Get(uid, deps_.Shared.KEYS.ECONOMY_STATE, {
-        ok = function(scores)
-            local state = GetExistingEconomyState(scores)
-            if state == nil then
-                SendMissingEconomyState(connection, deps_.Shared.EVENTS.SUBMIT_ACTIVITY_CROP_RESPONSE, payload.requestId)
-                return
-            end
-            if ServerActivity.GetActiveActivityId() ~= "sweet" then
-                Send(connection, deps_.Shared.EVENTS.SUBMIT_ACTIVITY_CROP_RESPONSE, { success = false, message = "当前不是甜蜜蜜活动", requestId = payload.requestId, state = state })
-                return
-            end
-            local itemIndex = math.floor(tonumber(payload.itemIndex or 0) or 0)
-            local item = itemIndex > 0 and state.harvested[itemIndex] or nil
-            local value = ServerActivity.GetSweetSubmitValue(item)
-            if item == nil or value <= 0 then
-                Send(connection, deps_.Shared.EVENTS.SUBMIT_ACTIVITY_CROP_RESPONSE, { success = false, message = "请选择糖果或蜂蜜变异作物", requestId = payload.requestId, state = state })
-                return
-            end
-            table.remove(state.harvested, itemIndex)
-            state.activity = NormalizeActivityState(state.activity)
-            state.activity.sweet.value = state.activity.sweet.value + value
-            state.activity.sweet.submitted = state.activity.sweet.submitted + value
-            state.updatedAt = Now()
-            NextRevision(state)
-            local response = { success = true, message = "上交成功，甜蜜值 +" .. value, requestId = payload.requestId, value = value, state = state }
-            local c = serverCloud:BatchCommit("活动作物上交")
-            ServerCloudStore.BatchScoreSet(c, uid, deps_.Shared.KEYS.ECONOMY_STATE, state)
-            AddActivityRankCommit(c, uid, state)
-            deps_.RequestGuard.AddToCommit(c, uid, payload._requestRecordKey, response)
-            c:Commit({
-                ok = function() Send(connection, deps_.Shared.EVENTS.SUBMIT_ACTIVITY_CROP_RESPONSE, response) end,
-                error = function(_, reason) Send(connection, deps_.Shared.EVENTS.SUBMIT_ACTIVITY_CROP_RESPONSE, { success = false, message = "上交失败: " .. tostring(reason), requestId = payload.requestId, state = state }) end,
-            })
-        end,
-        error = function(_, reason) Send(connection, deps_.Shared.EVENTS.SUBMIT_ACTIVITY_CROP_RESPONSE, { success = false, message = "经济数据读取失败: " .. tostring(reason), requestId = payload.requestId }) end,
-    })
+    payload = payload or {}
+    deps_.PlayerStateService.MutateEconomy(uid, "submit_activity_crop", function(state)
+        if ServerActivity.GetActiveActivityId() ~= "sweet" then
+            return { success = false, response = { success = false, message = "当前不是甜蜜蜜活动", requestId = payload.requestId, state = state } }
+        end
+        local itemIndex = math.floor(tonumber(payload.itemIndex or 0) or 0)
+        local item = itemIndex > 0 and state.harvested[itemIndex] or nil
+        local value = ServerActivity.GetSweetSubmitValue(item)
+        if item == nil or value <= 0 then
+            return { success = false, response = { success = false, message = "请选择糖果或蜂蜜变异作物", requestId = payload.requestId, state = state } }
+        end
+        table.remove(state.harvested, itemIndex)
+        state.activity = NormalizeActivityState(state.activity)
+        state.activity.sweet.value = state.activity.sweet.value + value
+        state.activity.sweet.submitted = state.activity.sweet.submitted + value
+        return { success = true, response = { success = true, message = "上交成功，甜蜜值 +" .. value, requestId = payload.requestId, value = value, state = state } }
+    end, function(result)
+        local response = result and result.response or nil
+        if result ~= nil and result.success == true and type(response) == "table" then
+            RecordResponse(uid, payload._requestRecordKey, response)
+            CommitActivityRank(uid, response.state)
+        end
+        SendMutationResult(connection, deps_.Shared.EVENTS.SUBMIT_ACTIVITY_CROP_RESPONSE, result, payload.requestId)
+    end)
 end
 
 function ServerActivity.ExchangeActivityRewardAuthority(uid, payload, connection)
     uid = CloudUid(uid)
-    ServerCloudStore.Get(uid, deps_.Shared.KEYS.ECONOMY_STATE, {
-        ok = function(scores)
-            local state = GetExistingEconomyState(scores)
-            if state == nil then
-                SendMissingEconomyState(connection, deps_.Shared.EVENTS.EXCHANGE_ACTIVITY_REWARD_RESPONSE, payload.requestId)
-                return
-            end
-            if ServerActivity.GetActiveActivityId() ~= "sweet" then
-                Send(connection, deps_.Shared.EVENTS.EXCHANGE_ACTIVITY_REWARD_RESPONSE, { success = false, message = "当前不是甜蜜蜜活动", requestId = payload.requestId, state = state })
-                return
-            end
-            local reward = ServerActivity.FindSweetReward(tostring(payload.rewardId or ""))
-            if reward == nil then
-                Send(connection, deps_.Shared.EVENTS.EXCHANGE_ACTIVITY_REWARD_RESPONSE, { success = false, message = "奖励不存在", requestId = payload.requestId, state = state })
-                return
-            end
-            state.activity = NormalizeActivityState(state.activity)
-            local claimed = tonumber(state.activity.sweet.exchanged[reward.id] or 0) or 0
-            if reward.limit ~= nil and claimed >= reward.limit then
-                Send(connection, deps_.Shared.EVENTS.EXCHANGE_ACTIVITY_REWARD_RESPONSE, { success = false, message = "已兑换完", requestId = payload.requestId, state = state })
-                return
-            end
-            if state.activity.sweet.value < reward.cost then
-                Send(connection, deps_.Shared.EVENTS.EXCHANGE_ACTIVITY_REWARD_RESPONSE, { success = false, message = "甜蜜值不足", requestId = payload.requestId, state = state })
-                return
-            end
-            state.activity.sweet.value = state.activity.sweet.value - reward.cost
-            state.activity.sweet.exchanged[reward.id] = claimed + 1
-            if reward.type == "seed" then
-                local plantIndex = NormalizePlantIndex(reward.plantIndex)
-                if plantIndex == nil then Send(connection, deps_.Shared.EVENTS.EXCHANGE_ACTIVITY_REWARD_RESPONSE, { success = false, message = "奖励种子不存在", requestId = payload.requestId, state = state }); return end
-                local current = tonumber(state.seedBag[plantIndex] or 0) or 0
-                state.seedBag[plantIndex] = current + (reward.count or 1)
-                state.collectedPlants[plantIndex] = true
-            elseif reward.type == "pack" then
-                if not IsValidPackId(reward.packId) then Send(connection, deps_.Shared.EVENTS.EXCHANGE_ACTIVITY_REWARD_RESPONSE, { success = false, message = "奖励种子包不存在", requestId = payload.requestId, state = state }); return end
-                state.seedPacks[reward.packId] = (tonumber(state.seedPacks[reward.packId] or 0) or 0) + (reward.count or 1)
-            end
-            state.updatedAt = Now()
-            NextRevision(state)
-            local response = { success = true, message = "兑换成功: " .. tostring(reward.name or "奖励"), requestId = payload.requestId, reward = reward, state = state }
-            local c = serverCloud:BatchCommit("活动奖励兑换")
-            ServerCloudStore.BatchScoreSet(c, uid, deps_.Shared.KEYS.ECONOMY_STATE, state)
-            deps_.RequestGuard.AddToCommit(c, uid, payload._requestRecordKey, response)
-            c:Commit({
-                ok = function() Send(connection, deps_.Shared.EVENTS.EXCHANGE_ACTIVITY_REWARD_RESPONSE, response) end,
-                error = function(_, reason) Send(connection, deps_.Shared.EVENTS.EXCHANGE_ACTIVITY_REWARD_RESPONSE, { success = false, message = "兑换失败: " .. tostring(reason), requestId = payload.requestId, state = state }) end,
-            })
-        end,
-        error = function(_, reason) Send(connection, deps_.Shared.EVENTS.EXCHANGE_ACTIVITY_REWARD_RESPONSE, { success = false, message = "经济数据读取失败: " .. tostring(reason), requestId = payload.requestId }) end,
-    })
+    payload = payload or {}
+    deps_.PlayerStateService.MutateEconomy(uid, "exchange_activity_reward", function(state)
+        if ServerActivity.GetActiveActivityId() ~= "sweet" then
+            return { success = false, response = { success = false, message = "当前不是甜蜜蜜活动", requestId = payload.requestId, state = state } }
+        end
+        local reward = ServerActivity.FindSweetReward(tostring(payload.rewardId or ""))
+        if reward == nil then
+            return { success = false, response = { success = false, message = "奖励不存在", requestId = payload.requestId, state = state } }
+        end
+        state.activity = NormalizeActivityState(state.activity)
+        local claimed = tonumber(state.activity.sweet.exchanged[reward.id] or 0) or 0
+        if reward.limit ~= nil and claimed >= reward.limit then
+            return { success = false, response = { success = false, message = "已兑换完", requestId = payload.requestId, state = state } }
+        end
+        if state.activity.sweet.value < reward.cost then
+            return { success = false, response = { success = false, message = "甜蜜值不足", requestId = payload.requestId, state = state } }
+        end
+        state.activity.sweet.value = state.activity.sweet.value - reward.cost
+        state.activity.sweet.exchanged[reward.id] = claimed + 1
+        if reward.type == "seed" then
+            local plantIndex = NormalizePlantIndex(reward.plantIndex)
+            if plantIndex == nil then return { success = false, response = { success = false, message = "奖励种子不存在", requestId = payload.requestId, state = state } } end
+            state.seedBag[plantIndex] = (tonumber(state.seedBag[plantIndex] or 0) or 0) + (reward.count or 1)
+            state.collectedPlants[plantIndex] = true
+        elseif reward.type == "pack" then
+            if not IsValidPackId(reward.packId) then return { success = false, response = { success = false, message = "奖励种子包不存在", requestId = payload.requestId, state = state } } end
+            state.seedPacks[reward.packId] = (tonumber(state.seedPacks[reward.packId] or 0) or 0) + (reward.count or 1)
+        end
+        return { success = true, response = { success = true, message = "兑换成功: " .. tostring(reward.name or "奖励"), requestId = payload.requestId, reward = reward, state = state } }
+    end, function(result)
+        if result ~= nil and result.success == true and type(result.response) == "table" then
+            RecordResponse(uid, payload._requestRecordKey, result.response)
+        end
+        SendMutationResult(connection, deps_.Shared.EVENTS.EXCHANGE_ACTIVITY_REWARD_RESPONSE, result, payload.requestId)
+    end)
 end
 
 function ServerActivity.DrawActivityPackAuthority(uid, payload, connection)
     uid = CloudUid(uid)
-    ServerCloudStore.Get(uid, deps_.Shared.KEYS.ECONOMY_STATE, {
-        ok = function(scores)
-            local state = GetExistingEconomyState(scores)
-            if state == nil then
-                SendMissingEconomyState(connection, deps_.Shared.EVENTS.DRAW_ACTIVITY_PACK_RESPONSE, payload.requestId)
-                return
-            end
-            if ServerActivity.GetActiveActivityId() ~= "alien" then
-                Send(connection, deps_.Shared.EVENTS.DRAW_ACTIVITY_PACK_RESPONSE, { success = false, message = "当前不是外星基因活动", requestId = payload.requestId, state = state })
-                return
-            end
-            local activity = ServerActivity.GetActivityConfig("alien")
-            local drawCount = NormalizePositiveCount(payload.count or 1, 10)
-            drawCount = drawCount >= 10 and 10 or 1
-            local cost = drawCount >= 10 and (activity.drawCostTen or 95) or (activity.drawCost or 10)
-            state.activity = NormalizeActivityState(state.activity)
-            if state.activity.alien.genes < cost then
-                Send(connection, deps_.Shared.EVENTS.DRAW_ACTIVITY_PACK_RESPONSE, { success = false, message = "外星基因不足", requestId = payload.requestId, state = state })
-                return
-            end
-            state.activity.alien.genes = state.activity.alien.genes - cost
-            state.activity.alien.drawCount = state.activity.alien.drawCount + drawCount
-            local rewards = {}
-            for _ = 1, drawCount do
-                local picked = RollWeighted(activity.drawPool)
-                if picked ~= nil then
-                    local reward = { type = picked.type, packId = picked.packId, plantIndex = picked.plantIndex, count = picked.count or 1, name = picked.name }
-                    if picked.type == "pack" and IsValidPackId(picked.packId) then
-                        state.seedPacks[picked.packId] = (tonumber(state.seedPacks[picked.packId] or 0) or 0) + (picked.count or 1)
+    payload = payload or {}
+    deps_.PlayerStateService.MutateEconomy(uid, "draw_activity_pack", function(state)
+        if ServerActivity.GetActiveActivityId() ~= "alien" then
+            return { success = false, response = { success = false, message = "当前不是外星基因活动", requestId = payload.requestId, state = state } }
+        end
+        local activity = ServerActivity.GetActivityConfig("alien")
+        local drawCount = NormalizePositiveCount(payload.count or 1, 10)
+        drawCount = drawCount >= 10 and 10 or 1
+        local cost = drawCount >= 10 and (activity.drawCostTen or 95) or (activity.drawCost or 10)
+        state.activity = NormalizeActivityState(state.activity)
+        if state.activity.alien.genes < cost then
+            return { success = false, response = { success = false, message = "外星基因不足", requestId = payload.requestId, state = state } }
+        end
+        state.activity.alien.genes = state.activity.alien.genes - cost
+        state.activity.alien.drawCount = state.activity.alien.drawCount + drawCount
+        local rewards = {}
+        for _ = 1, drawCount do
+            local picked = RollWeighted(activity.drawPool)
+            if picked ~= nil then
+                local reward = { type = picked.type, packId = picked.packId, plantIndex = picked.plantIndex, count = picked.count or 1, name = picked.name }
+                if picked.type == "pack" and IsValidPackId(picked.packId) then
+                    state.seedPacks[picked.packId] = (tonumber(state.seedPacks[picked.packId] or 0) or 0) + (picked.count or 1)
+                    rewards[#rewards + 1] = reward
+                elseif picked.type == "seed" then
+                    local plantIndex = NormalizePlantIndex(picked.plantIndex)
+                    if plantIndex ~= nil then
+                        local addCount = math.max(0, math.floor(tonumber(picked.count or 1) or 1))
+                        state.seedBag[plantIndex] = (tonumber(state.seedBag[plantIndex] or 0) or 0) + addCount
+                        state.collectedPlants[plantIndex] = true
+                        reward.count = addCount
                         rewards[#rewards + 1] = reward
-                    elseif picked.type == "seed" then
-                        local plantIndex = NormalizePlantIndex(picked.plantIndex)
-                        if plantIndex ~= nil then
-                            local current = tonumber(state.seedBag[plantIndex] or 0) or 0
-                            local addCount = math.max(0, math.floor(tonumber(picked.count or 1) or 1))
-                            state.seedBag[plantIndex] = current + addCount
-                            state.collectedPlants[plantIndex] = true
-                            reward.count = addCount
-                            rewards[#rewards + 1] = reward
-                        end
                     end
                 end
             end
-            if #rewards <= 0 then
-                state.activity.alien.genes = state.activity.alien.genes + cost
-                state.activity.alien.drawCount = math.max(0, state.activity.alien.drawCount - drawCount)
-                Send(connection, deps_.Shared.EVENTS.DRAW_ACTIVITY_PACK_RESPONSE, { success = false, message = "未抽中奖励", requestId = payload.requestId, state = state })
-                return
-            end
-            state.updatedAt = Now()
-            NextRevision(state)
-            local response = { success = true, message = "基因抽取完成", requestId = payload.requestId, rewards = rewards, state = state }
-            local c = serverCloud:BatchCommit("活动基因抽取")
-            ServerCloudStore.BatchScoreSet(c, uid, deps_.Shared.KEYS.ECONOMY_STATE, state)
-            deps_.RequestGuard.AddToCommit(c, uid, payload._requestRecordKey, response)
-            c:Commit({
-                ok = function() Send(connection, deps_.Shared.EVENTS.DRAW_ACTIVITY_PACK_RESPONSE, response) end,
-                error = function(_, reason) Send(connection, deps_.Shared.EVENTS.DRAW_ACTIVITY_PACK_RESPONSE, { success = false, message = "抽取失败: " .. tostring(reason), requestId = payload.requestId, state = state }) end,
-            })
-        end,
-        error = function(_, reason) Send(connection, deps_.Shared.EVENTS.DRAW_ACTIVITY_PACK_RESPONSE, { success = false, message = "经济数据读取失败: " .. tostring(reason), requestId = payload.requestId }) end,
-    })
+        end
+        if #rewards <= 0 then
+            state.activity.alien.genes = state.activity.alien.genes + cost
+            state.activity.alien.drawCount = math.max(0, state.activity.alien.drawCount - drawCount)
+            return { success = false, response = { success = false, message = "未抽中奖励", requestId = payload.requestId, state = state } }
+        end
+        return { success = true, response = { success = true, message = "基因抽取完成", requestId = payload.requestId, rewards = rewards, state = state } }
+    end, function(result)
+        if result ~= nil and result.success == true and type(result.response) == "table" then
+            RecordResponse(uid, payload._requestRecordKey, result.response)
+        end
+        SendMutationResult(connection, deps_.Shared.EVENTS.DRAW_ACTIVITY_PACK_RESPONSE, result, payload.requestId)
+    end)
 end
 
 return ServerActivity

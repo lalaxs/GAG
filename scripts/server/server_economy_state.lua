@@ -9,10 +9,11 @@ local UserId = require("utils.user_id")
 
 local ServerEconomyState = {}
 
---- 经济档选档优先级：schema(1e15) > saveEpoch(1e9) > 内容分
+--- 经济档选档优先级：schema(1e15) > saveEpoch(1e9) > revision(1e6) > 内容分
 ServerEconomyState.SAVE_SCHEMA_VERSION = 3
 ServerEconomyState.SAVE_SCHEMA_SCALE = 1e15
 ServerEconomyState.SAVE_EPOCH_SCALE = 1e9
+ServerEconomyState.REVISION_SCALE = 1e6
 
 local deps_ = {}
 
@@ -57,8 +58,13 @@ function ServerEconomyState.NormalizeProgressionState(progression)
     progression = type(progression) == "table" and progression or {}
     progression.unlockedPlotCount = Clamp(math.floor(tonumber(progression.unlockedPlotCount or 1) or 1), 1, (deps_.GameConfig.CONFIG.GridCols or 1) * (deps_.GameConfig.CONFIG.GridRows or 1))
     progression.gardenLevel = math.max(1, math.floor(tonumber(progression.gardenLevel or progression.unlockedPlotCount) or progression.unlockedPlotCount))
+    -- 观光值以权威农场为准；legacy tourValue 仅作缺字段回填，不参与 best 选档。
+    if progression.currentTourValue == nil and progression.tourValue ~= nil then
+        progression.currentTourValue = progression.tourValue
+    end
     progression.currentTourValue = math.max(0, math.floor(tonumber(progression.currentTourValue or 0) or 0))
     progression.bestTourValue = math.max(tonumber(progression.bestTourValue or 0) or 0, progression.currentTourValue)
+    progression.tourValue = nil
     return progression
 end
 
@@ -135,7 +141,6 @@ function ServerEconomyState.ScoreEconomyContent(state)
     local talent = type(state.talent) == "table" and state.talent or {}
     score = score + math.max(0, tonumber(talent.level or 1) or 1) * 1000
     local progression = type(state.progression) == "table" and state.progression or {}
-    score = score + math.max(0, tonumber(progression.bestTourValue or 0) or 0) * 2
     score = score + math.max(0, tonumber(progression.unlockedPlotCount or 1) or 1) * 500
     return score
 end
@@ -144,8 +149,10 @@ function ServerEconomyState.ScoreEconomyRecord(state)
     if type(state) ~= "table" then return -1 end
     local schema = math.max(0, math.floor(tonumber(state.saveSchemaVersion or 0) or 0))
     local epoch = ServerEconomyState.GetSaveEpoch(state)
+    local revision = math.max(0, math.floor(tonumber(state.revision or 0) or 0))
     return schema * ServerEconomyState.SAVE_SCHEMA_SCALE
         + epoch * ServerEconomyState.SAVE_EPOCH_SCALE
+        + revision * ServerEconomyState.REVISION_SCALE
         + ServerEconomyState.ScoreEconomyContent(state)
 end
 

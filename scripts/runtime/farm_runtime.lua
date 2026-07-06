@@ -140,6 +140,20 @@ end
 
 function FarmRuntime.ApplyAuthoritativeFarmState(farm)
     if type(farm) ~= "table" or type(farm.plots) ~= "table" then return false end
+    local currentPlants = 0
+    for _, plot in ipairs(GetPlots() or {}) do
+        currentPlants = currentPlants + #(plot.plants or {})
+    end
+    local incomingPlants = 0
+    for _, plotData in pairs(farm.plots) do
+        if type(plotData) == "table" and type(plotData.plants) == "table" then
+            incomingPlants = incomingPlants + #plotData.plants
+        end
+    end
+    if farm.degraded == true and incomingPlants == 0 and currentPlants > 0 then
+        print(string.format("[权威农场] 忽略降级空快照，保留当前作物数量=%d", currentPlants))
+        return false
+    end
     local serverUnlocked = deps_.ProgressionSystem.GetUnlockedPlotCount()
     local previousUnlocked = GetUnlockedPlotCount()
     local farmRecreated = false

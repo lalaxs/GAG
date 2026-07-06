@@ -160,12 +160,19 @@ function ProgressionSystem.GetSaveData()
     }
 end
 
-function ProgressionSystem.LoadSaveData(data)
+function ProgressionSystem.LoadSaveData(data, options)
     if data == nil then return end
+    options = options or {}
     state_.unlockedPlotCount = ClampUnlockedPlotCount(data.unlockedPlotCount or state_.unlockedPlotCount)
     state_.gardenLevel = data.gardenLevel or math.max(1, state_.unlockedPlotCount)
-    state_.currentTourValue = data.currentTourValue or data.tourValue or state_.currentTourValue
-    state_.bestTourValue = math.max(data.bestTourValue or 0, state_.currentTourValue)
+    if options.skipTourFields ~= true then
+        if data.currentTourValue ~= nil then
+            state_.currentTourValue = math.max(0, math.floor(tonumber(data.currentTourValue) or 0))
+        elseif data.tourValue ~= nil then
+            state_.currentTourValue = math.max(0, math.floor(tonumber(data.tourValue) or 0))
+        end
+        state_.bestTourValue = math.max(tonumber(data.bestTourValue or 0) or 0, state_.currentTourValue)
+    end
 end
 
 return ProgressionSystem

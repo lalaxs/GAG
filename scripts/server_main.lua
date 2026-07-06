@@ -21,6 +21,8 @@ local ServerCommission = require("server.server_commission")
 local ServerActivity = require("server.server_activity")
 local ServerRewards = require("server.server_rewards")
 local ServerEconomyActions = require("server.server_economy_actions")
+local PlayerStateService = require("server.player_state_service")
+local ServerPlayerDataCache = require("server.server_player_data_cache")
 local ServerLeaderboard = require("server.server_leaderboard")
 local ServerSteal = require("server.server_steal")
 local ServerEventHandlers = require("server.server_event_handlers")
@@ -569,6 +571,9 @@ local function SendPlayerProfile(uid, connection)
         })
     end
 
+    -- 先下发 UID，避免昵称异步查询未完成时客户端长期无资料。
+    deliverProfile("Tap玩家", nil)
+
     SocialServer.GetPlayerGardenAvatar(uid, function(avatar)
         if GetUserNickname == nil then
             deliverProfile("Tap玩家", avatar)
@@ -623,6 +628,8 @@ function Start()
         ServerLeaderboard = ServerLeaderboard,
         ServerRewards = ServerRewards,
         ServerEconomyActions = ServerEconomyActions,
+        PlayerStateService = PlayerStateService,
+        ServerPlayerDataCache = ServerPlayerDataCache,
         ServerSteal = ServerSteal,
         GiftServer = GiftServer,
         SocialServer = SocialServer,

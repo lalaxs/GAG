@@ -2,7 +2,7 @@
 -- 服务端奖励与成长系统
 -- Grow A Garden
 -- ============================================================================
--- 从 server_main.lua 拆出的经验成长、广告奖励、每日奖励、种子包合成、天赋解锁和扩地逻辑。
+-- 奖励/成长经济写入统一修改 PlayerStateService 内存状态。
 -- ============================================================================
 
 local ServerRewards = {}
@@ -48,32 +48,6 @@ local function NormalizeDailyTaskState(daily)
     return deps_.NormalizeDailyTaskState(daily)
 end
 
-local function NormalizeEconomyState(state)
-    return deps_.NormalizeEconomyState(state)
-end
-
-local function NormalizeFarmState(state)
-    return deps_.NormalizeFarmState(state)
-end
-
-local function BuildInitialEconomyState()
-    return deps_.BuildInitialEconomyState()
-end
-
-local function GetExistingEconomyState(scores)
-    local state = scores and scores[deps_.Shared.KEYS.ECONOMY_STATE]
-    if type(state) ~= "table" then return nil end
-    return NormalizeEconomyState(state)
-end
-
-local function SendMissingEconomyState(connection, eventName, requestId, extra)
-    local data = extra or {}
-    data.success = false
-    data.message = "存档尚未初始化，请重新进入游戏"
-    data.requestId = requestId
-    Send(connection, eventName, data)
-end
-
 local function GetFarmPlot(state, plotIndex)
     return deps_.GetFarmPlot(state, plotIndex)
 end
@@ -82,20 +56,37 @@ local function SyncProgressionTourValueFromFarm(state, farmState)
     return deps_.SyncProgressionTourValueFromFarm(state, farmState)
 end
 
-local function AddTourRankCommit(commit, uid, state)
-    deps_.AddTourRankCommit(commit, uid, state)
-end
-
-local function NextRevision(state)
-    deps_.NextRevision(state)
-end
-
 local function RollWeighted(pool)
     return deps_.RollWeighted(pool)
 end
 
 local function NormalizePlotIndex(value)
     return deps_.NormalizePlotIndex(value)
+end
+
+local function RecordResponse(uid, key, response)
+    if deps_.RequestGuard ~= nil and deps_.RequestGuard.Record ~= nil then
+        deps_.RequestGuard.Record(uid, key, response)
+    end
+end
+
+local function SendMutationResult(connection, eventName, result, requestId)
+    if type(result) == "table" and type(result.response) == "table" then
+        Send(connection, eventName, result.response)
+        return
+    end
+    Send(connection, eventName, {
+        success = false,
+        message = type(result) == "table" and result.message or "同步失败",
+        retryable = type(result) == "table" and result.retryable == true,
+        requestId = requestId,
+    })
+end
+
+local function CommitTourRank(uid, state)
+    local c = serverCloud:BatchCommit("观光排行更新")
+    deps_.AddTourRankCommit(c, uid, state)
+    c:Commit({ ok = function() end, error = function(_, reason) print("[奖励] 观光排行更新失败: " .. tostring(reason)) end })
 end
 
 function ServerRewards.FindTalentConfig(talentId)
@@ -178,10 +169,7 @@ function ServerRewards.GrantAdReward(uid, payload, connection)
                 c:QuotaAdd(uid, "daily_steal_ad", 1, deps_.dailyStealAdLimit, "day", 1)
                 c:QuotaAdd(uid, "daily_steal_ad_bonus", deps_.adStealBonus, deps_.dailyStealAdLimit * deps_.adStealBonus, "day", 1)
                 deps_.RequestGuard.AddToCommit(c, uid, payload._requestRecordKey, response)
-                c:Commit({
-                    ok = function() Send(connection, deps_.Shared.EVENTS.AD_REWARD_RESPONSE, response); deps_.SocialServer.RequestSocialState(uid, connection) end,
-                    error = function(_, reason) Send(connection, deps_.Shared.EVENTS.AD_REWARD_RESPONSE, { success = false, message = "奖励发放失败: " .. tostring(reason), requestId = payload.requestId, rewardType = rewardType }) end,
-                })
+                c:Commit({ ok = function() Send(connection, deps_.Shared.EVENTS.AD_REWARD_RESPONSE, response); deps_.SocialServer.RequestSocialState(uid, connection) end, error = function(_, reason) Send(connection, deps_.Shared.EVENTS.AD_REWARD_RESPONSE, { success = false, message = "奖励发放失败: " .. tostring(reason), requestId = payload.requestId, rewardType = rewardType }) end })
             end,
             error = function(_, reason) Send(connection, deps_.Shared.EVENTS.AD_REWARD_RESPONSE, { success = false, message = "广告次数读取失败: " .. tostring(reason), requestId = payload.requestId, rewardType = rewardType }) end,
         })
@@ -197,28 +185,19 @@ function ServerRewards.GrantAdReward(uid, payload, connection)
                     Send(connection, deps_.Shared.EVENTS.AD_REWARD_RESPONSE, { success = false, code = "AD_LIMIT_REACHED", message = "今日广告种子包已领取完", requestId = payload.requestId, rewardType = rewardType, daily = { seedPackAdCount = watched, seedPackAdLimit = deps_.dailySeedPackAdLimit } })
                     return
                 end
-                ServerCloudStore.Get(uid, deps_.Shared.KEYS.ECONOMY_STATE, {
-                    ok = function(scores)
-                        local state = GetExistingEconomyState(scores)
-                        if state == nil then
-                            SendMissingEconomyState(connection, deps_.Shared.EVENTS.AD_REWARD_RESPONSE, payload.requestId, { rewardType = rewardType })
-                            return
-                        end
-                        state.seedPacks.pack_rare = (tonumber(state.seedPacks.pack_rare or 0) or 0) + deps_.adRarePackCount
-                        state.updatedAt = Now()
-                        NextRevision(state)
-                        local response = { success = true, message = "获得稀有种子包 x" .. tostring(deps_.adRarePackCount), requestId = payload.requestId, rewardType = rewardType, state = state, rewards = { { packId = "pack_rare", count = deps_.adRarePackCount } }, daily = { seedPackAdCount = watched + 1, seedPackAdLimit = deps_.dailySeedPackAdLimit } }
-                        local c = serverCloud:BatchCommit("广告奖励：稀有种子包")
-                        ServerCloudStore.BatchScoreSet(c, uid, deps_.Shared.KEYS.ECONOMY_STATE, state)
+                deps_.PlayerStateService.MutateEconomy(uid, "ad_rare_seed_pack", function(state)
+                    state.seedPacks.pack_rare = (tonumber(state.seedPacks.pack_rare or 0) or 0) + deps_.adRarePackCount
+                    return { success = true, response = { success = true, message = "获得稀有种子包 x" .. tostring(deps_.adRarePackCount), requestId = payload.requestId, rewardType = rewardType, state = state, rewards = { { packId = "pack_rare", count = deps_.adRarePackCount } }, daily = { seedPackAdCount = watched + 1, seedPackAdLimit = deps_.dailySeedPackAdLimit } } }
+                end, function(result)
+                    if result ~= nil and result.success == true and type(result.response) == "table" then
+                        local c = serverCloud:BatchCommit("广告次数：稀有种子包")
                         c:QuotaAdd(uid, "daily_seed_pack_ad", 1, deps_.dailySeedPackAdLimit, "day", 1)
-                        deps_.RequestGuard.AddToCommit(c, uid, payload._requestRecordKey, response)
-                        c:Commit({
-                            ok = function() Send(connection, deps_.Shared.EVENTS.AD_REWARD_RESPONSE, response); deps_.SocialServer.RequestSocialState(uid, connection) end,
-                            error = function(_, reason) Send(connection, deps_.Shared.EVENTS.AD_REWARD_RESPONSE, { success = false, message = "奖励发放失败: " .. tostring(reason), requestId = payload.requestId, rewardType = rewardType, state = state }) end,
-                        })
-                    end,
-                    error = function(_, reason) Send(connection, deps_.Shared.EVENTS.AD_REWARD_RESPONSE, { success = false, message = "经济数据读取失败: " .. tostring(reason), requestId = payload.requestId, rewardType = rewardType }) end,
-                })
+                        deps_.RequestGuard.AddToCommit(c, uid, payload._requestRecordKey, result.response)
+                        c:Commit({ ok = function() end, error = function(_, reason) print("[奖励] 广告次数保存失败: " .. tostring(reason)) end })
+                        deps_.SocialServer.RequestSocialState(uid, connection)
+                    end
+                    SendMutationResult(connection, deps_.Shared.EVENTS.AD_REWARD_RESPONSE, result, payload.requestId)
+                end)
             end,
             error = function(_, reason) Send(connection, deps_.Shared.EVENTS.AD_REWARD_RESPONSE, { success = false, message = "广告次数读取失败: " .. tostring(reason), requestId = payload.requestId, rewardType = rewardType }) end,
         })
@@ -235,43 +214,23 @@ function ServerRewards.GrantAdReward(uid, payload, connection)
                     Send(connection, deps_.Shared.EVENTS.AD_REWARD_RESPONSE, { success = false, code = "AD_LIMIT_REACHED", message = "今日快速成熟广告已达上限", requestId = payload.requestId, rewardType = rewardType, daily = { matureAdCount = watched, matureAdLimit = deps_.dailyMatureAdLimit } })
                     return
                 end
-                ServerCloudStore.Get(uid, deps_.Shared.KEYS.AUTH_FARM_STATE, {
-                    ok = function(farmScores)
-                        local farmState = NormalizeFarmState(farmScores[deps_.Shared.KEYS.AUTH_FARM_STATE])
-                        local changed = ServerRewards.MatureAllCropsInPlot(farmState, plotIndex)
-                        if changed <= 0 then
-                            Send(connection, deps_.Shared.EVENTS.AD_REWARD_RESPONSE, { success = false, message = "该地块没有可加速成熟的作物", requestId = payload.requestId, rewardType = rewardType, farm = farmState, daily = { matureAdCount = watched, matureAdLimit = deps_.dailyMatureAdLimit } })
-                            return
-                        end
-                        ServerCloudStore.Get(uid, deps_.Shared.KEYS.ECONOMY_STATE, {
-                            ok = function(scores)
-                                local state = GetExistingEconomyState(scores)
-                                if state == nil then
-                                    SendMissingEconomyState(connection, deps_.Shared.EVENTS.AD_REWARD_RESPONSE, payload.requestId, { rewardType = rewardType, farm = farmState })
-                                    return
-                                end
-                                SyncProgressionTourValueFromFarm(state, farmState)
-                                farmState.updatedAt = Now()
-                                NextRevision(farmState)
-                                state.updatedAt = Now()
-                                NextRevision(state)
-                                local response = { success = true, message = "地块作物已全部成熟", requestId = payload.requestId, rewardType = rewardType, plotIndex = plotIndex, maturedCount = changed, farm = farmState, state = state, daily = { matureAdCount = watched + 1, matureAdLimit = deps_.dailyMatureAdLimit } }
-                                local c = serverCloud:BatchCommit("广告奖励：快速成熟")
-                                ServerCloudStore.BatchScoreSet(c, uid, deps_.Shared.KEYS.AUTH_FARM_STATE, farmState)
-                                ServerCloudStore.BatchScoreSet(c, uid, deps_.Shared.KEYS.ECONOMY_STATE, state)
-                                c:QuotaAdd(uid, "daily_mature_ad", 1, deps_.dailyMatureAdLimit, "day", 1)
-                                AddTourRankCommit(c, uid, state)
-                                deps_.RequestGuard.AddToCommit(c, uid, payload._requestRecordKey, response)
-                                c:Commit({
-                                    ok = function() Send(connection, deps_.Shared.EVENTS.AD_REWARD_RESPONSE, response) end,
-                                    error = function(_, reason) Send(connection, deps_.Shared.EVENTS.AD_REWARD_RESPONSE, { success = false, message = "快速成熟失败: " .. tostring(reason), requestId = payload.requestId, rewardType = rewardType, farm = farmState }) end,
-                                })
-                            end,
-                            error = function(_, reason) Send(connection, deps_.Shared.EVENTS.AD_REWARD_RESPONSE, { success = false, message = "经济数据读取失败: " .. tostring(reason), requestId = payload.requestId, rewardType = rewardType, farm = farmState }) end,
-                        })
-                    end,
-                    error = function(_, reason) Send(connection, deps_.Shared.EVENTS.AD_REWARD_RESPONSE, { success = false, message = "读取农场失败: " .. tostring(reason), requestId = payload.requestId, rewardType = rewardType }) end,
-                })
+                deps_.PlayerStateService.MutateEconomyAndFarm(uid, "ad_mature_plot", function(state, farmState)
+                    local changed = ServerRewards.MatureAllCropsInPlot(farmState, plotIndex)
+                    if changed <= 0 then
+                        return { success = false, response = { success = false, message = "该地块没有可加速成熟的作物", requestId = payload.requestId, rewardType = rewardType, farm = farmState, state = state, daily = { matureAdCount = watched, matureAdLimit = deps_.dailyMatureAdLimit } } }
+                    end
+                    SyncProgressionTourValueFromFarm(state, farmState)
+                    return { success = true, response = { success = true, message = "地块作物已全部成熟", requestId = payload.requestId, rewardType = rewardType, plotIndex = plotIndex, maturedCount = changed, farm = farmState, state = state, daily = { matureAdCount = watched + 1, matureAdLimit = deps_.dailyMatureAdLimit } } }
+                end, function(result)
+                    if result ~= nil and result.success == true and type(result.response) == "table" then
+                        local c = serverCloud:BatchCommit("广告次数：快速成熟")
+                        c:QuotaAdd(uid, "daily_mature_ad", 1, deps_.dailyMatureAdLimit, "day", 1)
+                        deps_.AddTourRankCommit(c, uid, result.response.state)
+                        deps_.RequestGuard.AddToCommit(c, uid, payload._requestRecordKey, result.response)
+                        c:Commit({ ok = function() end, error = function(_, reason) print("[奖励] 快速成熟附加提交失败: " .. tostring(reason)) end })
+                    end
+                    SendMutationResult(connection, deps_.Shared.EVENTS.AD_REWARD_RESPONSE, result, payload.requestId)
+                end)
             end,
             error = function(_, reason) Send(connection, deps_.Shared.EVENTS.AD_REWARD_RESPONSE, { success = false, message = "广告次数读取失败: " .. tostring(reason), requestId = payload.requestId, rewardType = rewardType }) end,
         })
@@ -283,41 +242,30 @@ end
 
 function ServerRewards.ClaimDailyRewardAuthority(uid, payload, connection)
     uid = CloudUid(uid)
-    ServerCloudStore.Get(uid, deps_.Shared.KEYS.ECONOMY_STATE, {
-        ok = function(scores)
-            local state = GetExistingEconomyState(scores)
-            if state == nil then
-                SendMissingEconomyState(connection, deps_.Shared.EVENTS.CLAIM_DAILY_REWARD_RESPONSE, payload.requestId)
-                return
-            end
-            local daily = NormalizeDailyTaskState(state.dailyTaskState)
-            local completed = (daily.progress.plant or 0) >= 3 and (daily.progress.harvest or 0) >= 3 and (daily.progress.sell or 0) >= 1
-            if not completed or daily.rewardClaimed then
-                Send(connection, deps_.Shared.EVENTS.CLAIM_DAILY_REWARD_RESPONSE, { success = false, message = daily.rewardClaimed and "今日奖励已领取" or "每日任务未完成", requestId = payload.requestId, state = state })
-                return
-            end
-            daily.rewardClaimed = true
-            local rewards = {}
-            for _ = 1, 3 do
-                local picked = RollWeighted(DAILY_REWARD_PACK_WEIGHTS)
-                state.seedPacks[picked.packId] = (tonumber(state.seedPacks[picked.packId] or 0) or 0) + 1
-                rewards[#rewards + 1] = picked.packId
-            end
-            state.dailyTaskState = daily
-            state.updatedAt = Now()
-            NextRevision(state)
-            local response = { success = true, message = "每日奖励已领取", requestId = payload.requestId, rewards = rewards, state = state }
-            ServerCloudStore.SetScore(uid, deps_.Shared.KEYS.ECONOMY_STATE, state, {
-                ok = function() Send(connection, deps_.Shared.EVENTS.CLAIM_DAILY_REWARD_RESPONSE, response) end,
-                error = function(_, reason) Send(connection, deps_.Shared.EVENTS.CLAIM_DAILY_REWARD_RESPONSE, { success = false, message = "领取失败: " .. tostring(reason), requestId = payload.requestId, state = state }) end,
-            })
-        end,
-        error = function(_, reason) Send(connection, deps_.Shared.EVENTS.CLAIM_DAILY_REWARD_RESPONSE, { success = false, message = "经济数据读取失败: " .. tostring(reason), requestId = payload.requestId }) end,
-    })
+    payload = payload or {}
+    deps_.PlayerStateService.MutateEconomy(uid, "claim_daily_reward", function(state)
+        local daily = NormalizeDailyTaskState(state.dailyTaskState)
+        local completed = (daily.progress.plant or 0) >= 3 and (daily.progress.harvest or 0) >= 3 and (daily.progress.sell or 0) >= 1
+        if not completed or daily.rewardClaimed then
+            return { success = false, response = { success = false, message = daily.rewardClaimed and "今日奖励已领取" or "每日任务未完成", requestId = payload.requestId, state = state } }
+        end
+        daily.rewardClaimed = true
+        local rewards = {}
+        for _ = 1, 3 do
+            local picked = RollWeighted(DAILY_REWARD_PACK_WEIGHTS)
+            state.seedPacks[picked.packId] = (tonumber(state.seedPacks[picked.packId] or 0) or 0) + 1
+            rewards[#rewards + 1] = picked.packId
+        end
+        state.dailyTaskState = daily
+        return { success = true, response = { success = true, message = "每日奖励已领取", requestId = payload.requestId, rewards = rewards, state = state } }
+    end, function(result)
+        SendMutationResult(connection, deps_.Shared.EVENTS.CLAIM_DAILY_REWARD_RESPONSE, result, payload.requestId)
+    end)
 end
 
 function ServerRewards.SynthesizePackAuthority(uid, payload, connection)
     uid = CloudUid(uid)
+    payload = payload or {}
     local packId = tostring(payload.packId or "")
     local targetId = SYNTHESIS_MAP[packId]
     local requestedCount = math.max(1, math.floor(tonumber(payload.count or 1) or 1))
@@ -325,141 +273,71 @@ function ServerRewards.SynthesizePackAuthority(uid, payload, connection)
         Send(connection, deps_.Shared.EVENTS.SYNTHESIZE_PACK_RESPONSE, { success = false, message = "该种子包不可合成", requestId = payload.requestId })
         return
     end
-    ServerCloudStore.Get(uid, deps_.Shared.KEYS.ECONOMY_STATE, {
-        ok = function(scores)
-            local state = GetExistingEconomyState(scores)
-            if state == nil then
-                SendMissingEconomyState(connection, deps_.Shared.EVENTS.SYNTHESIZE_PACK_RESPONSE, payload.requestId)
-                return
-            end
-            local owned = tonumber(state.seedPacks[packId] or 0) or 0
-            local maxCount = math.floor(owned / 3)
-            local synthCount = math.min(requestedCount, maxCount)
-            if synthCount <= 0 then
-                Send(connection, deps_.Shared.EVENTS.SYNTHESIZE_PACK_RESPONSE, { success = false, message = "需要 3 个同品级种子包", requestId = payload.requestId, state = state })
-                return
-            end
-            local consumeCount = synthCount * 3
-            state.seedPacks[packId] = owned - consumeCount
-            state.seedPacks[targetId] = (tonumber(state.seedPacks[targetId] or 0) or 0) + synthCount
-            state.updatedAt = Now()
-            NextRevision(state)
-            local response = { success = true, message = "合成成功 x" .. synthCount, requestId = payload.requestId, packId = packId, targetId = targetId, count = synthCount, state = state }
-            ServerCloudStore.SetScore(uid, deps_.Shared.KEYS.ECONOMY_STATE, state, {
-                ok = function() Send(connection, deps_.Shared.EVENTS.SYNTHESIZE_PACK_RESPONSE, response) end,
-                error = function(_, reason) Send(connection, deps_.Shared.EVENTS.SYNTHESIZE_PACK_RESPONSE, { success = false, message = "合成失败: " .. tostring(reason), requestId = payload.requestId, state = state }) end,
-            })
-        end,
-        error = function(_, reason) Send(connection, deps_.Shared.EVENTS.SYNTHESIZE_PACK_RESPONSE, { success = false, message = "经济数据读取失败: " .. tostring(reason), requestId = payload.requestId }) end,
-    })
+    deps_.PlayerStateService.MutateEconomy(uid, "synthesize_pack", function(state)
+        local owned = tonumber(state.seedPacks[packId] or 0) or 0
+        local synthCount = math.min(requestedCount, math.floor(owned / 3))
+        if synthCount <= 0 then
+            return { success = false, response = { success = false, message = "需要 3 个同品级种子包", requestId = payload.requestId, state = state } }
+        end
+        state.seedPacks[packId] = owned - synthCount * 3
+        state.seedPacks[targetId] = (tonumber(state.seedPacks[targetId] or 0) or 0) + synthCount
+        return { success = true, response = { success = true, message = "合成成功 x" .. synthCount, requestId = payload.requestId, packId = packId, targetId = targetId, count = synthCount, state = state } }
+    end, function(result)
+        SendMutationResult(connection, deps_.Shared.EVENTS.SYNTHESIZE_PACK_RESPONSE, result, payload.requestId)
+    end)
 end
 
 function ServerRewards.UnlockTalentAuthority(uid, payload, connection)
     uid = CloudUid(uid)
+    payload = payload or {}
     local talentId = tostring(payload.talentId or "")
     local talentCfg = ServerRewards.FindTalentConfig(talentId)
     if talentCfg == nil then
         Send(connection, deps_.Shared.EVENTS.UNLOCK_TALENT_RESPONSE, { success = false, message = "天赋不存在", requestId = payload.requestId })
         return
     end
-    ServerCloudStore.Get(uid, deps_.Shared.KEYS.ECONOMY_STATE, {
-        ok = function(scores)
-            local state = GetExistingEconomyState(scores)
-            if state == nil then
-                SendMissingEconomyState(connection, deps_.Shared.EVENTS.UNLOCK_TALENT_RESPONSE, payload.requestId)
-                return
-            end
-            local talent = NormalizeTalentState(state.talent)
-            if talent.unlockedTalents[talentId] == true then
-                Send(connection, deps_.Shared.EVENTS.UNLOCK_TALENT_RESPONSE, { success = false, message = "天赋已解锁", requestId = payload.requestId, state = state })
-                return
-            end
-            if talentCfg.requires ~= nil and talent.unlockedTalents[talentCfg.requires] ~= true then
-                Send(connection, deps_.Shared.EVENTS.UNLOCK_TALENT_RESPONSE, { success = false, message = "需要先解锁前置天赋", requestId = payload.requestId, state = state })
-                return
-            end
-            if talent.talentPoints < talentCfg.cost then
-                Send(connection, deps_.Shared.EVENTS.UNLOCK_TALENT_RESPONSE, { success = false, message = "天赋点不足", requestId = payload.requestId, state = state })
-                return
-            end
-            if state.gold < (talentCfg.goldCost or 0) then
-                Send(connection, deps_.Shared.EVENTS.UNLOCK_TALENT_RESPONSE, { success = false, message = "金币不足", requestId = payload.requestId, state = state })
-                return
-            end
-            talent.talentPoints = talent.talentPoints - talentCfg.cost
-            talent.unlockedTalents[talentId] = true
-            state.gold = state.gold - (talentCfg.goldCost or 0)
-            state.talent = talent
-            state.updatedAt = Now()
-            NextRevision(state)
-            local response = { success = true, message = "天赋已解锁", requestId = payload.requestId, talentId = talentId, state = state }
-            ServerCloudStore.SetScore(uid, deps_.Shared.KEYS.ECONOMY_STATE, state, {
-                ok = function() Send(connection, deps_.Shared.EVENTS.UNLOCK_TALENT_RESPONSE, response) end,
-                error = function(_, reason) Send(connection, deps_.Shared.EVENTS.UNLOCK_TALENT_RESPONSE, { success = false, message = "解锁失败: " .. tostring(reason), requestId = payload.requestId, state = state }) end,
-            })
-        end,
-        error = function(_, reason) Send(connection, deps_.Shared.EVENTS.UNLOCK_TALENT_RESPONSE, { success = false, message = "经济数据读取失败: " .. tostring(reason), requestId = payload.requestId }) end,
-    })
+    deps_.PlayerStateService.MutateEconomy(uid, "unlock_talent", function(state)
+        local talent = NormalizeTalentState(state.talent)
+        if talent.unlockedTalents[talentId] == true then return { success = false, response = { success = false, message = "天赋已解锁", requestId = payload.requestId, state = state } } end
+        if talentCfg.requires ~= nil and talent.unlockedTalents[talentCfg.requires] ~= true then return { success = false, response = { success = false, message = "需要先解锁前置天赋", requestId = payload.requestId, state = state } } end
+        if talent.talentPoints < talentCfg.cost then return { success = false, response = { success = false, message = "天赋点不足", requestId = payload.requestId, state = state } } end
+        if state.gold < (talentCfg.goldCost or 0) then return { success = false, response = { success = false, message = "金币不足", requestId = payload.requestId, state = state } } end
+        talent.talentPoints = talent.talentPoints - talentCfg.cost
+        talent.unlockedTalents[talentId] = true
+        state.gold = state.gold - (talentCfg.goldCost or 0)
+        state.talent = talent
+        return { success = true, response = { success = true, message = "天赋已解锁", requestId = payload.requestId, talentId = talentId, state = state } }
+    end, function(result)
+        SendMutationResult(connection, deps_.Shared.EVENTS.UNLOCK_TALENT_RESPONSE, result, payload.requestId)
+    end)
 end
 
 function ServerRewards.ExpandPlotAuthority(uid, payload, connection)
     uid = CloudUid(uid)
-    ServerCloudStore.Get(uid, deps_.Shared.KEYS.ECONOMY_STATE, {
-        ok = function(scores)
-            local state = GetExistingEconomyState(scores)
-            if state == nil then
-                SendMissingEconomyState(connection, deps_.Shared.EVENTS.EXPAND_PLOT_RESPONSE, payload.requestId)
-                return
-            end
-            local progression = NormalizeProgressionState(state.progression)
-            local maxPlots = (deps_.GameConfig.CONFIG.GridCols or 1) * (deps_.GameConfig.CONFIG.GridRows or 1)
-            if progression.unlockedPlotCount >= maxPlots then
-                Send(connection, deps_.Shared.EVENTS.EXPAND_PLOT_RESPONSE, { success = false, message = "已扩展到最大地块", requestId = payload.requestId, state = state })
-                return
-            end
-            local nextPlot = progression.unlockedPlotCount + 1
-            local requirement = ServerRewards.BuildExpansionRequirement(nextPlot)
-            if (state.talent.level or 1) < requirement.level then
-                Send(connection, deps_.Shared.EVENTS.EXPAND_PLOT_RESPONSE, { success = false, message = "等级不足", requestId = payload.requestId, state = state })
-                return
-            end
-            if state.gold < requirement.gold then
-                Send(connection, deps_.Shared.EVENTS.EXPAND_PLOT_RESPONSE, { success = false, message = "金币不足", requestId = payload.requestId, state = state })
-                return
-            end
-            ServerCloudStore.Get(uid, deps_.Shared.KEYS.AUTH_FARM_STATE, {
-                ok = function(farmScores)
-                    local farmState = NormalizeFarmState(farmScores[deps_.Shared.KEYS.AUTH_FARM_STATE])
-                    SyncProgressionTourValueFromFarm(state, farmState)
-                    progression = NormalizeProgressionState(state.progression)
-                    if (progression.bestTourValue or progression.currentTourValue or 0) < requirement.tour then
-                        Send(connection, deps_.Shared.EVENTS.EXPAND_PLOT_RESPONSE, { success = false, message = "观光值不足", requestId = payload.requestId, state = state })
-                        return
-                    end
-                    state.gold = state.gold - requirement.gold
-                    progression.unlockedPlotCount = nextPlot
-                    progression.gardenLevel = math.max(progression.gardenLevel or 1, nextPlot)
-                    state.progression = progression
-                    state.updatedAt = Now()
-                    NextRevision(state)
-                    GetFarmPlot(farmState, nextPlot)
-                    farmState.updatedAt = Now()
-                    NextRevision(farmState)
-                    local response = { success = true, message = "扩地成功", requestId = payload.requestId, plotIndex = nextPlot, state = state, farm = farmState }
-                    local c = serverCloud:BatchCommit("权威扩地")
-                    ServerCloudStore.BatchScoreSet(c, uid, deps_.Shared.KEYS.ECONOMY_STATE, state)
-                    AddTourRankCommit(c, uid, state)
-                    ServerCloudStore.BatchScoreSet(c, uid, deps_.Shared.KEYS.AUTH_FARM_STATE, farmState)
-                    c:Commit({
-                        ok = function() Send(connection, deps_.Shared.EVENTS.EXPAND_PLOT_RESPONSE, response) end,
-                        error = function(_, reason) Send(connection, deps_.Shared.EVENTS.EXPAND_PLOT_RESPONSE, { success = false, message = "扩地失败: " .. tostring(reason), requestId = payload.requestId, state = state }) end,
-                    })
-                end,
-                error = function(_, reason) Send(connection, deps_.Shared.EVENTS.EXPAND_PLOT_RESPONSE, { success = false, message = "农场数据读取失败: " .. tostring(reason), requestId = payload.requestId, state = state }) end,
-            })
-        end,
-        error = function(_, reason) Send(connection, deps_.Shared.EVENTS.EXPAND_PLOT_RESPONSE, { success = false, message = "经济数据读取失败: " .. tostring(reason), requestId = payload.requestId }) end,
-    })
+    payload = payload or {}
+    deps_.PlayerStateService.MutateEconomyAndFarm(uid, "expand_plot", function(state, farmState)
+        local progression = NormalizeProgressionState(state.progression)
+        local maxPlots = (deps_.GameConfig.CONFIG.GridCols or 1) * (deps_.GameConfig.CONFIG.GridRows or 1)
+        if progression.unlockedPlotCount >= maxPlots then return { success = false, response = { success = false, message = "已扩展到最大地块", requestId = payload.requestId, state = state } } end
+        local nextPlot = progression.unlockedPlotCount + 1
+        local requirement = ServerRewards.BuildExpansionRequirement(nextPlot)
+        if (state.talent.level or 1) < requirement.level then return { success = false, response = { success = false, message = "等级不足", requestId = payload.requestId, state = state } } end
+        if state.gold < requirement.gold then return { success = false, response = { success = false, message = "金币不足", requestId = payload.requestId, state = state } } end
+        SyncProgressionTourValueFromFarm(state, farmState)
+        progression = NormalizeProgressionState(state.progression)
+        if (progression.bestTourValue or progression.currentTourValue or 0) < requirement.tour then return { success = false, response = { success = false, message = "观光值不足", requestId = payload.requestId, state = state } } end
+        state.gold = state.gold - requirement.gold
+        progression.unlockedPlotCount = nextPlot
+        progression.gardenLevel = math.max(progression.gardenLevel or 1, nextPlot)
+        state.progression = progression
+        GetFarmPlot(farmState, nextPlot)
+        return { success = true, response = { success = true, message = "扩地成功", requestId = payload.requestId, plotIndex = nextPlot, state = state, farm = farmState } }
+    end, function(result)
+        if result ~= nil and result.success == true and type(result.response) == "table" then
+            CommitTourRank(uid, result.response.state)
+        end
+        SendMutationResult(connection, deps_.Shared.EVENTS.EXPAND_PLOT_RESPONSE, result, payload.requestId)
+    end)
 end
 
 return ServerRewards

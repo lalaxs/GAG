@@ -249,7 +249,7 @@ function EnterPlantView()
     end
     if EconomyCloudSystem ~= nil and EconomyCloudSystem.RequestAuthFarm ~= nil then
         print(string.format("[种植模式] 进入前请求权威农场刷新 plot=%d", selectedPlot_))
-        EconomyCloudSystem.RequestAuthFarm({ force = true, reason = "enter_plant_view" })
+        EconomyCloudSystem.RequestAuthFarm({ reason = "enter_plant_view" })
     end
     CameraSystem.SetTarget(FarmSystem.PlotWorldPosition(selectedPlot_))
     CameraSystem.EnterPlantView()

@@ -41,6 +41,10 @@ end
 
 function NetworkClient.SendRequest(eventName, payload)
     if not NetworkClient.IsRawConnected() then return false end
+    if not NetworkClient.IsSessionBound() then
+        NetworkClient.BindServerConnection(true)
+        if not NetworkClient.IsSessionBound() then return false end
+    end
     return Shared.SendToServer(eventName, payload)
 end
 
@@ -69,22 +73,33 @@ function NetworkClient.RequestAuthoritySync(reason)
     if socialGardenSystem == nil or economyCloudSystem == nil then return false end
 
     local syncReason = reason or "session_sync"
-    NetworkClient.BindServerConnection(false)
+    local bound = NetworkClient.IsSessionBound()
+    if not bound then
+        bound = NetworkClient.BindServerConnection(false) == true
+    end
+    if not bound or not NetworkClient.IsSessionBound() then
+        print("[网络同步] 会话尚未绑定，跳过无效权威同步: " .. tostring(syncReason))
+        return false
+    end
+
+    local requested = false
     if socialGardenSystem.RequestFullSync ~= nil then
-        socialGardenSystem.RequestFullSync(syncReason)
+        requested = socialGardenSystem.RequestFullSync(syncReason) == true
     else
-        economyCloudSystem.RequestState({ force = true, reason = syncReason })
+        requested = economyCloudSystem.RequestState({ force = true, reason = syncReason }) == true or requested
         economyCloudSystem.RequestSeedShop()
-        economyCloudSystem.RequestAuthFarm({ force = true, reason = syncReason })
-        socialGardenSystem.RequestSocialState({ force = true, reason = syncReason })
+        requested = economyCloudSystem.RequestAuthFarm({ force = true, reason = syncReason }) == true or requested
+        requested = socialGardenSystem.RequestSocialState({ force = true, reason = syncReason }) == true or requested
     end
     if economyCloudSystem.IsReady(false) then
         economyCloudSystem.RequestCommissions()
     end
-    if socialGardenSystem.UploadSnapshot ~= nil then
+    if socialGardenSystem.UploadSnapshot ~= nil
+        and socialGardenSystem.IsSocialSaveLoaded ~= nil
+        and socialGardenSystem.IsSocialSaveLoaded() == true then
         socialGardenSystem.UploadSnapshot()
     end
-    return true
+    return requested
 end
 
 return NetworkClient

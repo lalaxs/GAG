@@ -26,9 +26,15 @@ end
 local function StampOwner(value, uid)
     if type(value) ~= "table" then return value end
     local owner = GetCanonicalUidKey(uid)
-    if owner ~= nil then value.ownerUserId = owner end
+    if owner ~= nil then
+        value.ownerUserId = owner
+        value.userId = owner
+    end
     return value
 end
+
+--- 选档时不再给 canonical cloudId 固定加分；内容分数优先，分数相同才偏向 canonical。
+local CANONICAL_SCORE_BONUS = 0
 
 local function TouchEconomyStateIfNeeded(scoreKey, value)
     if scoreKey ~= ECONOMY_STATE_KEY or type(value) ~= "table" then return value end
@@ -190,11 +196,12 @@ function ServerCloudStore.ReadTargetScore(targetUid, scoreKey, done)
     readNext()
 end
 
---- serverCloud:Get 的兼容替代：自动扫描 uid 候选 key。
+--- serverCloud:Get 的兼容替代：优先 canonical cloudId，再扫描 uid 候选 key。
 --- 回调签名与 serverCloud:Get 一致（ok(scores, iscores)），便于现有代码迁移。
 function ServerCloudStore.Get(uid, scoreKey, events, opts)
     events = events or {}
     opts = opts or {}
+    local canonicalCloudId = ServerCloudStore.CloudPlayerId(uid)
     local candidates = BuildUidKeyCandidates(uid)
     local index = 1
     local fallbackError = nil
@@ -234,6 +241,25 @@ function ServerCloudStore.Get(uid, scoreKey, events, opts)
         })
     end
 
+    if canonicalCloudId ~= nil then
+        ---@diagnostic disable-next-line: param-type-mismatch
+        serverCloud:Get(canonicalCloudId, scoreKey, {
+            ok = function(scores, iscores)
+                local tableValue = scores and scores[scoreKey]
+                if type(tableValue) == "table" and AcceptScoreRead(uid, tableValue, canonicalCloudId, opts) then
+                    if events.ok ~= nil then events.ok(scores, iscores) end
+                    return
+                end
+                readNext()
+            end,
+            error = function(_, reason)
+                fallbackError = reason
+                readNext()
+            end,
+        })
+        return
+    end
+
     readNext()
 end
 
@@ -268,6 +294,14 @@ function ServerCloudStore.ReadBestScore(uid, scoreKey, opts, done)
                     local normalized = opts.normalize ~= nil and opts.normalize(rawValue) or rawValue
                     if type(normalized) == "table" then
                         local score = opts.score ~= nil and opts.score(normalized) or 0
+                        score = score + (function()
+                            if opts.ignoreCanonicalBonus == true then return 0 end
+                            local canonicalCloudId = ServerCloudStore.CloudPlayerId(uid)
+                            if UserId.Same(key, canonicalCloudId) or UserId.Same(key, canonicalUid) then
+                                return CANONICAL_SCORE_BONUS
+                            end
+                            return 0
+                        end)()
                         local preferNew = score > bestScore
                         if not preferNew and score == bestScore and canonicalUid ~= nil then
                             preferNew = UserId.Same(key, canonicalUid) and not UserId.Same(bestKey, canonicalUid)
@@ -292,6 +326,211 @@ function ServerCloudStore.ReadBestScore(uid, scoreKey, opts, done)
     readNext()
 end
 
+--- 删除 uid 所有候选 key 上的 score（清档/归一后作废副本）。
+function ServerCloudStore.DeleteScoreAllCandidates(uid, scoreKey, done)
+    local candidates = BuildUidKeyCandidates(uid)
+    if #candidates <= 0 then
+        if done ~= nil then done(true) end
+        return
+    end
+    local pending = #candidates
+    local hadError = false
+    local function onDone()
+        pending = pending - 1
+        if pending <= 0 and done ~= nil then done(not hadError) end
+    end
+    for _, key in ipairs(candidates) do
+        local cloudKey = ServerCloudStore.CloudPlayerId(key) or key
+        ---@diagnostic disable-next-line: param-type-mismatch
+        serverCloud:Delete(cloudKey, scoreKey, {
+            ok = onDone,
+            error = function(_, reason)
+                hadError = true
+                print(string.format(
+                    "[存档兼容] 删除副本失败 uid=%s key=%s scoreKey=%s reason=%s",
+                    tostring(GetCanonicalUidKey(uid)),
+                    tostring(cloudKey),
+                    tostring(scoreKey),
+                    tostring(reason)
+                ))
+                onDone()
+            end,
+        })
+    end
+end
+
+--- 删除非 canonical cloudId 的候选 key 副本（登录归一后保留主档）。
+function ServerCloudStore.DeleteNonCanonicalScoreCopies(uid, scoreKey, done)
+    uid = GetCanonicalUidKey(uid) or uid
+    local canonicalCloudId = ServerCloudStore.CloudPlayerId(uid)
+    if canonicalCloudId == nil then
+        if done ~= nil then done(true) end
+        return
+    end
+    local candidates = BuildUidKeyCandidates(uid)
+    local toDelete = {}
+    local seen = {}
+    for _, key in ipairs(candidates) do
+        local cloudKey = ServerCloudStore.CloudPlayerId(key) or key
+        local marker = type(cloudKey) .. ":" .. tostring(cloudKey)
+        if seen[marker] ~= true and not UserId.Same(cloudKey, canonicalCloudId) then
+            seen[marker] = true
+            toDelete[#toDelete + 1] = cloudKey
+        end
+    end
+    if #toDelete <= 0 then
+        if done ~= nil then done(true) end
+        return
+    end
+    local pending = #toDelete
+    local hadError = false
+    local function onDone()
+        pending = pending - 1
+        if pending <= 0 and done ~= nil then done(not hadError) end
+    end
+    for _, cloudKey in ipairs(toDelete) do
+        ---@diagnostic disable-next-line: param-type-mismatch
+        serverCloud:Delete(cloudKey, scoreKey, {
+            ok = onDone,
+            error = function(_, reason)
+                hadError = true
+                print(string.format(
+                    "[存档兼容] 删除非 canonical 副本失败 uid=%s key=%s scoreKey=%s reason=%s",
+                    tostring(uid),
+                    tostring(cloudKey),
+                    tostring(scoreKey),
+                    tostring(reason)
+                ))
+                onDone()
+            end,
+        })
+    end
+end
+
+local function CompareRescueScore(value, opts)
+    if type(value) ~= "table" then return -1 end
+    if opts.compareScore ~= nil then return opts.compareScore(value) end
+    if opts.score ~= nil then return opts.score(value) end
+    return 0
+end
+
+local function ShouldAttemptLegacyRescue(primaryValue, opts)
+    if opts.allowLegacyRescue ~= true then return false end
+    if primaryValue == nil then return true end
+    if opts.shouldLegacyRescue ~= nil then return opts.shouldLegacyRescue(primaryValue) == true end
+    return false
+end
+
+local function FinishPlayerScoreRead(done, value, bestKey, hadReadError, meta)
+    if done == nil then return end
+    if type(value) ~= "table" then
+        done(nil, bestKey, hadReadError, meta or {})
+        return
+    end
+    done(value, bestKey, hadReadError, meta or {})
+end
+
+--- 玩家读档：优先 canonical cloudId（与 BatchScoreSet 写入一致）。
+--- opts.canonicalOnly=true 时不回退全量扫描（清档后防污染复活）。
+--- opts.allowLegacyRescue=true 时：requireOwner 读空/像新号后，再扫无 owner 的 legacy 档救援。
+function ServerCloudStore.ReadPlayerScore(uid, scoreKey, opts, done)
+    opts = opts or {}
+    if opts.canonicalOnly == true then
+        local canonicalCloudId = ServerCloudStore.CloudPlayerId(uid)
+        if canonicalCloudId == nil then
+            if done ~= nil then done(nil, ServerCloudStore.GetCanonicalUidKey(uid), false, {}) end
+            return
+        end
+        ---@diagnostic disable-next-line: param-type-mismatch
+        serverCloud:Get(canonicalCloudId, scoreKey, {
+            ok = function(scores)
+                local rawValue = scores and scores[scoreKey]
+                if type(rawValue) == "table" and AcceptScoreRead(uid, rawValue, canonicalCloudId, opts) then
+                    local normalized = opts.normalize ~= nil and opts.normalize(rawValue) or rawValue
+                    FinishPlayerScoreRead(done, normalized, canonicalCloudId, false, {})
+                    return
+                end
+                FinishPlayerScoreRead(done, nil, canonicalCloudId, false, {})
+            end,
+            error = function()
+                FinishPlayerScoreRead(done, nil, canonicalCloudId, true, {})
+            end,
+        })
+        return
+    end
+
+    ServerCloudStore.ReadBestScore(uid, scoreKey, opts, function(bestValue, bestKey, hadReadError)
+        local normalizedPrimary = type(bestValue) == "table"
+            and (opts.normalize ~= nil and opts.normalize(bestValue) or bestValue)
+            or nil
+        if ShouldAttemptLegacyRescue(normalizedPrimary, opts) ~= true then
+            FinishPlayerScoreRead(done, normalizedPrimary, bestKey, hadReadError, {})
+            return
+        end
+
+        local legacyOpts = {
+            normalize = opts.normalize,
+            score = opts.score,
+            compareScore = opts.compareScore,
+            requireOwner = false,
+            ignoreCanonicalBonus = true,
+            logLabel = tostring(opts.logLabel or scoreKey) .. "(legacy救援)",
+        }
+        ServerCloudStore.ReadBestScore(uid, scoreKey, legacyOpts, function(legacyValue, legacyKey, legacyHadError)
+            local normalizedLegacy = type(legacyValue) == "table"
+                and (opts.normalize ~= nil and opts.normalize(legacyValue) or legacyValue)
+                or nil
+            if normalizedLegacy == nil then
+                FinishPlayerScoreRead(done, normalizedPrimary, bestKey, hadReadError or legacyHadError, {})
+                return
+            end
+
+            local primaryScore = CompareRescueScore(normalizedPrimary, opts)
+            local legacyScore = CompareRescueScore(normalizedLegacy, opts)
+            local margin = opts.legacyRescueMargin or 50
+            if normalizedPrimary == nil or legacyScore > primaryScore + margin then
+                print(string.format(
+                    "[存档兼容] legacy 救援命中 uid=%s scoreKey=%s hitKey=%s primaryScore=%s legacyScore=%s",
+                    tostring(GetCanonicalUidKey(uid)),
+                    tostring(scoreKey),
+                    tostring(legacyKey),
+                    tostring(primaryScore),
+                    tostring(legacyScore)
+                ))
+                FinishPlayerScoreRead(done, normalizedLegacy, legacyKey, hadReadError or legacyHadError, {
+                    legacyRescued = true,
+                })
+                return
+            end
+            FinishPlayerScoreRead(done, normalizedPrimary, bestKey, hadReadError, {})
+        end)
+    end)
+end
+
+--- 从与经济档相同的 hitKey 读取权威农场，避免跨 key 拼档。
+function ServerCloudStore.ReadFarmAtKey(uid, hitKey, scoreKey, opts, done)
+    opts = opts or {}
+    local readKey = hitKey or ServerCloudStore.CloudPlayerId(uid)
+    if readKey == nil then
+        if done ~= nil then done(nil, readKey) end
+        return
+    end
+    serverCloud:Get(readKey, scoreKey, {
+        ok = function(scores)
+            local rawValue = scores and scores[scoreKey]
+            if type(rawValue) ~= "table" or not AcceptScoreRead(uid, rawValue, readKey, opts) then
+                if done ~= nil then done(nil, readKey) end
+                return
+            end
+            local normalized = opts.normalize ~= nil and opts.normalize(rawValue) or rawValue
+            if done ~= nil then done(normalized, readKey) end
+        end,
+        error = function()
+            if done ~= nil then done(nil, readKey) end
+        end,
+    })
+end
+
 function ServerCloudStore.GetCanonicalUidKey(uid)
     return GetCanonicalUidKey(uid)
 end
@@ -301,6 +540,7 @@ function ServerCloudStore.CanonicalUid(uid)
 end
 
 --- 若命中历史 uid key，则迁移到 canonical key 后再回调。
+--- opts.respondBeforeWrite=true 时先 onReady 再异步写云，避免 Set 挂起阻塞下发。
 function ServerCloudStore.MigrateScoreIfNeeded(canonicalUid, bestKey, scoreKey, value, opts)
     opts = opts or {}
     canonicalUid = GetCanonicalUidKey(canonicalUid)
@@ -310,15 +550,24 @@ function ServerCloudStore.MigrateScoreIfNeeded(canonicalUid, bestKey, scoreKey, 
     end
     local label = opts.migrationLabel or "存档"
     print(string.format("[存档兼容] %s命中历史 uid key=%s，迁移到当前 key=%s", label, tostring(bestKey), tostring(canonicalUid)))
+    if opts.respondBeforeWrite == true and opts.onReady ~= nil then
+        opts.onReady(value, true)
+    end
     local cloudUid = ServerCloudStore.CloudPlayerId(canonicalUid)
     ---@diagnostic disable-next-line: param-type-mismatch
     serverCloud:Set(cloudUid, scoreKey, StampOwner(value, canonicalUid), {
         ok = function()
-            if opts.onReady ~= nil then opts.onReady(value, true) end
+            if opts.respondBeforeWrite == true then
+                print(string.format("[存档兼容] %s后台迁移写云成功 key=%s", label, tostring(canonicalUid)))
+            elseif opts.onReady ~= nil then
+                opts.onReady(value, true)
+            end
         end,
         error = function(_, reason)
             print(string.format("[存档兼容] %s迁移失败，使用历史 key 数据返回: %s", label, tostring(reason)))
-            if opts.onReady ~= nil then opts.onReady(value, true) end
+            if opts.respondBeforeWrite ~= true and opts.onReady ~= nil then
+                opts.onReady(value, true)
+            end
         end,
     })
 end

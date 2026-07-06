@@ -156,19 +156,30 @@ function PlantActionController.PlantSeedAt(plotIndex, plantIndex, centerLocalPos
     end
     if options.serverConfirmed ~= true and deps_.EconomyCloudSystem ~= nil and deps_.EconomyCloudSystem.PlantSeed ~= nil then
         if deps_.EconomyCloudSystem.IsPlantPending ~= nil and deps_.EconomyCloudSystem.IsPlantPending() then
-            return true, "pending_server"
+            return false, "plant_pending"
         end
+        local requestId = NextRequestId("plant")
+        print(string.format("[播种请求] 准备发送 requestId=%s plot=%s plant=%s local=(%.3f,%.3f)",
+            tostring(requestId),
+            tostring(plotIndex),
+            tostring(plantIndex),
+            centerLocalPos and centerLocalPos.x or 0,
+            centerLocalPos and centerLocalPos.z or 0))
         local requested = deps_.EconomyCloudSystem.PlantSeed({
-            requestId = NextRequestId("plant"),
+            requestId = requestId,
             plotIndex = plotIndex,
             plantIndex = plantIndex,
             localPos = EncodeLocalPos(centerLocalPos or Vector3(0, 0, 0)),
         })
-        if requested then return true, "pending_server" end
-        return RequireServerUnavailable("服务器尚未就绪，无法播种")
+        if requested then
+            print(string.format("[播种请求] 已发送 requestId=%s", tostring(requestId)))
+            return true, "pending_server"
+        end
+        print(string.format("[播种请求] 发送被阻止 requestId=%s", tostring(requestId)))
+        return RequireServerUnavailable("同步中")
     end
     if options.serverConfirmed ~= true then
-        return RequireServerUnavailable("服务器尚未就绪，无法播种")
+        return RequireServerUnavailable("同步中")
     end
     local success, reason = deps_.CropSystem.PlantSeedAt(GetPlots(), plotIndex, plantIndex, centerLocalPos, {
         skipSeedConsume = options.serverConfirmed == true,
@@ -222,10 +233,10 @@ function PlantActionController.HarvestNearestMature(plotIndex, localPos, options
             crop = EncodeCropForServer(crop),
         })
         if requested then return true, { name = crop.name, exp = 0, pendingServer = true } end
-        return RequireServerUnavailable("服务器尚未就绪，无法收获")
+        return RequireServerUnavailable("同步中")
     end
     if options.serverConfirmed ~= true then
-        return RequireServerUnavailable("服务器尚未就绪，无法收获")
+        return RequireServerUnavailable("同步中")
     end
     local success, harvestInfo = deps_.CropSystem.HarvestNearestMature(GetPlots(), plotIndex, localPos, {
         skipAddHarvested = options.serverConfirmed == true,
@@ -254,7 +265,7 @@ function PlantActionController.BuySelectedSeed()
             return true
         end
     end
-    ShowToast("服务器尚未就绪，无法购买")
+    ShowToast("同步中")
     return false
 end
 
@@ -266,7 +277,7 @@ function PlantActionController.SellAllHarvested()
             return true
         end
     end
-    ShowToast("服务器尚未就绪，无法出售")
+    ShowToast("同步中")
     return 0
 end
 
@@ -278,7 +289,7 @@ function PlantActionController.SellBagItem(item)
             return true
         end
     end
-    ShowToast("服务器尚未就绪，无法出售")
+    ShowToast("同步中")
     return 0
 end
 
@@ -290,7 +301,7 @@ function PlantActionController.SellHarvestedByFilter(filter)
             return true, 0
         end
     end
-    ShowToast("服务器尚未就绪，无法出售")
+    ShowToast("同步中")
     return 0, 0
 end
 
@@ -346,15 +357,17 @@ function PlantActionController.SetSelectedSeedIndex(index)
 end
 
 function PlantActionController.ApplyConfirmedPlantSeed(data)
-    local plotIndex = tonumber(data.plotIndex or GetSelectedPlot()) or GetSelectedPlot()
+    local patch = type(data.farmPatch) == "table" and data.farmPatch or nil
+    local plotIndex = tonumber((patch and patch.plotIndex) or data.plotIndex or GetSelectedPlot()) or GetSelectedPlot()
     local plantIndex = tonumber(data.plantIndex or GetSelectedSeed()) or GetSelectedSeed()
-    if data.crop == nil or deps_.CropSystem.PlantCropFromServer == nil then
+    local cropData = (patch and patch.crop) or data.crop
+    if cropData == nil or deps_.CropSystem.PlantCropFromServer == nil then
         ShowToast("服务器播种数据不完整，请重试")
         print("[播种] 服务端响应缺少 crop 字段，拒绝本地 Roll")
         return false
     end
-    data.crop.requestId = data.requestId
-    local success = deps_.CropSystem.PlantCropFromServer(GetPlots(), plotIndex, data.crop)
+    cropData.requestId = data.requestId
+    local success = deps_.CropSystem.PlantCropFromServer(GetPlots(), plotIndex, cropData)
     if success then
         RefreshTourValue()
         AudioSystem.PlaySFX("plant_seed")
@@ -369,12 +382,47 @@ function PlantActionController.ApplyConfirmedPlantSeed(data)
 end
 
 function PlantActionController.ApplyConfirmedHarvestCrop(data)
-    local plotIndex = tonumber(data.plotIndex or GetSelectedPlot()) or GetSelectedPlot()
-    local cropIndex = tonumber(data.cropIndex or 0) or 0
+    local patch = type(data.farmPatch) == "table" and data.farmPatch or nil
+    local plotIndex = tonumber((patch and patch.plotIndex) or data.plotIndex or GetSelectedPlot()) or GetSelectedPlot()
+    local cropIndex = tonumber((patch and patch.cropIndex) or data.cropIndex or 0) or 0
     local plot = GetPlots()[plotIndex]
     local crop = nil
     local removeIndex = nil
-    local cropId = data.cropId or (data.crop and (data.crop.cropId or data.crop.serverCropId))
+    local cropId = (patch and patch.cropId) or data.cropId or (data.crop and (data.crop.cropId or data.crop.serverCropId))
+
+    if patch ~= nil and patch.type == "removeCrop" and deps_.CropSystem.RemoveCropFromServer ~= nil then
+        local removed = deps_.CropSystem.RemoveCropFromServer(GetPlots(), plotIndex, cropId, cropIndex)
+        if removed then
+            RefreshTourValue()
+            AudioSystem.PlaySFX("harvest_crop")
+            local exp = tonumber(data.exp or 0) or 0
+            local cropName = data.crop and data.crop.name or "作物"
+            local text = "收获了" .. cropName .. "，获得了" .. exp .. "经验"
+            ShowToast(text, true)
+            FloatingToast.Show(text, { fontSize = 19, duration = 1.6, yRatio = 0.42, priority = 0 })
+            if data.droppedPackName ~= nil then
+                local dropText = "掉落: " .. tostring(data.droppedPackName)
+                ShowToast(dropText, true)
+                FloatingToast.Show(dropText, { fontSize = 18, duration = 1.5, yRatio = 0.36, priority = 1 })
+            end
+            if data.activityReward ~= nil then
+                local rewardText = data.activityReward.toastText or data.activityReward.message
+                if rewardText == nil and data.activityReward.type == "alien_gene" then
+                    rewardText = "获得外星基因 x" .. tostring(data.activityReward.amount or 0)
+                elseif rewardText == nil and data.activityReward.type == "dark_seed" then
+                    local plant = deps_.plants and deps_.plants[data.activityReward.plantIndex]
+                    rewardText = "黑暗来临掉落: " .. (plant and (plant.name .. "种子") or "限定种子")
+                end
+                if rewardText ~= nil then
+                    ShowToast(rewardText, true)
+                    FloatingToast.Show(rewardText, { fontSize = 18, duration = 1.5, yRatio = 0.32, priority = 2 })
+                end
+            end
+            if deps_.markDirty then deps_.markDirty() end
+            RebuildUI()
+            return true
+        end
+    end
 
     if data.farmSynced ~= true and plot ~= nil then
         if cropId ~= nil and cropId ~= "" then
@@ -506,19 +554,29 @@ function PlantActionController.PerformPlotAction(plotIndex, localPos)
             ShowToast("没有可用种子，前往商店购买")
         else
             local plantedSeed = GetSelectedSeed()
+            print(string.format("[播种动作] 点击有效 plot=%s seed=%s local=(%.3f,%.3f)",
+                tostring(GetSelectedPlot()),
+                tostring(plantedSeed),
+                localPos and localPos.x or 0,
+                localPos and localPos.z or 0))
             local success, reason = PlantActionController.PlantSeedAt(GetSelectedPlot(), plantedSeed, localPos or Vector3(0, 0, 0))
+            print(string.format("[播种动作] PlantSeedAt 返回 success=%s reason=%s", tostring(success), tostring(reason)))
             if success and reason == "pending_server" then
                 ShowToast("正在请求服务器播种...", true)
             elseif success then
                 AudioSystem.PlaySFX("plant_seed")
                 ShowToast("已播种 " .. GetPlants()[plantedSeed].name, true)
                 PlantActionController.SelectNextOwnedSeedIfEmpty(plantedSeed)
+            elseif reason == "plant_pending" then
+                ShowToast("播种请求处理中，请稍后", true)
+            elseif reason == "plant_cooldown" then
+                -- 极短本地防抖只吞掉同一点击连发，不伪装成服务器请求。
             elseif reason == "occupied" then
                 local text = "请换个地方播种"
                 ShowToast(text)
                 FloatingToast.Show(text)
             elseif reason == "server_unavailable" then
-                ShowToast("正在同步服务器数据，请稍后")
+                ShowToast("同步中")
             else
                 ShowToast("没有该种子，前往商店购买")
             end

@@ -33,6 +33,7 @@ local state_ = {
     pendingSyncReason = nil,
     retrying = false,
     retryMessage = nil,
+    initialClientReadyGrace = 0,
 }
 
 local disconnectModal_ = nil
@@ -161,6 +162,12 @@ function NetworkRecovery.IsServerConnectionAvailable()
 end
 
 function NetworkRecovery.RequestSync(reason)
+    if state_.initialClientReadyGrace > 0 and reason ~= "manual_retry" then
+        state_.syncPending = false
+        state_.pendingSyncReason = nil
+        print("[网络恢复] 初始 CLIENT_READY 同步保护中，跳过重复同步: " .. tostring(reason))
+        return false
+    end
     if not IsReadyServerConnectionAvailable() then
         state_.syncPending = true
         state_.pendingSyncReason = reason or state_.pendingSyncReason
@@ -176,7 +183,14 @@ function NetworkRecovery.RequestSync(reason)
     state_.syncPending = false
     state_.pendingSyncReason = nil
     state_.syncCooldown = state_.minSyncInterval
-    NetworkClient.RequestAuthoritySync(syncReason)
+    local requested = NetworkClient.RequestAuthoritySync(syncReason)
+    if requested ~= true then
+        state_.syncPending = true
+        state_.pendingSyncReason = syncReason
+        state_.syncCooldown = math.min(state_.syncCooldown, 0.3)
+        print("[网络恢复] 权威数据重同步未发出，等待会话绑定: " .. tostring(syncReason))
+        return false
+    end
     CloseDisconnectModal()
     print("[网络恢复] 已请求服务器权威数据重同步: " .. tostring(syncReason))
     return true
@@ -235,6 +249,9 @@ function NetworkRecovery.Update(dt)
         state_.syncCooldown = math.max(0, state_.syncCooldown - dt)
     end
     state_.timer = state_.timer - dt
+    if state_.initialClientReadyGrace > 0 then
+        state_.initialClientReadyGrace = math.max(0, state_.initialClientReadyGrace - dt)
+    end
     if state_.timer > 0 then return end
     local tick = state_.checkInterval
     state_.timer = tick
@@ -254,19 +271,27 @@ function NetworkRecovery.Update(dt)
             state_.wasConnected = false
             print("[网络恢复] 检测到服务器连接，准备重新绑定")
             local socialGardenSystem = GetSocialGardenSystem()
+            local boundFresh = false
             if socialGardenSystem ~= nil
                 and socialGardenSystem.IsServerBound ~= nil
                 and socialGardenSystem.IsServerBound() ~= true then
                 BindServerConnection(true)
                 if socialGardenSystem.IsServerBound() == true then
                     state_.serverReady = true
+                    boundFresh = true
                 end
+            end
+            if boundFresh then
+                -- CLIENT_READY 已触发服务端 SendFullSync，无需再 RequestFullSync。
+                state_.wasConnected = true
+                state_.syncPending = false
+                return
             end
         elseif state_.serverReady ~= true then
             state_.rawConnectedWithoutReadyElapsed = state_.rawConnectedWithoutReadyElapsed + tick
         end
 
-        if state_.serverReady ~= true and state_.rawConnectedWithoutReadyElapsed >= state_.rawReadyFallbackDelay then
+        if state_.serverReady ~= true and state_.initialClientReadyGrace <= 0 and state_.rawConnectedWithoutReadyElapsed >= state_.rawReadyFallbackDelay then
             ForceReadyFromRawConnection("raw_connection_fallback")
         end
         if state_.serverReady ~= true then
@@ -342,6 +367,18 @@ function NetworkRecovery.HandleServerDisconnected()
     state_.pendingSyncReason = nil
     ShowDisconnectModal("网络连接已断开，请检查网络后点击重试")
     ShowToast("网络连接已断开，等待恢复")
+end
+
+--- Start() 已发送 CLIENT_READY 且服务端会推送全量同步时调用，避免 NetworkRecovery 再触发一次 network_recovered 重拉。
+function NetworkRecovery.NotifyInitialClientReady()
+    if not IsRawServerConnectionAvailable() then return end
+    state_.serverReady = true
+    state_.wasConnected = true
+    state_.syncPending = false
+    state_.pendingSyncReason = nil
+    state_.lastConnectionKey = GetConnectionKey(GetServerConnection())
+    state_.rawConnectedWithoutReadyElapsed = 0
+    state_.initialClientReadyGrace = 3.0
 end
 
 function NetworkRecovery.ResetConnectionState()

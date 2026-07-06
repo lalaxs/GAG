@@ -709,12 +709,24 @@ function SocialServer.SaveGardenSnapshot(uid, snapshot, connection)
         return
     end
 
+    local function resolveFarmState(done)
+        local PlayerStateService = deps_.PlayerStateService
+        if PlayerStateService ~= nil and PlayerStateService.GetSession ~= nil then
+            local session = PlayerStateService.GetSession(uid)
+            if session ~= nil and type(session.farm) == "table" then
+                done(session.farm)
+                return
+            end
+        end
+        ReadScoreFromUidCandidates(uid, shared.KEYS.AUTH_FARM_STATE, done)
+    end
+
     ReadScoreFromUidCandidates(uid, shared.KEYS.GARDEN_SNAPSHOT, function(existingSnapshot)
         GetNicknameMap({ uid }, function(nickMap)
             local canonicalUid = GetCanonicalUidKey(uid) or NormalizeUserId(uid)
             local tapNickname = SocialProfile.LookupNickname(nickMap, canonicalUid or uid)
             local mergedSnapshot = MergeSnapshotProfile(snapshot, existingSnapshot, tapNickname)
-            ReadScoreFromUidCandidates(uid, shared.KEYS.AUTH_FARM_STATE, function(farmState)
+            resolveFarmState(function(farmState)
                 SaveCanonicalGardenSnapshot(uid, mergedSnapshot, farmState, connection, farmState ~= nil and "保存权威社交花园" or "首次保存权威社交花园")
             end)
         end)
@@ -886,18 +898,16 @@ function SocialServer.RequestGardenSnapshot(requesterUid, targetUid, connection,
             elseif snapshotValid and snapshotMeta.plot ~= nil then
                 SendTargetGarden(snapshotMeta)
             else
-                local emptyGarden = deps_.buildVisitGardenFromAuthFarm(
-                    normalizedTargetUid,
-                    nil,
-                    {},
-                    snapshotMeta
-                )
                 print(string.format(
-                    "[社交] 拜访降级空花园 target=%s reason=%s",
+                    "[社交] 拜访目标权威农场不可用 target=%s reason=%s",
                     tostring(normalizedTargetUid),
                     tostring(farmError or "no_farm")
                 ))
-                SendTargetGarden(emptyGarden)
+                SendGardenResponse({
+                    success = false,
+                    retryable = true,
+                    message = "花园同步中",
+                })
             end
         end)
 
@@ -943,7 +953,7 @@ function SocialServer.RequestRank(count, connection, requesterUid)
             end)
         end,
         error = function(_, reason)
-            Send(connection, shared.EVENTS.RANK_RESPONSE, { success = false, message = "排行榜读取失败: " .. tostring(reason) })
+            Send(connection, shared.EVENTS.RANK_RESPONSE, { success = false, message = "榜单繁忙" })
         end,
     })
 end
@@ -1008,6 +1018,44 @@ function SocialServer.GetPlayerGardenAvatar(uid, done)
             return
         end
         if done ~= nil then done(NormalizeAvatar(garden.avatar)) end
+    end)
+end
+
+local function ResolveSocialSaveRecord(uid, callback)
+    local shared = Shared()
+
+    local function ContinueWithResolvedSocialSave(socialSave, sourceKey)
+        socialSave = type(socialSave) == "table" and socialSave or { visitablePlotIndex = 1 }
+        socialSave.visitablePlotIndex = math.max(1, math.floor(tonumber(socialSave.visitablePlotIndex or 1) or 1))
+        local canonicalUid = GetCanonicalUidKey(uid)
+        if sourceKey ~= nil and not UserId.Same(sourceKey, canonicalUid) then
+            print(string.format("[存档兼容] 社交存档命中历史 uid key=%s，迁移到当前 key=%s", tostring(sourceKey), tostring(canonicalUid)))
+            ServerCloudStore.SetScore(canonicalUid, shared.KEYS.SOCIAL_SAVE, socialSave)
+        end
+        if callback ~= nil then callback(socialSave) end
+    end
+
+    ReadScoreFromUidCandidates(uid, shared.KEYS.SOCIAL_SAVE, function(socialSave, socialKey)
+        if type(socialSave) == "table" then
+            ContinueWithResolvedSocialSave(socialSave, socialKey)
+            return
+        end
+        ReadScoreFromUidCandidates(uid, shared.KEYS.GARDEN_SNAPSHOT, function(garden, gardenKey)
+            local fallback = { visitablePlotIndex = type(garden) == "table" and garden.visitablePlotIndex or 1 }
+            ContinueWithResolvedSocialSave(fallback, type(garden) == "table" and gardenKey or nil)
+        end)
+    end)
+end
+
+function SocialServer.RequestSocialSave(uid, connection)
+    local shared = Shared()
+    ResolveSocialSaveRecord(uid, function(socialSave)
+        Send(connection, shared.EVENTS.SOCIAL_STATE_RESPONSE, {
+            success = true,
+            phase = "save",
+            socialSave = socialSave,
+        })
+        print("[服务端同步] 社交档核心数据已推送 userId=" .. tostring(uid))
     end)
 end
 
@@ -1117,6 +1165,7 @@ function SocialServer.RequestSocialState(uid, connection)
                                                 FetchGiftTargets(uid, function(giftTargets)
                                                     Send(connection, shared.EVENTS.SOCIAL_STATE_RESPONSE, {
                                                         success = true,
+                                                        phase = "full",
                                                         socialSave = socialSave,
                                                         friends = friends,
                                                         friendRequests = friendRequests,
@@ -1137,6 +1186,7 @@ function SocialServer.RequestSocialState(uid, connection)
                                         FetchGiftTargets(uid, function(giftTargets)
                                             Send(connection, shared.EVENTS.SOCIAL_STATE_RESPONSE, {
                                                 success = true,
+                                                phase = "full",
                                                 socialSave = socialSave,
                                                 friends = friends,
                                                 friendRequests = friendRequests,
@@ -1158,27 +1208,7 @@ function SocialServer.RequestSocialState(uid, connection)
         end)
     end
 
-    local function ContinueWithResolvedSocialSave(socialSave, sourceKey)
-        socialSave = type(socialSave) == "table" and socialSave or { visitablePlotIndex = 1 }
-        socialSave.visitablePlotIndex = math.max(1, math.floor(tonumber(socialSave.visitablePlotIndex or 1) or 1))
-        local canonicalUid = GetCanonicalUidKey(uid)
-        if sourceKey ~= nil and not UserId.Same(sourceKey, canonicalUid) then
-            print(string.format("[存档兼容] 社交存档命中历史 uid key=%s，迁移到当前 key=%s", tostring(sourceKey), tostring(canonicalUid)))
-            ServerCloudStore.SetScore(canonicalUid, shared.KEYS.SOCIAL_SAVE, socialSave)
-        end
-        ContinueWithSocialSave(socialSave)
-    end
-
-    ReadScoreFromUidCandidates(uid, shared.KEYS.SOCIAL_SAVE, function(socialSave, socialKey)
-        if type(socialSave) == "table" then
-            ContinueWithResolvedSocialSave(socialSave, socialKey)
-            return
-        end
-        ReadScoreFromUidCandidates(uid, shared.KEYS.GARDEN_SNAPSHOT, function(garden, gardenKey)
-            local fallback = { visitablePlotIndex = type(garden) == "table" and garden.visitablePlotIndex or 1 }
-            ContinueWithResolvedSocialSave(fallback, type(garden) == "table" and gardenKey or nil)
-        end)
-    end)
+    ResolveSocialSaveRecord(uid, ContinueWithSocialSave)
 end
 
 function SocialServer.LikeGarden(uid, targetUid, connection, requestId, requestRecordKey)

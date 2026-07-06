@@ -20,6 +20,9 @@ local MODE_OWN = "own"
 local MODE_VISIT = "visit"
 local DAILY_STEAL_LIMIT = ServerConfig.Tuning.dailyStealLimit
 local DAILY_GIFT_LIMIT = ServerConfig.Tuning.dailyGiftLimit
+local STEAL_REQUEST_COOLDOWN = 1
+local STEAL_RATE_LIMIT_BACKOFF = 8
+local SOCIAL_STATE_REFRESH_DELAY = 2
 local ALLOW_DEMO_SOCIAL = false
 local ALLOW_DEMO_ECONOMY_REWARDS = false
 
@@ -59,6 +62,10 @@ local state_ = {
     socialStateSynced = false,
     boundConnectionKey = nil,
     stealingMode = false,
+    lastStealRequestAt = 0,
+    stealBackoffUntil = 0,
+    socialStateRefreshAt = nil,
+    socialStateRefreshReason = nil,
     likedGardens = {},
     likeDeltas = {},
 }
@@ -167,6 +174,30 @@ end
 local function IsStealLimitError(data)
     if data == nil then return false end
     return data.code == "STEAL_LIMIT_REACHED" or data.message == "偷取次数不足"
+end
+
+local function IsCloudRateLimitError(data)
+    if data == nil then return false end
+    local message = tostring(data.message or "")
+    return string.find(message, "read rate limit exceeded", 1, true) ~= nil
+end
+
+local function ScheduleSocialStateRefresh(reason)
+    local nextAt = GetNow() + SOCIAL_STATE_REFRESH_DELAY
+    if state_.socialStateRefreshAt == nil or nextAt < state_.socialStateRefreshAt then
+        state_.socialStateRefreshAt = nextAt
+    end
+    state_.socialStateRefreshReason = reason or state_.socialStateRefreshReason or "deferred"
+end
+
+local function FlushScheduledSocialStateRefresh()
+    if state_.socialStateRefreshAt == nil then return end
+    if GetNow() < state_.socialStateRefreshAt then return end
+    if requests_:IsPending("socialState") then return end
+    local reason = state_.socialStateRefreshReason or "deferred"
+    state_.socialStateRefreshAt = nil
+    state_.socialStateRefreshReason = nil
+    SocialGardenSystem.RequestSocialState({ reason = reason })
 end
 
 local function GetSeedDisplayName(seedId, cropIndex)
@@ -414,6 +445,7 @@ function SocialGardenSystem.BindServerConnection(forceReady)
         -- 社交状态由服务端 CLIENT_READY → SendFullSync 推送；重连走 SessionSync / NetworkRecovery。
         state_.serverEnabled = true
         print("[社交花园] 已绑定后台服务器连接并发送客户端就绪")
+        if deps_.onServerBound ~= nil then deps_.onServerBound() end
         return true, true
     end
     state_.serverEnabled = false
@@ -460,16 +492,22 @@ function SocialGardenSystem.Update(_dt)
             if record.payload ~= nil and record.payload.targetUserId ~= nil then
                 EnterFallbackGarden(record.payload.targetUserId)
             elseif deps_.showToast then
-                deps_.showToast("拜访请求超时，请稍后重试")
+                deps_.showToast("拜访超时")
+            end
+        elseif record.type == "steal" then
+            SocialGardenSystem.MarkVisitCropStealPending(record.payload and record.payload.cropId, record.payload and record.payload.cropIndex, false)
+            if deps_.showToast then
+                deps_.showToast("偷菜超时")
             end
         elseif deps_.showToast then
-            deps_.showToast("社交请求超时，正在重新同步")
+            deps_.showToast("社交同步中")
         end
         if record.type ~= "socialState" then
             SocialGardenSystem.RequestSocialState({ force = true, reason = "timeout_" .. tostring(record.type) })
         end
         print("[社交花园] 请求超时: " .. tostring(record.type) .. " " .. tostring(record.id))
     end)
+    FlushScheduledSocialStateRefresh()
 end
 
 function SocialGardenSystem.IsVisitMode()
@@ -710,7 +748,7 @@ function SocialGardenSystem.RequestStealAtLocalPosition(localPos)
     local bestCrop = nil
     local bestDist = 9999
     for index, crop in ipairs(crops) do
-        if crop.mature == true and crop.stolen ~= true and crop.localPos ~= nil then
+        if crop.mature == true and crop.stolen ~= true and crop.stealPending ~= true and crop.localPos ~= nil then
             local dx = (crop.localPos.x or 0) - localPos.x
             local dz = (crop.localPos.z or 0) - localPos.z
             local dist = dx * dx + dz * dz
@@ -734,6 +772,19 @@ local ResolveLocalSteal = nil
 function SocialGardenSystem.RequestSteal(cropIndex, cropId)
     local garden = state_.visitGarden
     if garden == nil then return false end
+    if requests_:IsPending("steal") then
+        if deps_.showToast then deps_.showToast("正在偷菜，请稍候") end
+        return false
+    end
+    local now = GetNow()
+    if now < (state_.stealBackoffUntil or 0) then
+        if deps_.showToast then deps_.showToast("服务器繁忙，请稍后再偷菜") end
+        return false
+    end
+    if now - (state_.lastStealRequestAt or 0) < STEAL_REQUEST_COOLDOWN then
+        if deps_.showToast then deps_.showToast("操作太快，请稍候") end
+        return false
+    end
     if not HasStealAttemptsLeft() then
         ShowStealLimitInsufficient()
         return false
@@ -744,9 +795,12 @@ function SocialGardenSystem.RequestSteal(cropIndex, cropId)
     end
     local payload = BeginRequest("steal", { targetUserId = garden.userId, cropIndex = cropIndex, cropId = cropId })
     if SendRequest(Shared.EVENTS.REQUEST_STEAL, payload) then
+        state_.lastStealRequestAt = now
+        SocialGardenSystem.MarkVisitCropStealPending(cropId, cropIndex, true)
         return true
     end
     FinishRequest(payload.requestId, "steal")
+    SocialGardenSystem.MarkVisitCropStealPending(cropId, cropIndex, false)
     if ALLOW_DEMO_SOCIAL ~= true then
         if deps_.showToast then deps_.showToast("网络异常，偷菜失败") end
         return false
@@ -1110,6 +1164,18 @@ function SocialGardenSystem.MarkVisitCropStolen(cropId, cropIndex)
     for index, crop in ipairs(crops) do
         if (cropId ~= nil and crop.cropId == cropId) or (cropIndex ~= nil and index == cropIndex) then
             crop.stolen = true
+            crop.stealPending = nil
+            return true
+        end
+    end
+    return false
+end
+
+function SocialGardenSystem.MarkVisitCropStealPending(cropId, cropIndex, pending)
+    local crops = SocialGardenSystem.GetVisitCrops()
+    for index, crop in ipairs(crops) do
+        if (cropId ~= nil and crop.cropId == cropId) or (cropIndex ~= nil and index == cropIndex) then
+            crop.stealPending = pending == true or nil
             return true
         end
     end
@@ -1163,7 +1229,6 @@ function SocialGardenSystem.HandleGardenResponse(data)
         or UserId.Normalize(pending.payload and pending.payload.targetUserId)
     state_.pending.visitUserId = nil
     if data.success ~= true then
-        if targetUserId ~= nil and EnterFallbackGarden(targetUserId) then return end
         if deps_.showToast then deps_.showToast(data.message or "花园读取失败") end
         return
     end
@@ -1204,7 +1269,7 @@ function SocialGardenSystem.HandleRankResponse(data)
 end
 
 function SocialGardenSystem.HandleStealResponse(data)
-    FinishRequest(data.requestId, "steal")
+    local pending = FinishRequest(data.requestId, "steal")
     if data.success then
         SocialGardenSystem.MarkVisitCropStolen(data.cropId, data.cropIndex)
         if data.state ~= nil and deps_.applyEconomyState ~= nil then
@@ -1222,7 +1287,7 @@ function SocialGardenSystem.HandleStealResponse(data)
                 state_.daily.stealLimit = data.daily.limit
             end
         end
-        SocialGardenSystem.RequestSocialState()
+        ScheduleSocialStateRefresh("steal_success")
         local message = data.message or "偷菜成功"
         local floatingMessage = BuildStealFloatingMessage(data)
         if deps_.showToast then deps_.showToast(message) end
@@ -1230,6 +1295,11 @@ function SocialGardenSystem.HandleStealResponse(data)
         if deps_.markDirty then deps_.markDirty() end
         EmitSocialChanged("updated")
     elseif deps_.showToast then
+        SocialGardenSystem.MarkVisitCropStealPending(data.cropId or (pending and pending.payload and pending.payload.cropId), data.cropIndex or (pending and pending.payload and pending.payload.cropIndex), false)
+        if IsCloudRateLimitError(data) then
+            state_.stealBackoffUntil = GetNow() + STEAL_RATE_LIMIT_BACKOFF
+            ScheduleSocialStateRefresh("steal_rate_limited")
+        end
         if IsStealLimitError(data) then
             if data.daily ~= nil then
                 if data.daily.stealCount ~= nil then
@@ -1262,8 +1332,14 @@ end
 function SocialGardenSystem.HandleSocialStateResponse(data)
     FinishRequest(data.requestId, "socialState")
     if data.success then
+        local phase = data.phase or "full"
+        SocialGardenSystem.LoadSaveData(type(data.socialSave) == "table" and data.socialSave or {})
+        if phase == "save" then
+            print("[社交花园] 社交档核心数据已恢复")
+            if deps_.onSocialSaveSynced ~= nil then deps_.onSocialSaveSynced() end
+            return
+        end
         state_.socialStateSynced = true
-        if data.socialSave ~= nil then SocialGardenSystem.LoadSaveData(data.socialSave) end
         if type(data.friends) == "table" then
             if #data.friends > 0 or #(state_.friends or {}) == 0 then
                 state_.friends = data.friends
@@ -1291,6 +1367,7 @@ function SocialGardenSystem.HandleSocialStateResponse(data)
             if data.daily.matureAdLimit ~= nil then state_.daily.matureAdLimit = data.daily.matureAdLimit end
         end
         EmitSocialChanged("updated")
+        if deps_.onSocialStateSynced ~= nil then deps_.onSocialStateSynced() end
     elseif deps_.showToast then
         deps_.showToast(data.message or "社交数据读取失败")
     end

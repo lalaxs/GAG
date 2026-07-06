@@ -24,6 +24,13 @@ local function CloudUid(uid)
     return ServerCloudStore.CloudPlayerId(uid) or ServerCloudStore.CanonicalUid(uid)
 end
 
+local function CloudUidNumber(uid)
+    local cloudUid = CloudUid(uid)
+    local numeric = tonumber(cloudUid)
+    if numeric == nil then return nil end
+    return math.floor(numeric)
+end
+
 local function NormalizeListId(value)
     if value == nil or value == "" then return nil end
     local text = tostring(value)
@@ -205,10 +212,10 @@ function GiftServer.SendSeedGift(uid, targetUid, _seedId, count, connection, req
     profile = type(profile) == "table" and profile or {}
     local fromUid = NormalizeUserId(uid)
     targetUid = NormalizeUserId(targetUid)
-    local fromCloudUid = CloudUid(fromUid or uid)
+    local fromCloudUid = CloudUidNumber(fromUid or uid)
     local seedId = PickRandomGiftSeedId()
     count = NormalizePositiveCount(count, deps_.maxGiftCount)
-    if fromUid == nil or targetUid == nil then
+    if fromUid == nil or targetUid == nil or fromCloudUid == nil then
         SendError(connection, Shared.EVENTS.SEND_SEED_GIFT_RESPONSE, "INVALID_TARGET", "好友玩家 ID 无效", { requestId = requestId })
         return
     end
@@ -220,7 +227,11 @@ function GiftServer.SendSeedGift(uid, targetUid, _seedId, count, connection, req
         SendError(connection, Shared.EVENTS.SEND_SEED_GIFT_RESPONSE, "SELF_GIFT", "不能给自己赠送种子", { requestId = requestId })
         return
     end
-    local targetCloudUid = CloudUid(targetUid)
+    local targetCloudUid = CloudUidNumber(targetUid)
+    if targetCloudUid == nil then
+        SendError(connection, Shared.EVENTS.SEND_SEED_GIFT_RESPONSE, "INVALID_TARGET", "好友玩家 ID 无效", { requestId = requestId })
+        return
+    end
 
     local now = Now()
     local today = DayKey(now)
@@ -371,40 +382,34 @@ function GiftServer.ClaimGift(uid, giftId, fallbackSeedId, fallbackCount, connec
                         SendError(connection, Shared.EVENTS.CLAIM_GIFT_RESPONSE, "INVALID_GIFT_CONTENT", "礼物内容无效", { requestId = requestId, giftId = giftId })
                         return
                     end
-                    ServerCloudStore.Get(cloudUid, Shared.KEYS.ECONOMY_STATE, {
-                        ok = function(scores)
-                            local state = GetExistingEconomyState(scores)
-                            if state == nil then
-                                SendError(connection, Shared.EVENTS.CLAIM_GIFT_RESPONSE, "SAVE_NOT_INITIALIZED", "存档尚未初始化，请重新进入游戏", { requestId = requestId })
-                                return
-                            end
-                            local owned = tonumber(state.seedBag[seedId] or 0) or 0
-                            state.seedBag[seedId] = owned + count
-                            state.updatedAt = Now()
-                            deps_.nextRevision(state)
-                            local reward = BuildReward(seedId, count)
-                            local response = { success = true, message = "已领取" .. reward.description, requestId = requestId, giftId = giftId, gift = reward, state = state }
+                    deps_.PlayerStateService.MutateEconomy(uid, "claim_gift", function(state)
+                        local owned = tonumber(state.seedBag[seedId] or 0) or 0
+                        state.seedBag[seedId] = owned + count
+                        local reward = BuildReward(seedId, count)
+                        return {
+                            success = true,
+                            response = { success = true, message = "已领取" .. reward.description, requestId = requestId, giftId = giftId, gift = reward, state = state },
+                            reward = reward,
+                        }
+                    end, function(result)
+                        local response = result and result.response or nil
+                        if result ~= nil and result.success == true and type(response) == "table" then
                             local c = serverCloud:BatchCommit("领取种子礼物")
                             c:QuotaAdd(cloudUid, claimRecordKey, 1, 1)
-                            ServerCloudStore.BatchScoreSet(c, cloudUid, Shared.KEYS.ECONOMY_STATE, state)
-                            c:ListAdd(cloudUid, claimRecordKey, { giftId = giftId, reward = reward, claimedAt = Now() })
+                            c:ListAdd(cloudUid, claimRecordKey, { giftId = giftId, reward = response.gift, claimedAt = Now() })
                             c:ListDelete(listId)
                             deps_.RequestGuard.AddToCommit(c, uid, requestRecordKey, response)
                             c:Commit({
-                                ok = function()
-                                    Send(connection, Shared.EVENTS.CLAIM_GIFT_RESPONSE, response)
-                                end,
+                                ok = function() end,
                                 error = function(_, reason)
-                                    print("[礼物] 领取提交失败: " .. tostring(reason))
-                                    SendError(connection, Shared.EVENTS.CLAIM_GIFT_RESPONSE, "CLAIM_GIFT_FAILED", "领取失败", { requestId = requestId })
+                                    print("[礼物] 领取记录提交失败: " .. tostring(reason))
                                 end,
                             })
-                        end,
-                        error = function(_, reason)
-                            print("[礼物] 经济数据读取失败: " .. tostring(reason))
-                            SendError(connection, Shared.EVENTS.CLAIM_GIFT_RESPONSE, "ECONOMY_READ_FAILED", "网络异常，请稍后重试", { requestId = requestId })
-                        end,
-                    })
+                            Send(connection, Shared.EVENTS.CLAIM_GIFT_RESPONSE, response)
+                            return
+                        end
+                        SendError(connection, Shared.EVENTS.CLAIM_GIFT_RESPONSE, "CLAIM_GIFT_FAILED", result and result.message or "领取失败", { requestId = requestId })
+                    end)
                 end,
                 error = function(_, reason)
                     print("[礼物] 礼物读取失败: " .. tostring(reason))

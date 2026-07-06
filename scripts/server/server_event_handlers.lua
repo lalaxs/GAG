@@ -15,6 +15,8 @@ local Shared = nil
 local RequestGuard = nil
 local SocialServer = nil
 local GiftServer = nil
+local PlayerStateService = nil
+local SaveLoginReconcile = nil
 local connections_ = nil
 local connectionUsers_ = nil
 local scene_ = nil
@@ -30,6 +32,8 @@ function ServerEventHandlers.Init(deps)
     RequestGuard = deps_.RequestGuard
     SocialServer = deps_.SocialServer
     GiftServer = deps_.GiftServer
+    PlayerStateService = deps_.PlayerStateService
+    SaveLoginReconcile = deps_.SaveLoginReconcile
     connections_ = deps_.connections
     connectionUsers_ = deps_.connectionUsers
     scene_ = deps_.scene
@@ -96,7 +100,36 @@ local function RequestEconomyState(uid, connection)
 end
 
 local function RequestAuthFarmState(uid, connection)
-    deps_.RequestAuthFarmState(uid, connection)
+    local function loadAndSend()
+        PlayerStateService.Load(uid, function(session, err)
+            if session == nil then
+                Send(connection, Shared.EVENTS.AUTH_FARM_RESPONSE, {
+                    success = false,
+                    retryable = true,
+                    message = "农场同步失败",
+                })
+                print("[PlayerState] request farm load failed uid=" .. tostring(uid) .. " err=" .. tostring(err))
+                return
+            end
+            Send(connection, Shared.EVENTS.AUTH_FARM_RESPONSE, { success = true, farm = session.farm })
+        end)
+    end
+    if SaveLoginReconcile ~= nil and SaveLoginReconcile.Ensure ~= nil then
+        SaveLoginReconcile.Ensure(uid, function(ok, info)
+            if ok ~= true then
+                Send(connection, Shared.EVENTS.AUTH_FARM_RESPONSE, {
+                    success = false,
+                    retryable = true,
+                    message = "存档迁移中，请稍后重试",
+                })
+                print("[服务端同步] 权威农场同步前归一失败 userId=" .. tostring(uid) .. " info=" .. tostring(info))
+                return
+            end
+            loadAndSend()
+        end)
+    else
+        loadAndSend()
+    end
 end
 
 local function RequestLeaderboardAuthority(uid, data, connection)
@@ -175,6 +208,77 @@ local function ExpandPlotAuthority(uid, data, connection)
     deps_.ExpandPlotAuthority(uid, data, connection)
 end
 
+local function SendFullSync(uid, connection, reason)
+    local function loadAndSend()
+        PlayerStateService.Load(uid, function(session, err)
+            if session == nil then
+                Send(connection, Shared.EVENTS.ECONOMY_STATE_RESPONSE, {
+                    success = false,
+                    retryable = true,
+                    message = "同步失败",
+                })
+                Send(connection, Shared.EVENTS.AUTH_FARM_RESPONSE, {
+                    success = false,
+                    retryable = true,
+                    message = "农场同步失败",
+                })
+                print("[服务端同步] 玩家会话加载失败 userId=" .. tostring(uid) .. " err=" .. tostring(err))
+                return
+            end
+            SendPlayerProfile(uid, connection)
+            Send(connection, Shared.EVENTS.ECONOMY_STATE_RESPONSE, { success = true, state = session.economy })
+            SendSeedShopState(connection)
+            Send(connection, Shared.EVENTS.AUTH_FARM_RESPONSE, { success = true, farm = session.farm })
+            SocialServer.RequestSocialSave(uid, connection)
+            SocialServer.RequestSocialState(uid, connection)
+            print("[服务端同步] 已下发完整权威状态 userId=" .. tostring(uid) .. " reason=" .. tostring(reason or "unknown"))
+        end)
+    end
+
+    if SaveLoginReconcile ~= nil and SaveLoginReconcile.Ensure ~= nil then
+        SaveLoginReconcile.Ensure(uid, function(ok, info)
+            if ok ~= true then
+                Send(connection, Shared.EVENTS.ECONOMY_STATE_RESPONSE, {
+                    success = false,
+                    retryable = true,
+                    message = "存档迁移中，请稍后重试",
+                })
+                Send(connection, Shared.EVENTS.AUTH_FARM_RESPONSE, {
+                    success = false,
+                    retryable = true,
+                    message = "农场同步失败，请稍后重试",
+                })
+                print("[服务端同步] 全量同步前归一失败 userId=" .. tostring(uid) .. " info=" .. tostring(info))
+                return
+            end
+            loadAndSend()
+        end)
+    else
+        loadAndSend()
+    end
+end
+
+--- 每个连接仅首次全量同步（CLIENT_READY 与 ClientIdentity 谁先就绪谁触发，后者补发）。
+local function TrySendFullSyncOnFirstReady(connection, uid, reason)
+    local normalizedUid = NormalizeUserId(uid)
+    if connection == nil or normalizedUid == nil then return false end
+    local key = GetConnectionKey(connection)
+    local firstReady = readyConnections_[key] ~= true
+    if firstReady or connection.scene ~= scene_ then
+        connection.scene = scene_
+    end
+    readyConnections_[key] = true
+    local reconnectUid = pendingReconnect_[key]
+    if reconnectUid ~= nil and reconnectUid == normalizedUid then
+        pendingReconnect_[key] = nil
+        disconnectedPlayers_[normalizedUid] = nil
+        print("[服务端重连] 已恢复玩家连接 userId=" .. tostring(normalizedUid))
+    end
+    if not firstReady then return false end
+    SendFullSync(uid, connection, reason or "first_ready")
+    return true
+end
+
 function ServerEventHandlers.HandleClientConnected(eventType, eventData)
     CleanupDisconnectedPlayers()
     local connection = eventData["Connection"]:GetPtr("Connection")
@@ -204,6 +308,13 @@ function ServerEventHandlers.HandleClientIdentity(eventType, eventData)
             pendingReconnect_[key] = uid
             print("[服务端重连] 识别到玩家重连 userId=" .. tostring(uid))
         end
+        if TrySendFullSyncOnFirstReady(connection, uid, "client_identity") then
+            print(string.format(
+                "[服务端就绪] ClientIdentity 补发全量同步 userId=%s addr=%s",
+                tostring(uid),
+                tostring(connection:GetAddress())
+            ))
+        end
     end
 end
 
@@ -218,6 +329,17 @@ function ServerEventHandlers.HandleClientDisconnected(eventType, eventData)
             lastConnectionKey = key,
         }
         print("[服务端重连] 玩家断线，暂存重连上下文 userId=" .. tostring(uid))
+        -- 关游戏/断线时立刻尝试落云，避免内存脏档随房间销毁丢失
+        if PlayerStateService ~= nil and PlayerStateService.Flush ~= nil then
+            PlayerStateService.Flush(uid, function(ok, reason)
+                print(string.format(
+                    "[PlayerState] 断线 flush uid=%s ok=%s reason=%s",
+                    tostring(uid),
+                    tostring(ok),
+                    tostring(reason)
+                ))
+            end)
+        end
     end
     connections_[key] = nil
     connectionUsers_[key] = nil
@@ -229,41 +351,18 @@ function ServerEventHandlers.HandleClientDisconnected(eventType, eventData)
     readyConnections_[key] = nil
 end
 
-local function SendFullSync(uid, connection, reason)
-    SendPlayerProfile(uid, connection)
-    SocialServer.RequestSocialState(uid, connection)
-    RequestEconomyState(uid, connection)
-    SendSeedShopState(connection)
-    RequestAuthFarmState(uid, connection)
-    print("[服务端同步] 已下发完整权威状态 userId=" .. tostring(uid) .. " reason=" .. tostring(reason or "unknown"))
-end
-
 function ServerEventHandlers.HandleGardenClientReady(eventType, eventData)
     local connection = eventData["Connection"]:GetPtr("Connection")
     local data = ReadRequest(eventData)
-    local key = GetConnectionKey(connection)
     local uid = ResolveConnectionUserId(connection)
     local normalizedUid = NormalizeUserId(uid)
     if normalizedUid == nil then
         print("[服务端就绪] 等待 ClientIdentity 认证完成后再同步存档 addr=" .. tostring(connection:GetAddress()))
         return
     end
-    local firstReady = readyConnections_[key] ~= true
-    if firstReady or connection.scene ~= scene_ then
-        connection.scene = scene_
-    end
-    readyConnections_[key] = true
-    local reconnectUid = pendingReconnect_[key]
-    if reconnectUid ~= nil and reconnectUid == normalizedUid then
-        pendingReconnect_[key] = nil
-        disconnectedPlayers_[normalizedUid] = nil
-        print("[服务端重连] 已恢复玩家连接 userId=" .. tostring(normalizedUid))
-    end
-    if not firstReady then
+    if not TrySendFullSyncOnFirstReady(connection, uid, data.reason or "client_ready") then
         print("[服务端就绪] 忽略重复 CLIENT_READY userId=" .. tostring(normalizedUid))
-        return
     end
-    SendFullSync(uid, connection, data.reason or "client_ready")
 end
 
 function ServerEventHandlers.HandleGardenRequestFullSync(eventType, eventData)
@@ -462,6 +561,7 @@ function ServerEventHandlers.HandleGardenPlantSeed(eventType, eventData)
     local connection = eventData["Connection"]:GetPtr("Connection")
     local uid = GetConnectionUserId(connection)
     local data = ReadRequest(eventData)
+    print(string.format("[播种请求][服务端] 收到 uid=%s requestId=%s plot=%s plant=%s", tostring(uid), tostring(data.requestId), tostring(data.plotIndex), tostring(data.plantIndex)))
     if uid ~= nil then
         RequestGuard.Check(uid, "plant", data.requestId, function(recordKey)
             data._requestRecordKey = recordKey

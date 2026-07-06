@@ -2,7 +2,7 @@
 -- 服务端委托系统
 -- Grow A Garden
 -- ============================================================================
--- 从 server_main.lua 拆出的委托生成、匹配、请求和完成逻辑。
+-- 委托状态独立云存；经济消耗/奖励统一修改 PlayerStateService 内存状态。
 -- ============================================================================
 
 local ServerCommission = {}
@@ -51,26 +51,17 @@ local function RollWeighted(pool)
     return deps_.RollWeighted(pool)
 end
 
-local function NormalizeEconomyState(state)
-    return deps_.NormalizeEconomyState(state)
-end
-
-local function BuildInitialEconomyState()
-    return deps_.BuildInitialEconomyState()
-end
-
-local function GetExistingEconomyState(scores)
-    local state = scores and scores[deps_.Shared.KEYS.ECONOMY_STATE]
-    if type(state) ~= "table" then return nil end
-    return NormalizeEconomyState(state)
-end
-
-local function SendMissingEconomyState(connection, eventName, requestId)
-    deps_.Send(connection, eventName, { success = false, message = "存档尚未初始化，请重新进入游戏", requestId = requestId })
-end
-
-local function NextRevision(state)
-    deps_.NextRevision(state)
+local function SendMutationResult(connection, eventName, result, requestId)
+    if type(result) == "table" and type(result.response) == "table" then
+        Send(connection, eventName, result.response)
+        return
+    end
+    Send(connection, eventName, {
+        success = false,
+        message = type(result) == "table" and result.message or "同步失败",
+        retryable = type(result) == "table" and result.retryable == true,
+        requestId = requestId,
+    })
 end
 
 function ServerCommission.FindMutationByKey(list, key)
@@ -194,71 +185,66 @@ end
 
 function ServerCommission.RequestCommissionsAuthority(uid, payload, connection)
     uid = CloudUid(uid)
-    ServerCloudStore.Get(uid, deps_.Shared.KEYS.ECONOMY_STATE, {
-        ok = function(scores)
-            local economy = GetExistingEconomyState(scores)
-            if economy == nil then
-                SendMissingEconomyState(connection, deps_.Shared.EVENTS.COMMISSIONS_RESPONSE, payload.requestId)
-                return
-            end
-            ServerCloudStore.Get(uid, COMMISSION_STATE_KEY, {
-                ok = function(rows)
-                    local commissionState = ServerCommission.NormalizeCommissionState(rows[COMMISSION_STATE_KEY], economy.talent and economy.talent.level or 1)
-                    ServerCloudStore.SetScore(uid, COMMISSION_STATE_KEY, commissionState)
-                    Send(connection, deps_.Shared.EVENTS.COMMISSIONS_RESPONSE, { success = true, requestId = payload.requestId, commission = commissionState })
-                end,
-                error = function()
-                    local commissionState = ServerCommission.NormalizeCommissionState(nil, economy.talent and economy.talent.level or 1)
-                    ServerCloudStore.SetScore(uid, COMMISSION_STATE_KEY, commissionState)
-                    Send(connection, deps_.Shared.EVENTS.COMMISSIONS_RESPONSE, { success = true, requestId = payload.requestId, commission = commissionState })
-                end,
-            })
-        end,
-        error = function(_, reason) Send(connection, deps_.Shared.EVENTS.COMMISSIONS_RESPONSE, { success = false, message = "经济数据读取失败: " .. tostring(reason), requestId = payload.requestId }) end,
-    })
+    payload = payload or {}
+    deps_.PlayerStateService.Load(uid, function(session, err)
+        if session == nil then
+            Send(connection, deps_.Shared.EVENTS.COMMISSIONS_RESPONSE, { success = false, retryable = true, message = "同步失败", requestId = payload.requestId })
+            return
+        end
+        local level = session.economy and session.economy.talent and session.economy.talent.level or 1
+        ServerCloudStore.Get(uid, COMMISSION_STATE_KEY, {
+            ok = function(rows)
+                local commissionState = ServerCommission.NormalizeCommissionState(rows[COMMISSION_STATE_KEY], level)
+                ServerCloudStore.SetScore(uid, COMMISSION_STATE_KEY, commissionState)
+                Send(connection, deps_.Shared.EVENTS.COMMISSIONS_RESPONSE, { success = true, requestId = payload.requestId, commission = commissionState })
+            end,
+            error = function()
+                local commissionState = ServerCommission.NormalizeCommissionState(nil, level)
+                ServerCloudStore.SetScore(uid, COMMISSION_STATE_KEY, commissionState)
+                Send(connection, deps_.Shared.EVENTS.COMMISSIONS_RESPONSE, { success = true, requestId = payload.requestId, commission = commissionState })
+            end,
+        })
+    end)
 end
 
 function ServerCommission.CompleteCommissionAuthority(uid, payload, connection)
     uid = CloudUid(uid)
-    ServerCloudStore.Get(uid, deps_.Shared.KEYS.ECONOMY_STATE, {
-        ok = function(scores)
-            local economy = GetExistingEconomyState(scores)
-            if economy == nil then
-                SendMissingEconomyState(connection, deps_.Shared.EVENTS.COMPLETE_COMMISSION_RESPONSE, payload.requestId)
-                return
-            end
-            ServerCloudStore.Get(uid, COMMISSION_STATE_KEY, {
-                ok = function(rows)
-                    local commissionState = ServerCommission.NormalizeCommissionState(rows[COMMISSION_STATE_KEY], economy.talent and economy.talent.level or 1)
-                    local commission = nil
-                    for _, row in ipairs(commissionState.commissions or {}) do
-                        if row.id == payload.commissionId then commission = row; break end
-                    end
-                    local itemIndex = math.floor(tonumber(payload.itemIndex or 0) or 0)
-                    local item = itemIndex > 0 and economy.harvested[itemIndex] or nil
-                    if commission == nil then Send(connection, deps_.Shared.EVENTS.COMPLETE_COMMISSION_RESPONSE, { success = false, message = "委托不存在", requestId = payload.requestId, state = economy, commission = commissionState }); return end
-                    if commission.completed then Send(connection, deps_.Shared.EVENTS.COMPLETE_COMMISSION_RESPONSE, { success = false, message = "委托已完成", requestId = payload.requestId, state = economy, commission = commissionState }); return end
-                    if item == nil then Send(connection, deps_.Shared.EVENTS.COMPLETE_COMMISSION_RESPONSE, { success = false, message = "作物已不存在", requestId = payload.requestId, state = economy, commission = commissionState }); return end
-                    if not ServerCommission.CommissionItemMatches(commission, item) then Send(connection, deps_.Shared.EVENTS.COMPLETE_COMMISSION_RESPONSE, { success = false, message = "作物不满足委托条件", requestId = payload.requestId, state = economy, commission = commissionState }); return end
-                    table.remove(economy.harvested, itemIndex)
-                    economy.seedPacks[commission.rewardPackId] = (tonumber(economy.seedPacks[commission.rewardPackId] or 0) or 0) + 1
-                    commission.completed = true
-                    economy.updatedAt = Now()
-                    NextRevision(economy)
-                    local message = string.format("完成%s的委托，获得%s", commission.customer or "客人", commission.rewardPackName or "种子包")
-                    local response = { success = true, message = message, requestId = payload.requestId, state = economy, commission = commissionState }
-                    local c = serverCloud:BatchCommit("权威委托")
-                    ServerCloudStore.BatchScoreSet(c, uid, deps_.Shared.KEYS.ECONOMY_STATE, economy)
-                    ServerCloudStore.BatchScoreSet(c, uid, COMMISSION_STATE_KEY, commissionState)
+    payload = payload or {}
+    ServerCloudStore.Get(uid, COMMISSION_STATE_KEY, {
+        ok = function(rows)
+            deps_.PlayerStateService.MutateEconomy(uid, "complete_commission", function(economy)
+                local commissionState = ServerCommission.NormalizeCommissionState(rows[COMMISSION_STATE_KEY], economy.talent and economy.talent.level or 1)
+                local commission = nil
+                for _, row in ipairs(commissionState.commissions or {}) do
+                    if row.id == payload.commissionId then commission = row; break end
+                end
+                local itemIndex = math.floor(tonumber(payload.itemIndex or 0) or 0)
+                local item = itemIndex > 0 and economy.harvested[itemIndex] or nil
+                if commission == nil then return { success = false, response = { success = false, message = "委托不存在", requestId = payload.requestId, state = economy, commission = commissionState } } end
+                if commission.completed then return { success = false, response = { success = false, message = "委托已完成", requestId = payload.requestId, state = economy, commission = commissionState } } end
+                if item == nil then return { success = false, response = { success = false, message = "作物已不存在", requestId = payload.requestId, state = economy, commission = commissionState } } end
+                if not ServerCommission.CommissionItemMatches(commission, item) then return { success = false, response = { success = false, message = "作物不满足委托条件", requestId = payload.requestId, state = economy, commission = commissionState } } end
+                table.remove(economy.harvested, itemIndex)
+                economy.seedPacks[commission.rewardPackId] = (tonumber(economy.seedPacks[commission.rewardPackId] or 0) or 0) + 1
+                commission.completed = true
+                local message = string.format("完成%s的委托，获得%s", commission.customer or "客人", commission.rewardPackName or "种子包")
+                return { success = true, response = { success = true, message = message, requestId = payload.requestId, state = economy, commission = commissionState } }
+            end, function(result)
+                local response = result and result.response or nil
+                if result ~= nil and result.success == true and type(response) == "table" then
+                    local c = serverCloud:BatchCommit("委托状态保存")
+                    ServerCloudStore.BatchScoreSet(c, uid, COMMISSION_STATE_KEY, response.commission)
                     c:Commit({
-                        ok = function() Send(connection, deps_.Shared.EVENTS.COMPLETE_COMMISSION_RESPONSE, response) end,
-                        error = function(_, reason) Send(connection, deps_.Shared.EVENTS.COMPLETE_COMMISSION_RESPONSE, { success = false, message = "委托提交失败: " .. tostring(reason), requestId = payload.requestId, state = economy, commission = commissionState }) end,
+                        ok = function() end,
+                        error = function(_, reason) print("[委托] 状态保存失败: " .. tostring(reason)) end,
                     })
-                end,
-                error = function(_, reason) Send(connection, deps_.Shared.EVENTS.COMPLETE_COMMISSION_RESPONSE, { success = false, message = "委托数据读取失败: " .. tostring(reason), requestId = payload.requestId, state = economy }) end,
-            })
+                end
+                SendMutationResult(connection, deps_.Shared.EVENTS.COMPLETE_COMMISSION_RESPONSE, result, payload.requestId)
+            end)
         end,
-        error = function(_, reason) Send(connection, deps_.Shared.EVENTS.COMPLETE_COMMISSION_RESPONSE, { success = false, message = "经济数据读取失败: " .. tostring(reason), requestId = payload.requestId }) end,
+        error = function(_, reason)
+            Send(connection, deps_.Shared.EVENTS.COMPLETE_COMMISSION_RESPONSE, { success = false, message = "委托数据读取失败: " .. tostring(reason), requestId = payload.requestId })
+        end,
     })
 end
 

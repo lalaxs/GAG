@@ -7,6 +7,11 @@
 
 local ServerLeaderboard = {}
 
+local RATE_LIMIT_BACKOFF = 10
+local TOUR_RANK_REPAIR_COOLDOWN = 30
+local leaderboardBackoffUntilByUid_ = {}
+local tourRankRepairAtByUid_ = {}
+
 local deps_ = {}
 local ServerCloudStore = require("server.server_cloud_store")
 local LeaderboardSanitize = require("server.leaderboard_sanitize")
@@ -28,8 +33,84 @@ local function Now()
     return deps_.Now()
 end
 
+local function IsRateLimitReason(reason)
+    return string.find(tostring(reason or ""), "read rate limit exceeded", 1, true) ~= nil
+end
+
+local function IsNotFoundReason(reason)
+    local text = string.lower(tostring(reason or ""))
+    return text == "not_found" or string.find(text, "not found", 1, true) ~= nil or string.find(text, "not_found", 1, true) ~= nil
+end
+
+local function BackoffKey(uid)
+    return tostring(CloudUid(uid) or uid or "unknown")
+end
+
+local function EnterBackoff(uid, reason)
+    if not IsRateLimitReason(reason) then return end
+    leaderboardBackoffUntilByUid_[BackoffKey(uid)] = Now() + RATE_LIMIT_BACKOFF
+end
+
+local function IsBackoffActive(uid)
+    local key = BackoffKey(uid)
+    local untilTime = tonumber(leaderboardBackoffUntilByUid_[key] or 0) or 0
+    if untilTime <= 0 then return false end
+    if Now() < untilTime then return true end
+    leaderboardBackoffUntilByUid_[key] = nil
+    return false
+end
+
 local function Send(connection, eventName, data)
     deps_.Send(connection, eventName, data)
+end
+
+local function RepairTourRankIfNeeded(uid, done)
+    if deps_.Shared == nil or deps_.Shared.KEYS == nil then
+        done()
+        return
+    end
+    local key = BackoffKey(uid)
+    local now = Now()
+    if now - (tonumber(tourRankRepairAtByUid_[key] or 0) or 0) < TOUR_RANK_REPAIR_COOLDOWN then
+        done()
+        return
+    end
+    tourRankRepairAtByUid_[key] = now
+    ServerCloudStore.ReadPlayerScore(uid, deps_.Shared.KEYS.AUTH_FARM_STATE, {
+        normalize = deps_.NormalizeFarmState,
+        score = deps_.ScoreFarmState,
+        compareScore = deps_.ScoreFarmState,
+        requireOwner = true,
+        allowLegacyRescue = true,
+        shouldLegacyRescue = deps_.FarmLooksEmpty,
+        logLabel = "观光榜修复农场",
+    }, function(farmState)
+        if type(farmState) ~= "table" then
+            done()
+            return
+        end
+        local score = math.max(0, math.floor(tonumber(deps_.CalculateAuthFarmTourValue(farmState) or 0) or 0))
+        if score <= 0 then
+            done()
+            return
+        end
+        local rankUid = RankUid(uid)
+        if rankUid == nil then
+            done()
+            return
+        end
+        ---@diagnostic disable-next-line: param-type-mismatch
+        serverCloud:SetInt(rankUid, deps_.Shared.KEYS.TOUR_RANK, score, {
+            ok = function()
+                print(string.format("[排行榜] 观光榜补交成功 uid=%s score=%s", tostring(uid), tostring(score)))
+                done()
+            end,
+            error = function(_, reason)
+                print(string.format("[排行榜] 观光榜补交失败 uid=%s score=%s reason=%s", tostring(uid), tostring(score), tostring(reason)))
+                done()
+            end,
+        })
+    end)
 end
 
 function ServerLeaderboard.GetIncomeRankInfo(now)
@@ -195,35 +276,49 @@ end
 function ServerLeaderboard.RequestLeaderboardAuthority(uid, payload, connection)
     uid = CloudUid(uid)
     payload = payload or {}
+    if IsBackoffActive(uid) then
+        Send(connection, deps_.Shared.EVENTS.LEADERBOARD_RESPONSE, { success = false, requestId = payload.requestId, kind = payload.kind, activityId = payload.activityId, message = "榜单繁忙" })
+        return
+    end
     local info = ServerLeaderboard.ResolveLeaderboardInfo(payload.kind, payload.activityId)
     local count = deps_.NormalizePositiveCount(payload.count or 20, 50)
-    serverCloud:GetRankList(info.key, 1, count, {
-        ok = function(rankList)
-            local userIds = {}
-            local result = {}
-            for i, item in ipairs(rankList or {}) do
-                local userId = LeaderboardSanitize.ResolveRankUserId(item)
-                if userId ~= nil then
-                    userIds[#userIds + 1] = userId
-                    result[#result + 1] = {
-                        rank = i,
-                        userId = userId,
-                        nickname = "Tap玩家",
-                        score = ServerLeaderboard.GetRankItemScore(item, info.key),
-                    }
+    local function fetchRankList()
+        serverCloud:GetRankList(info.key, 1, count, {
+            ok = function(rankList)
+                local userIds = {}
+                local result = {}
+                for i, item in ipairs(rankList or {}) do
+                    local userId = LeaderboardSanitize.ResolveRankUserId(item)
+                    if userId ~= nil then
+                        userIds[#userIds + 1] = userId
+                        result[#result + 1] = {
+                            rank = i,
+                            userId = userId,
+                            nickname = "Tap玩家",
+                            score = ServerLeaderboard.GetRankItemScore(item, info.key),
+                        }
+                    end
                 end
-            end
-            deps_.GetNicknameMap(userIds, function(nickMap)
-                deps_.SocialServer.FetchGardenProfiles(userIds, function(profileMap)
-                    local filtered = LeaderboardSanitize.FilterForDisplay(uid, result, profileMap, nickMap, info.kind)
-                    ServerLeaderboard.SendLeaderboardWithMyRank(uid, connection, payload.requestId, info, filtered)
+                deps_.GetNicknameMap(userIds, function(nickMap)
+                    deps_.SocialServer.FetchGardenProfiles(userIds, function(profileMap)
+                        local filtered = LeaderboardSanitize.FilterForDisplay(uid, result, profileMap, nickMap, info.kind)
+                        ServerLeaderboard.SendLeaderboardWithMyRank(uid, connection, payload.requestId, info, filtered)
+                    end)
                 end)
-            end)
-        end,
-        error = function(_, reason)
-            Send(connection, deps_.Shared.EVENTS.LEADERBOARD_RESPONSE, { success = false, requestId = payload.requestId, kind = payload.kind, activityId = payload.activityId, message = "排行榜读取失败: " .. tostring(reason) })
-        end,
-    })
+            end,
+            error = function(_, reason)
+                EnterBackoff(uid, reason)
+                Send(connection, deps_.Shared.EVENTS.LEADERBOARD_RESPONSE, { success = false, requestId = payload.requestId, kind = payload.kind, activityId = payload.activityId, message = "榜单繁忙" })
+            end,
+        })
+    end
+    if info.kind == "tour" then
+        -- 观光值在播种/收获成功的 BatchCommit 中实时写入 TOUR_RANK。
+        -- 打开排行榜时不再额外读取 AUTH_FARM_STATE 做修复，避免和高频玩法共用农场云读额度。
+        fetchRankList()
+        return
+    end
+    fetchRankList()
 end
 
 function ServerLeaderboard.PickLockedAvatar(unlocked)
@@ -257,27 +352,34 @@ function ServerLeaderboard.ClaimActivityRankRewardAuthority(uid, payload, connec
                 Send(connection, deps_.Shared.EVENTS.CLAIM_ACTIVITY_RANK_REWARD_RESPONSE, { success = false, requestId = payload.requestId, activityId = info.activityId, cycleId = info.cycleId, message = "上期没有进入活动榜前20，没有奖励可领" })
                 return
             end
+            local function grantReward()
+                local avatarIndex = ServerLeaderboard.PickLockedAvatar(payload.unlockedAvatars)
+                local reward = avatarIndex ~= nil and { type = "avatar", avatarIndex = avatarIndex, avatarId = "plant_" .. tostring(avatarIndex) } or { type = "none" }
+                local message = avatarIndex ~= nil and "上期活动排行奖励：解锁头像" or "已拥有全部头像，本次不发放头像奖励"
+                ServerCloudStore.SetScore(uid, info.rewardKey, { claimedAt = Now(), rank = rank, score = score, reward = reward }, {
+                    ok = function()
+                        local response = { success = true, requestId = payload.requestId, activityId = info.activityId, cycleId = info.cycleId, rank = rank, score = score, reward = reward, message = message }
+                        deps_.RequestGuard.Record(uid, payload._requestRecordKey, response)
+                        Send(connection, deps_.Shared.EVENTS.CLAIM_ACTIVITY_RANK_REWARD_RESPONSE, response)
+                    end,
+                    error = function(_, reason)
+                        Send(connection, deps_.Shared.EVENTS.CLAIM_ACTIVITY_RANK_REWARD_RESPONSE, { success = false, requestId = payload.requestId, activityId = info.activityId, cycleId = info.cycleId, message = "奖励领取失败: " .. tostring(reason) })
+                    end,
+                })
+            end
             ServerCloudStore.Get(uid, info.rewardKey, {
                 ok = function(rewardRows)
                     if type(rewardRows[info.rewardKey]) == "table" then
                         Send(connection, deps_.Shared.EVENTS.CLAIM_ACTIVITY_RANK_REWARD_RESPONSE, { success = false, requestId = payload.requestId, activityId = info.activityId, cycleId = info.cycleId, message = "上期活动排行奖励已领取" })
                         return
                     end
-                    local avatarIndex = ServerLeaderboard.PickLockedAvatar(payload.unlockedAvatars)
-                    local reward = avatarIndex ~= nil and { type = "avatar", avatarIndex = avatarIndex, avatarId = "plant_" .. tostring(avatarIndex) } or { type = "none" }
-                    local message = avatarIndex ~= nil and "上期活动排行奖励：解锁头像" or "已拥有全部头像，本次不发放头像奖励"
-                    serverCloud:Set(uid, info.rewardKey, { claimedAt = Now(), rank = rank, score = score, reward = reward }, {
-                        ok = function()
-                            local response = { success = true, requestId = payload.requestId, activityId = info.activityId, cycleId = info.cycleId, rank = rank, score = score, reward = reward, message = message }
-                            deps_.RequestGuard.Record(uid, payload._requestRecordKey, response)
-                            Send(connection, deps_.Shared.EVENTS.CLAIM_ACTIVITY_RANK_REWARD_RESPONSE, response)
-                        end,
-                        error = function(_, reason)
-                            Send(connection, deps_.Shared.EVENTS.CLAIM_ACTIVITY_RANK_REWARD_RESPONSE, { success = false, requestId = payload.requestId, activityId = info.activityId, cycleId = info.cycleId, message = "奖励领取失败: " .. tostring(reason) })
-                        end,
-                    })
+                    grantReward()
                 end,
                 error = function(_, reason)
+                    if IsNotFoundReason(reason) then
+                        grantReward()
+                        return
+                    end
                     Send(connection, deps_.Shared.EVENTS.CLAIM_ACTIVITY_RANK_REWARD_RESPONSE, { success = false, requestId = payload.requestId, activityId = info.activityId, cycleId = info.cycleId, message = "奖励状态读取失败: " .. tostring(reason) })
                 end,
             })

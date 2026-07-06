@@ -59,6 +59,7 @@ function ClientBootstrap.Start(ctx)
         setInitialPlotBounceStarted = ctx.setInitialPlotBounceStarted,
         isInitialSocialSnapshotUploaded = ctx.isInitialSocialSnapshotUploaded,
         setInitialSocialSnapshotUploaded = ctx.setInitialSocialSnapshotUploaded,
+        isInitialPlayerReady = ctx.isInitialPlayerReady,
         showToast = ctx.ShowToast,
         initBGM = ctx.InitBGM,
     })
@@ -443,7 +444,7 @@ function ClientBootstrap.Start(ctx)
                 ctx.ShowToast("正在请求服务器购买...")
                 return true
             end
-            ctx.ShowToast("服务器尚未就绪，无法购买")
+            ctx.ShowToast("同步中")
             return false
         end,
         requestSeedShop = function()
@@ -467,6 +468,10 @@ function ClientBootstrap.Start(ctx)
         getUserId = function() return ctx.PlayerSystem.GetUserId() end,
         syncInventoryRefs = ctx.SyncInventoryRefs,
         markDirty = ctx.MarkSaveDirty,
+        refreshTourValue = ctx.UpdateCurrentTourValue,
+        applyEconomyOwnerHint = function(ownerUserId)
+            ctx.PlayerSystem.ApplyEconomyOwnerHint(ownerUserId)
+        end,
         showToast = ctx.ShowToast,
         showFloatingToast = function(text)
             ctx.FloatingToast.Show(text, { fontSize = 20, duration = 1.5, yRatio = 0.38, priority = 6 })
@@ -580,6 +585,27 @@ function ClientBootstrap.Start(ctx)
         end,
         returnHome = function()
             ctx.RestoreOwnFarm()
+            if ctx.EconomyCloudSystem ~= nil and ctx.EconomyCloudSystem.HoldFarmOperations ~= nil then
+                ctx.EconomyCloudSystem.HoldFarmOperations(1.2, "return_home")
+            end
+            local fullSyncRequested = false
+            if ctx.SocialGardenSystem ~= nil and ctx.SocialGardenSystem.RequestFullSync ~= nil then
+                fullSyncRequested = ctx.SocialGardenSystem.RequestFullSync("return_home_force_sync") == true
+            end
+            if not fullSyncRequested then
+                if ctx.EconomyCloudSystem ~= nil and ctx.EconomyCloudSystem.RequestState ~= nil then
+                    ctx.EconomyCloudSystem.RequestState({ force = true, reason = "return_home_force_sync" })
+                end
+                if ctx.EconomyCloudSystem ~= nil and ctx.EconomyCloudSystem.RequestSeedShop ~= nil then
+                    ctx.EconomyCloudSystem.RequestSeedShop()
+                end
+                if ctx.EconomyCloudSystem ~= nil and ctx.EconomyCloudSystem.RequestAuthFarm ~= nil then
+                    ctx.EconomyCloudSystem.RequestAuthFarm({ force = true, reason = "return_home_force_sync" })
+                end
+                if ctx.SocialGardenSystem ~= nil and ctx.SocialGardenSystem.RequestSocialState ~= nil then
+                    ctx.SocialGardenSystem.RequestSocialState({ force = true, reason = "return_home_force_sync" })
+                end
+            end
             if ctx.RebuildUI ~= nil then ctx.RebuildUI() end
         end,
         showToast = ctx.ShowToast,
@@ -592,6 +618,19 @@ function ClientBootstrap.Start(ctx)
         markDirty = ctx.MarkSaveDirty,
         applyEconomyState = function(state)
             ctx.EconomyCloudSystem.ApplyAuthoritativeState(state)
+        end,
+        onSocialStateSynced = function()
+            if ctx.EnsureInitialUiReady ~= nil then ctx.EnsureInitialUiReady() end
+        end,
+        onSocialSaveSynced = function()
+            if ctx.isInitialUiReady() and ctx.isInitialSocialSnapshotUploaded() ~= true then
+                if ctx.SocialGardenSystem.UploadSnapshot() and ctx.setInitialSocialSnapshotUploaded ~= nil then
+                    ctx.setInitialSocialSnapshotUploaded(true)
+                end
+            end
+        end,
+        onServerBound = function()
+            ctx.PlayerSystem.TryApplyConnectionIdentity()
         end,
     })
 
@@ -666,6 +705,7 @@ function ClientBootstrap.Start(ctx)
     ctx.GameLoop.Init({
         updateNetworkRecovery = ctx.UpdateNetworkRecovery,
         isInitialUiReady = ctx.isInitialUiReady,
+        isInitialPlayerReady = ctx.isInitialPlayerReady,
         PlayerSystem = ctx.PlayerSystem,
         EconomyCloudSystem = ctx.EconomyCloudSystem,
         AdRewardSystem = ctx.AdRewardSystem,
@@ -693,7 +733,9 @@ function ClientBootstrap.Start(ctx)
     ctx.UpdateCamera()
     ctx.CreateSkybox()
     if NetworkClient.IsClientMode() then
-        ctx.SocialGardenSystem.BindServerConnection(true)
+        if ctx.SocialGardenSystem.BindServerConnection(true) then
+            ctx.NetworkRecovery.NotifyInitialClientReady()
+        end
     end
     SubscribeToEvent("Update", "HandleUpdate")
     SubscribeToEvent("ServerReady", "HandleNetworkRecoveryServerReady")

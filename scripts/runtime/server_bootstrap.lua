@@ -15,6 +15,7 @@ function ServerBootstrap.Start(ctx)
     ctx.setScene(Scene())
     ctx.ServerShop.Init({
         Shared = ctx.Shared,
+        PlayerStateService = ctx.PlayerStateService,
         GameConfig = ctx.GameConfig,
         globalShopUid = ctx.ServerTuning.globalShopUid,
         refreshInterval = ctx.ServerTuning.seedShopRefreshInterval,
@@ -65,6 +66,7 @@ function ServerBootstrap.Start(ctx)
     ctx.ServerCommission.Init({
         Shared = ctx.Shared,
         GameConfig = ctx.GameConfig,
+        PlayerStateService = ctx.PlayerStateService,
         Send = ctx.Send,
         Now = ctx.Now,
         RandItem = ctx.RandItem,
@@ -79,6 +81,7 @@ function ServerBootstrap.Start(ctx)
         Shared = ctx.Shared,
         GameConfig = ctx.GameConfig,
         RequestGuard = ctx.RequestGuard,
+        PlayerStateService = ctx.PlayerStateService,
         Send = ctx.Send,
         Now = ctx.Now,
         NormalizeActivityState = ctx.NormalizeActivityState,
@@ -95,6 +98,7 @@ function ServerBootstrap.Start(ctx)
         Shared = ctx.Shared,
         GameConfig = ctx.GameConfig,
         RequestGuard = ctx.RequestGuard,
+        PlayerStateService = ctx.PlayerStateService,
         SocialServer = ctx.SocialServer,
         Send = ctx.Send,
         Now = ctx.Now,
@@ -102,6 +106,10 @@ function ServerBootstrap.Start(ctx)
         GetPreviousActivityCycleInfo = ctx.GetPreviousActivityCycleInfo,
         GetActivityConfig = ctx.GetActivityConfig,
         NormalizePositiveCount = ctx.NormalizePositiveCount,
+        NormalizeFarmState = ctx.NormalizeFarmState,
+        ScoreFarmState = ctx.ServerFarmState.ScoreFarmState,
+        FarmLooksEmpty = ctx.ServerFarmState.FarmLooksEmpty,
+        CalculateAuthFarmTourValue = ctx.CalculateAuthFarmTourValue,
         GetNicknameMap = ctx.GetNicknameMap,
         incomeRankRefreshInterval = ctx.ServerTuning.incomeRankRefreshInterval,
         activityRankRewardTop = ctx.ServerTuning.activityRankRewardTop,
@@ -110,6 +118,7 @@ function ServerBootstrap.Start(ctx)
         Shared = ctx.Shared,
         GameConfig = ctx.GameConfig,
         RequestGuard = ctx.RequestGuard,
+        PlayerStateService = ctx.PlayerStateService,
         SocialServer = ctx.SocialServer,
         Send = ctx.Send,
         Now = ctx.Now,
@@ -132,10 +141,26 @@ function ServerBootstrap.Start(ctx)
         adStealBonus = ctx.ServerTuning.adStealBonus,
         adRarePackCount = ctx.ServerTuning.adRarePackCount,
     })
+    ctx.ServerPlayerDataCache.Init({
+        Now = ctx.Now,
+    })
+    ctx.PlayerStateService.Init({
+        Shared = ctx.Shared,
+        Now = ctx.Now,
+        NormalizeEconomyState = ctx.NormalizeEconomyState,
+        NormalizeFarmState = ctx.NormalizeFarmState,
+        BuildInitialEconomyState = ctx.BuildInitialEconomyState,
+        ScoreEconomyRecord = ctx.ServerEconomyState.ScoreEconomyRecord,
+        ScoreEconomyContent = ctx.ServerEconomyState.ScoreEconomyContent,
+        ScoreFarmState = ctx.ServerFarmState.ScoreFarmState,
+        FarmLooksEmpty = ctx.ServerFarmState.FarmLooksEmpty,
+    })
     ctx.ServerEconomyActions.Init({
         Shared = ctx.Shared,
         GameConfig = ctx.GameConfig,
         RequestGuard = ctx.RequestGuard,
+        PlayerStateService = ctx.PlayerStateService,
+        PlayerDataCache = ctx.ServerPlayerDataCache,
         Send = ctx.Send,
         SendError = ctx.SendError,
         Now = ctx.Now,
@@ -177,6 +202,7 @@ function ServerBootstrap.Start(ctx)
     ctx.ServerSteal.Init({
         Shared = ctx.Shared,
         RequestGuard = ctx.RequestGuard,
+        PlayerStateService = ctx.PlayerStateService,
         Send = ctx.Send,
         Now = ctx.Now,
         NormalizePlantIndex = ctx.NormalizePlantIndex,
@@ -195,6 +221,7 @@ function ServerBootstrap.Start(ctx)
     ctx.GiftServer.Init({
         Shared = ctx.Shared,
         RequestGuard = ctx.RequestGuard,
+        PlayerStateService = ctx.PlayerStateService,
         dailyGiftLimit = ctx.ServerTuning.dailyGiftLimit,
         dailyStealLimit = ctx.ServerTuning.dailyStealLimit,
         dailySeedPackAdLimit = ctx.ServerTuning.dailySeedPackAdLimit,
@@ -213,6 +240,7 @@ function ServerBootstrap.Start(ctx)
     ctx.SocialServer.Init({
         Shared = ctx.Shared,
         RequestGuard = ctx.RequestGuard,
+        PlayerStateService = ctx.PlayerStateService,
         maxSocialRows = ctx.ServerTuning.maxSocialRows,
         friendLimit = ctx.ServerTuning.friendLimit,
         dailyStealLimit = ctx.ServerTuning.dailyStealLimit,
@@ -225,10 +253,12 @@ function ServerBootstrap.Start(ctx)
         getCanonicalUidKey = ServerUtils.GetCanonicalUidKey,
         buildVisitGardenFromAuthFarm = ctx.BuildVisitGardenFromAuthFarm,
     })
+
     SaveLoginReconcile.Init({
         Shared = ctx.Shared,
         NormalizeEconomyState = ctx.NormalizeEconomyState,
         NormalizeFarmState = ctx.ServerFarmState.NormalizeFarmState,
+        FarmLooksEmpty = ctx.ServerFarmState.FarmLooksEmpty,
         NormalizeCommissionState = function(state)
             return ctx.ServerCommission.NormalizeCommissionState(state, 1)
         end,
@@ -257,6 +287,8 @@ function ServerBootstrap.Start(ctx)
         Send = ctx.Send,
         SendSeedShopState = ctx.SendSeedShopState,
         SendPlayerProfile = ctx.SendPlayerProfile,
+        PlayerStateService = ctx.PlayerStateService,
+        SaveLoginReconcile = SaveLoginReconcile,
         RequestEconomyState = ctx.RequestEconomyState,
         RequestAuthFarmState = ctx.RequestAuthFarmState,
         RequestLeaderboardAuthority = ctx.RequestLeaderboardAuthority,
@@ -281,6 +313,11 @@ function ServerBootstrap.Start(ctx)
     })
     ctx.Shared.RegisterServerEvents()
     ctx.ServerGlobals.BindEventHandlers(ctx.ServerEventHandlers)
+    _G.HandleServerPlayerStateUpdate = function(eventType, eventData)
+        local dt = eventData["TimeStep"]:GetFloat()
+        ctx.PlayerStateService.Update(dt)
+    end
+    SubscribeToEvent("Update", "HandleServerPlayerStateUpdate")
     ctx.ServerEventHandlers.Register()
     print("[社交花园服务端] 权威农场服务已启动")
 end

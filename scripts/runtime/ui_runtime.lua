@@ -55,9 +55,11 @@ local function ShowToast(text, silent)
 end
 
 function UiRuntime.IsInitialDataReady()
+    -- 进主界面只等核心权威数据：经济+农场（IsInitialSyncReady）与玩家 UID。
+    -- 完整社交（好友/排行等）在 SOCIAL_STATE phase=full 后异步补齐。
     local economyReady = deps_.EconomyCloudSystem.IsInitialSyncReady ~= nil and deps_.EconomyCloudSystem.IsInitialSyncReady()
-    local socialReady = deps_.SocialGardenSystem.IsSocialSaveLoaded == nil or deps_.SocialGardenSystem.IsSocialSaveLoaded()
-    return economyReady and socialReady
+    local playerReady = deps_.isInitialPlayerReady == nil or deps_.isInitialPlayerReady()
+    return economyReady and playerReady
 end
 
 function UiRuntime.EnsureInitialUiReady()
@@ -76,8 +78,9 @@ function UiRuntime.EnsureInitialUiReady()
     deps_.UIController.Rebuild()
     UiRuntime.Refresh(true)
     if IsInitialSocialSnapshotUploaded() ~= true then
-        deps_.SocialGardenSystem.UploadSnapshot()
-        SetInitialSocialSnapshotUploaded(true)
+        if deps_.SocialGardenSystem.UploadSnapshot() then
+            SetInitialSocialSnapshotUploaded(true)
+        end
     end
     if deps_.initBGM ~= nil then
         deps_.initBGM()
@@ -121,7 +124,7 @@ end
 
 function UiRuntime.IsInitialUiBlocked()
     if IsInitialUiReady() then return false end
-    ShowToast("正在同步服务器数据，请稍后")
+    ShowToast("同步中")
     UiRuntime.EnsureInitialUiReady()
     return true
 end

@@ -22,8 +22,13 @@ local noConnectionLogTimer_ = 0
 local wasServerBound_ = false
 local economyRetryableCount_ = 0
 local authFarmRetryableCount_ = 0
+local authFarmTimeoutCount_ = 0
+local economyReadyAt_ = nil
 local initialSyncDegraded_ = false
+local socialSaveFallbackRequested_ = false
 local INITIAL_SYNC_DEGRADE_THRESHOLD = 6
+local AUTH_FARM_TIMEOUT_DEGRADE_THRESHOLD = 2
+local AUTH_FARM_NO_RESPONSE_WATCHDOG_SECONDS = 6.0
 
 local function IsServerSessionBound()
     return NetworkClient.IsSessionBound()
@@ -35,7 +40,9 @@ local state_ = {
     commissionsReady = false,
     pending = {},
     lastSyncText = "未同步",
+    lastEconomyRevision = -1,
     lastAuthFarmRevision = -1,
+    operationHoldUntil = 0,
 }
 
 local function IsClientNetworkAvailable()
@@ -47,11 +54,34 @@ local function IsAuthoritativeClient()
     return true
 end
 
+local function Now()
+    return os and os.clock and os.clock() or 0
+end
+
 local function BlockIfAuthoritativeNotReady(requireFarm)
-    local ready = IsClientNetworkAvailable() and state_.ready == true and (requireFarm ~= true or state_.authFarmReady == true)
+    local now = Now()
+    local holdRemaining = (state_.operationHoldUntil or 0) - now
+    if requireFarm == true and holdRemaining > 0.01 then
+        state_.lastSyncText = "同步中..."
+        if deps_.showToast then deps_.showToast("同步中", true) end
+        return true
+    elseif holdRemaining <= 0.01 then
+        state_.operationHoldUntil = 0
+    end
+
+    if IsClientNetworkAvailable() and not IsServerSessionBound() then
+        NetworkClient.BindServerConnection(true)
+    end
+
+    local rawConnected = IsClientNetworkAvailable() == true
+    local bound = IsServerSessionBound() == true
+    local economyReady = state_.ready == true
+    local farmReady = requireFarm ~= true or state_.authFarmReady == true
+    local ready = rawConnected and bound and economyReady and farmReady
     if ready then return false end
+
     state_.lastSyncText = "同步中..."
-    if initialSyncDegraded_ ~= true and deps_.showToast then deps_.showToast("正在同步服务器数据，请稍后") end
+    if initialSyncDegraded_ ~= true and deps_.showToast then deps_.showToast("同步中") end
     return true
 end
 
@@ -98,9 +128,32 @@ local function ReplaceTable(target, source)
     end
 end
 
+local function IsStaleEconomyState(cloudState, options)
+    if type(cloudState) ~= "table" then return true end
+    options = options or {}
+    local incomingRevision = tonumber(cloudState.revision)
+    if options.force == true or cloudState.force == true or cloudState.cleared == true then
+        state_.lastEconomyRevision = incomingRevision or -1
+        return false
+    end
+    if incomingRevision ~= nil then
+        local currentRevision = state_.lastEconomyRevision or -1
+        if incomingRevision < currentRevision then
+            print(string.format("[经济同步] 忽略过期经济状态 revision=%d latest=%d", incomingRevision, currentRevision))
+            return true
+        end
+        state_.lastEconomyRevision = incomingRevision
+    elseif (state_.lastEconomyRevision or -1) >= 0 then
+        print(string.format("[经济同步] 忽略无 revision 的经济状态 latest=%d", state_.lastEconomyRevision or -1))
+        return true
+    end
+    return false
+end
+
 local function ApplyState(cloudState, options)
     if type(cloudState) ~= "table" then return false end
     options = options or {}
+    if IsStaleEconomyState(cloudState, options) then return false end
     if deps_.WalletSystem and deps_.WalletSystem.SetBalance then
         deps_.WalletSystem.SetBalance(tonumber(cloudState.gold or 0) or 0)
     end
@@ -127,11 +180,17 @@ local function ApplyState(cloudState, options)
         deps_.TalentSystem.LoadSaveData(cloudState.talent)
     end
     if deps_.ProgressionSystem and deps_.ProgressionSystem.LoadSaveData and cloudState.progression ~= nil then
-        deps_.ProgressionSystem.LoadSaveData(cloudState.progression)
+        deps_.ProgressionSystem.LoadSaveData(cloudState.progression, { skipTourFields = true })
+        if deps_.refreshTourValue ~= nil then
+            deps_.refreshTourValue()
+        end
         if options.silentEvents ~= true and deps_.onProgressionApplied then deps_.onProgressionApplied(cloudState.progression) end
     end
     if deps_.ActivitySystem and deps_.ActivitySystem.LoadSaveData and cloudState.activity ~= nil then
         deps_.ActivitySystem.LoadSaveData(cloudState.activity)
+    end
+    if deps_.applyEconomyOwnerHint and cloudState.ownerUserId ~= nil then
+        deps_.applyEconomyOwnerHint(cloudState.ownerUserId)
     end
     if deps_.syncInventoryRefs then deps_.syncInventoryRefs() end
     if deps_.markDirty then deps_.markDirty() end
@@ -156,25 +215,46 @@ end
 local authFarmRequestForce_ = false
 local clearedAuthFarmRevisionFloor_ = nil
 
+local function CountFarmPlants(farm)
+    if type(farm) ~= "table" or type(farm.plots) ~= "table" then return 0 end
+    local count = 0
+    for _, plot in pairs(farm.plots) do
+        if type(plot) == "table" and type(plot.plants) == "table" then
+            count = count + #plot.plants
+        end
+    end
+    return count
+end
+
 local function ApplyAuthoritativeFarm(farm, source, options)
     options = options or {}
     if type(farm) ~= "table" then return false end
     local revision = tonumber(farm.revision)
+    local latestRevision = state_.lastAuthFarmRevision or -1
+    if farm.degraded == true and CountFarmPlants(farm) == 0 and latestRevision > 0 then
+        print(string.format("[经济同步] 忽略降级空农场覆盖 source=%s latest=%d", tostring(source), latestRevision))
+        return false
+    end
     if revision == nil then
-        if not options.force and (state_.lastAuthFarmRevision or -1) >= 0 then
-            print(string.format("[经济同步] 忽略无 revision 的权威农场 source=%s latest=%d", tostring(source), state_.lastAuthFarmRevision or -1))
+        if not options.force and latestRevision >= 0 then
+            print(string.format("[经济同步] 忽略无 revision 的权威农场 source=%s latest=%d", tostring(source), latestRevision))
             return false
         end
         revision = -1
     end
-    if not options.force and revision >= 0 and revision <= (state_.lastAuthFarmRevision or -1) then
-        print(string.format("[经济同步] 忽略重复或过期权威农场 source=%s revision=%d latest=%d", tostring(source), revision, state_.lastAuthFarmRevision or -1))
+    if revision >= 0 and revision < latestRevision then
+        print(string.format("[经济同步] 忽略过期权威农场 source=%s revision=%d latest=%d", tostring(source), revision, latestRevision))
+        return false
+    end
+    if not options.force and revision >= 0 and revision == latestRevision then
+        print(string.format("[经济同步] 忽略重复权威农场 source=%s revision=%d latest=%d", tostring(source), revision, latestRevision))
         return false
     end
     if revision >= 0 then
         state_.lastAuthFarmRevision = revision
     end
     if deps_.onAuthFarmReceived then deps_.onAuthFarmReceived(farm) end
+    state_.operationHoldUntil = 0
     return true
 end
 
@@ -186,6 +266,9 @@ function EconomyCloudSystem.Init(deps)
     deps_ = deps or {}
     initialRetryTimer_ = initialRetryDelay_
     wasServerBound_ = false
+    socialSaveFallbackRequested_ = false
+    authFarmTimeoutCount_ = 0
+    economyReadyAt_ = nil
     state_.serverEnabled = IsClientNetworkAvailable()
     Shared.RegisterClientEvents()
     if NetworkClient.IsClientMode() then
@@ -216,15 +299,43 @@ function EconomyCloudSystem.IsAuthoritativeClient()
 end
 
 function EconomyCloudSystem.IsReady(requireFarm)
-    return IsClientNetworkAvailable() and state_.ready == true and (requireFarm ~= true or state_.authFarmReady == true)
+    return IsClientNetworkAvailable() and IsServerSessionBound() and state_.ready == true and (requireFarm ~= true or state_.authFarmReady == true)
 end
 
 function EconomyCloudSystem.IsInitialSyncReady()
     return state_.ready == true and state_.authFarmReady == true
 end
 
+local function EnsureSocialSaveFallback()
+    if socialSaveFallbackRequested_ == true then return end
+    if EconomyCloudSystem.IsInitialSyncReady() ~= true then return end
+    if not IsServerSessionBound() then return end
+    local social = deps_.SocialGardenSystem
+    if social == nil or social.IsSocialSaveLoaded == nil then return end
+    if social.IsSocialSaveLoaded() == true then return end
+    socialSaveFallbackRequested_ = true
+    print("[经济同步] 核心数据已就绪但社交档未恢复，补拉社交状态")
+    if social.RequestSocialState ~= nil then
+        social.RequestSocialState({ force = true, reason = "core_sync_social_fallback" })
+    end
+end
+
 local function NotifyInitialSyncProgress()
+    EnsureSocialSaveFallback()
     if deps_.onInitialSyncProgress then deps_.onInitialSyncProgress(EconomyCloudSystem.IsInitialSyncReady(), state_) end
+end
+
+--- 启动阶段权威农场无法及时同步时解除 loading，但保留最后确认农场，避免空快照覆盖玩家作物。
+local function DegradeAuthFarmForInitialSync(reason)
+    if state_.authFarmReady == true then return end
+    requests_:Cancel("authFarm")
+    state_.authFarmReady = true
+    initialSyncDegraded_ = true
+    authFarmRetryableCount_ = 0
+    authFarmTimeoutCount_ = 0
+    print("[经济同步] 权威农场同步超时/失败，保留当前农场显示 reason=" .. tostring(reason))
+    if deps_.showToast then deps_.showToast("农场数据同步较慢，已保留当前花园并继续后台同步") end
+    NotifyInitialSyncProgress()
 end
 
 local function RequestAuthorityRefresh(reason)
@@ -241,6 +352,13 @@ function EconomyCloudSystem.IsBlocked(requireFarm)
     return BlockIfAuthoritativeNotReady(requireFarm)
 end
 
+function EconomyCloudSystem.HoldFarmOperations(seconds, reason)
+    local duration = math.max(0, tonumber(seconds or 1.0) or 1.0)
+    state_.operationHoldUntil = math.max(state_.operationHoldUntil or 0, Now() + duration)
+    state_.lastSyncText = "同步中..."
+    print(string.format("[经济同步] 暂停农场操作 %.2fs reason=%s", duration, tostring(reason)))
+end
+
 function EconomyCloudSystem.GetState()
     return state_
 end
@@ -249,14 +367,31 @@ function EconomyCloudSystem.Update(dt)
     requests_:Update(function(record)
         requests_:SyncLegacyPending(state_.pending)
         state_.lastSyncText = "请求超时，正在重拉服务器数据"
-        if deps_.showToast then deps_.showToast("服务器请求超时，正在重新同步") end
+        if deps_.showToast then deps_.showToast("重连中") end
         print("[经济同步] 请求超时: " .. tostring(record.type) .. " " .. tostring(record.id))
-        if record.type ~= "load" and record.type ~= "authFarm" then
+        if record.type == "authFarm" then
+            authFarmTimeoutCount_ = authFarmTimeoutCount_ + 1
+            if state_.ready == true and authFarmTimeoutCount_ >= AUTH_FARM_TIMEOUT_DEGRADE_THRESHOLD then
+                DegradeAuthFarmForInitialSync("request_timeout")
+            else
+                EconomyCloudSystem.RequestAuthFarm({ force = true, reason = "timeout_retry" })
+            end
+        elseif record.type == "plant" or record.type == "harvest" then
             if record.type == "plant" and deps_.onPlantSeedFailed then deps_.onPlantSeedFailed(record.payload) end
+            EconomyCloudSystem.HoldFarmOperations(1.5, "timeout_" .. tostring(record.type))
+            print("[经济同步] 玩法请求超时，已短暂退避，不立即重拉权威农场: " .. tostring(record.type))
+        elseif record.type ~= "load" then
             RequestAuthorityRefresh("timeout_" .. tostring(record.type))
         end
     end)
     if EconomyCloudSystem.IsInitialSyncReady() then return end
+    if state_.ready == true and state_.authFarmReady ~= true and economyReadyAt_ ~= nil then
+        local elapsed = (os and os.clock and os.clock() or 0) - economyReadyAt_
+        if elapsed >= AUTH_FARM_NO_RESPONSE_WATCHDOG_SECONDS then
+            DegradeAuthFarmForInitialSync("no_response_watchdog")
+            return
+        end
+    end
     initialRetryTimer_ = initialRetryTimer_ - (dt or 0)
     local serverBound = IsServerSessionBound()
     if serverBound and not wasServerBound_ then
@@ -308,13 +443,26 @@ end
 function EconomyCloudSystem.RequestAuthFarm(options)
     options = options or {}
     authFarmRequestForce_ = options.force == true
-    if state_.authFarmReady == true and options.force ~= true then return true end
+    if state_.authFarmReady == true and options.force ~= true and options.background ~= true then return true end
     if options.force == true then requests_:Cancel("authFarm") end
     if requests_:IsPending("authFarm") then return true end
     local payload = BeginRequest("authFarm", { reason = options.reason or "sync", userId = deps_.getUserId and deps_.getUserId() or nil })
     if SendRequest(Shared.EVENTS.REQUEST_AUTH_FARM, payload) then return true end
     FinishRequest(payload.requestId, "authFarm")
     return false
+end
+
+function EconomyCloudSystem.MarkAuthFarmDirty(reason)
+    state_.authFarmReady = false
+    authFarmTimeoutCount_ = 0
+    authFarmRequestForce_ = true
+    local syncReason = reason or "auth_farm_dirty"
+    if IsClientNetworkAvailable() and not IsServerSessionBound() then
+        NetworkClient.BindServerConnection(true)
+    end
+    EconomyCloudSystem.RequestState({ force = true, reason = syncReason })
+    EconomyCloudSystem.RequestAuthFarm({ force = true, reason = syncReason })
+    return true
 end
 
 function EconomyCloudSystem.UploadState()
@@ -347,10 +495,20 @@ function EconomyCloudSystem.IsPlantPending()
 end
 
 function EconomyCloudSystem.PlantSeed(payload)
-    if BlockIfAuthoritativeNotReady(true) then return false end
+    if BlockIfAuthoritativeNotReady(true) then
+        print(string.format("[经济同步] 播种请求被同步状态阻止 ready=%s authFarmReady=%s bound=%s raw=%s hold=%.3f requestId=%s",
+            tostring(state_.ready),
+            tostring(state_.authFarmReady),
+            tostring(IsServerSessionBound()),
+            tostring(IsClientNetworkAvailable()),
+            math.max(0, (state_.operationHoldUntil or 0) - Now()),
+            tostring(payload and payload.requestId)))
+        return false
+    end
     if requests_:IsPending("plant") then
         if deps_.showToast then deps_.showToast("播种请求处理中，请稍后", true) end
-        return true
+        print("[经济同步] 忽略重复播种请求，已有请求处理中")
+        return false
     end
     payload = BeginRequest("plant", payload or {})
     if SendRequest(Shared.EVENTS.PLANT_SEED, payload) then return true end
@@ -360,6 +518,15 @@ end
 
 function EconomyCloudSystem.IsHarvestPending()
     return requests_:IsPending("harvest")
+end
+
+local function BlockIfRequestPending(requestType, message)
+    if requests_:IsPending(requestType) then
+        if deps_.showToast then deps_.showToast(message or "请求处理中，请稍后", true) end
+        print("[经济同步] 忽略重复请求，已有请求处理中: " .. tostring(requestType))
+        return true
+    end
+    return false
 end
 
 function EconomyCloudSystem.HarvestCrop(payload)
@@ -390,6 +557,7 @@ end
 
 function EconomyCloudSystem.SellAllHarvested()
     if BlockIfAuthoritativeNotReady(false) then return false end
+    if BlockIfRequestPending("sell", "出售请求处理中，请稍后") then return true end
     local payload = BeginRequest("sell", { mode = "all" })
     if SendRequest(Shared.EVENTS.SELL_HARVESTED, payload) then return true end
     FinishRequest(payload.requestId, "sell")
@@ -398,6 +566,7 @@ end
 
 function EconomyCloudSystem.SellBagItem(item)
     if BlockIfAuthoritativeNotReady(false) then return false end
+    if BlockIfRequestPending("sell", "出售请求处理中，请稍后") then return true end
     local harvested = deps_.InventorySystem and deps_.InventorySystem.GetHarvested and deps_.InventorySystem.GetHarvested() or {}
     local targetIndex = 0
     for index, row in ipairs(harvested) do
@@ -412,6 +581,7 @@ end
 
 function EconomyCloudSystem.SellHarvestedByFilter(filter)
     if BlockIfAuthoritativeNotReady(false) then return false end
+    if BlockIfRequestPending("sell", "出售请求处理中，请稍后") then return true end
     local payload = BeginRequest("sell", { mode = "filter", filter = filter or {} })
     if SendRequest(Shared.EVENTS.SELL_HARVESTED, payload) then return true end
     FinishRequest(payload.requestId, "sell")
@@ -544,6 +714,7 @@ function EconomyCloudSystem.HandleEconomyStateResponse(data)
     FinishRequest(data.requestId, "load")
     if data.success and ApplyState(data.state) then
         state_.ready = true
+        economyReadyAt_ = os and os.clock and os.clock() or 0
         economyRetryableCount_ = 0
         state_.lastSyncText = "已同步"
         local profileUid = deps_.getUserId and deps_.getUserId() or nil
@@ -598,7 +769,11 @@ function EconomyCloudSystem.HandleAuthFarmResponse(data)
             clearedAuthFarmRevisionFloor_ = nil
         end
         print("[经济同步] 权威农场已同步" .. (data.degraded == true and "（降级）" or ""))
-        ApplyAuthoritativeFarm(data.farm, "authFarm", { force = authFarmRequestForce_ })
+        local farm = data.farm
+        if type(farm) == "table" and data.degraded == true then
+            farm.degraded = true
+        end
+        ApplyAuthoritativeFarm(farm, "authFarm", { force = authFarmRequestForce_ })
         authFarmRequestForce_ = false
         if data.degraded == true then
             initialSyncDegraded_ = true
@@ -606,15 +781,15 @@ function EconomyCloudSystem.HandleAuthFarmResponse(data)
         end
         NotifyInitialSyncProgress()
     elseif data.retryable == true then
-        authFarmRetryableCount_ = authFarmRetryableCount_ + 1
         state_.lastSyncText = "同步中..."
+        if state_.authFarmReady == true then
+            print("[经济同步] 后台权威农场暂不可用，保留当前农场: " .. tostring(data.message or "retryable"))
+            return
+        end
+        authFarmRetryableCount_ = math.min(authFarmRetryableCount_ + 1, INITIAL_SYNC_DEGRADE_THRESHOLD)
         print(string.format("[经济同步] 权威农场暂不可用，将自动重试 (%d/%d)", authFarmRetryableCount_, INITIAL_SYNC_DEGRADE_THRESHOLD))
         if state_.ready == true and authFarmRetryableCount_ >= INITIAL_SYNC_DEGRADE_THRESHOLD then
-            state_.authFarmReady = true
-            initialSyncDegraded_ = true
-            if deps_.onAuthFarmReceived then deps_.onAuthFarmReceived({ plots = {}, revision = 0 }) end
-            print("[经济同步] 权威农场多次读取失败，已降级进入游戏")
-            NotifyInitialSyncProgress()
+            DegradeAuthFarmForInitialSync("retryable_exhausted")
         end
     elseif deps_.showToast then
         deps_.showToast(data.message or "权威农场读取失败")
@@ -644,7 +819,7 @@ function EconomyCloudSystem.HandleClearSaveResponse(data)
         state_.ready = true
         state_.authFarmReady = true
         state_.commissionsReady = false
-        ApplyState(data.state)
+        ApplyState(data.state, { force = true })
         if data.socialSave ~= nil and deps_.SocialGardenSystem ~= nil and deps_.SocialGardenSystem.LoadSaveData ~= nil then
             deps_.SocialGardenSystem.LoadSaveData(data.socialSave)
         end
@@ -662,12 +837,17 @@ end
 function EconomyCloudSystem.HandlePlantSeedResponse(data)
     FinishRequest(data.requestId, "plant")
     if data.success then
-        ApplyState(data.state)
-        NoteAuthFarmRevision(data.farmRevision, "plant")
         if deps_.onPlantSeedConfirmed then deps_.onPlantSeedConfirmed(data) end
+        ApplyState(data.state)
+        if deps_.refreshTourValue ~= nil then deps_.refreshTourValue() end
+        NoteAuthFarmRevision(data.farmRevision, "plant")
     else
         if deps_.onPlantSeedFailed then deps_.onPlantSeedFailed(data) end
         if data.state ~= nil then ApplyState(data.state) end
+        if data.retryable == true then
+            EconomyCloudSystem.HoldFarmOperations(1.2, "plant_retryable")
+            print("[经济同步] 播种遇到可重试失败，已短暂退避，不立即重拉权威农场")
+        end
         local message = data.message or "播种失败"
         if deps_.showToast then deps_.showToast(message) end
         if deps_.showFloatingToast then deps_.showFloatingToast(message) end
@@ -678,16 +858,17 @@ function EconomyCloudSystem.HandleHarvestCropResponse(data)
     FinishRequest(data.requestId, "harvest")
     print(string.format("[经济同步] 收到收获响应 requestId=%s success=%s message=%s cropId=%s", tostring(data.requestId), tostring(data.success), tostring(data.message), tostring(data.cropId)))
     if data.success then
-        ApplyState(data.state)
-        NoteAuthFarmRevision(data.farmRevision, "harvest")
         if deps_.onHarvestCropConfirmed then deps_.onHarvestCropConfirmed(data) end
+        ApplyState(data.state)
+        if deps_.refreshTourValue ~= nil then deps_.refreshTourValue() end
+        NoteAuthFarmRevision(data.farmRevision, "harvest")
     else
         if data.state ~= nil then ApplyState(data.state) end
         if data.farm ~= nil then
             EconomyCloudSystem.ForceSyncAuthFarm(data.farm, "harvest_failed")
-        else
-            authFarmRequestForce_ = true
-            EconomyCloudSystem.RequestAuthFarm({ force = true, reason = "harvest_failed" })
+        elseif data.retryable == true then
+            EconomyCloudSystem.HoldFarmOperations(1.2, "harvest_retryable")
+            print("[经济同步] 收获遇到可重试失败，已短暂退避，不立即重拉权威农场")
         end
         local message = data.message or "收获失败"
         if deps_.showToast then deps_.showToast(message) end

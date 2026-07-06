@@ -108,7 +108,7 @@ function SeedPackOpeningController.OpenPack(packId)
             return
         end
     end
-    ShowToast("服务器尚未就绪，无法开启种子包")
+    ShowToast("同步中")
 end
 
 function SeedPackOpeningController.OpenAllPacks(packId)
@@ -118,7 +118,7 @@ function SeedPackOpeningController.OpenAllPacks(packId)
             return
         end
     end
-    ShowToast("服务器尚未就绪，无法开启种子包")
+    ShowToast("同步中")
 end
 
 function SeedPackOpeningController.ApplyServerOpenResult(data)

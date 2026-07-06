@@ -22,8 +22,23 @@ function GameLoop.HandleUpdate(eventType, eventData)
         deps_.SocialGardenSystem.Update(dt)
         deps_.LeaderboardSystem.Update(dt)
         if deps_.NetworkRecovery.UpdateLoading(dt) then
-            deps_.UIController.ShowLoading("服务器响应较慢，正在重试同步...")
-            deps_.requestNetworkRecoverySync("loading_timeout")
+            if deps_.PlayerSystem.TryApplyConnectionIdentity ~= nil then
+                deps_.PlayerSystem.TryApplyConnectionIdentity()
+            end
+            if deps_.EconomyCloudSystem.IsInitialSyncReady ~= nil and deps_.EconomyCloudSystem.IsInitialSyncReady() then
+                if deps_.PlayerSystem.RetryFetchTapProfile ~= nil then
+                    deps_.PlayerSystem.RetryFetchTapProfile()
+                end
+                if deps_.SocialGardenSystem.HasSocialStateSynced ~= nil and not deps_.SocialGardenSystem.HasSocialStateSynced() then
+                    deps_.UIController.ShowLoading("正在同步社交数据...")
+                    if deps_.SocialGardenSystem.RequestSocialState ~= nil then
+                        deps_.SocialGardenSystem.RequestSocialState({ force = true, reason = "loading_timeout" })
+                    end
+                end
+            else
+                deps_.UIController.ShowLoading("服务器响应较慢，正在重试同步...")
+                deps_.requestNetworkRecoverySync("loading_timeout")
+            end
         end
         deps_.ensureInitialUiReady()
         deps_.FloatingToast.Update(dt)

@@ -12,6 +12,9 @@ local NetworkClient = require("client.network_client")
 
 local LeaderboardSystem = {}
 
+local REQUEST_COOLDOWN = 5
+local RATE_LIMIT_BACKOFF = 10
+
 local deps_ = {}
 local requests_ = RequestStateMachine.Create("leaderboard", { timeout = 14.0 })
 local state_ = {
@@ -19,12 +22,22 @@ local state_ = {
     activeActivityId = nil,
     lists = {},
     loading = {},
+    requestStartedAt = {},
+    rateLimitUntil = 0,
     rewards = {},
     lastError = nil,
 }
 
 local function IsClientNetworkAvailable()
     return NetworkClient.IsRawConnected()
+end
+
+local function Now()
+    return os and os.time and os.time() or 0
+end
+
+local function IsRateLimitMessage(message)
+    return string.find(tostring(message or ""), "read rate limit exceeded", 1, true) ~= nil
 end
 
 local function BeginRequest(requestType, payload)
@@ -87,14 +100,30 @@ function LeaderboardSystem.Request(kind, activityId)
     kind = kind or "income"
     state_.activeKind = kind
     state_.activeActivityId = activityId
+    local key = BuildListKey(kind, activityId)
+    local now = Now()
+    if now < (state_.rateLimitUntil or 0) then
+        state_.lastError = "榜单繁忙"
+        if deps_.showToast then deps_.showToast(state_.lastError) end
+        EmitChanged("rate_limited")
+        return false
+    end
+    if state_.loading[key] == true then
+        return true
+    end
+    local lastStarted = tonumber(state_.requestStartedAt[key] or 0) or 0
+    if now - lastStarted < REQUEST_COOLDOWN and state_.lists[key] ~= nil then
+        return true
+    end
     local payload = BeginRequest("rank", { kind = kind, activityId = activityId, count = 20 })
-    state_.loading[BuildListKey(kind, activityId)] = true
+    state_.loading[key] = true
+    state_.requestStartedAt[key] = now
     state_.lastError = nil
     EmitChanged("request")
     if SendRequest(Shared.EVENTS.REQUEST_LEADERBOARD, payload) then return true end
     FinishRequest(payload.requestId, "rank")
-    state_.loading[BuildListKey(kind, activityId)] = false
-    state_.lastError = "服务器尚未就绪，无法读取排行榜"
+    state_.loading[key] = false
+    state_.lastError = "同步中"
     if deps_.showToast then deps_.showToast(state_.lastError) end
     EmitChanged("request_failed")
     return false
@@ -124,6 +153,9 @@ function LeaderboardSystem.HandleLeaderboardResponse(data)
         state_.lastError = nil
     else
         state_.lastError = data.message or "排行榜读取失败"
+        if IsRateLimitMessage(state_.lastError) then
+            state_.rateLimitUntil = Now() + RATE_LIMIT_BACKOFF
+        end
         if deps_.showToast then deps_.showToast(state_.lastError) end
     end
     EmitChanged("response")

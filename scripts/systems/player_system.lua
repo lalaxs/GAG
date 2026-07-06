@@ -72,11 +72,12 @@ local state_ = {
 }
 
 local callbacks_ = {}
-local subscribedProfileEvent_ = false
 local nicknameFetchAttempts_ = 0
 local nicknameRetryTimer_ = 0
+local identityPollTimer_ = 0
 local serverUserIdCertified_ = false
 local MAX_NICKNAME_FETCH_ATTEMPTS = 5
+local IDENTITY_POLL_INTERVAL = 0.5
 
 local function NotifyChanged()
     EventBus.Emit(UIEvents.PLAYER_CHANGED, { reason = "profile_changed" })
@@ -314,13 +315,16 @@ end
 
 local function FetchTapNickname()
     local userId = GetCurrentUserId()
-    if serverUserIdCertified_ ~= true then
+    if userId == nil and state_.userId ~= nil then
+        userId = state_.userId
+    end
+    if serverUserIdCertified_ ~= true and userId ~= nil then
         state_.userId = UserId.Normalize(userId)
     end
     nicknameFetchAttempts_ = nicknameFetchAttempts_ + 1
     if userId == nil then
         if nicknameFetchAttempts_ >= MAX_NICKNAME_FETCH_ATTEMPTS then
-            print("[玩家资料] 客户端暂未获得 Tap 用户 ID，等待服务器认证资料")
+            print("[玩家资料] 等待服务器认证资料（UID 尚未就绪）")
         end
         return false
     end
@@ -354,6 +358,51 @@ local function FetchTapNickname()
     return true
 end
 
+function PlayerSystem.ApplyEconomyOwnerHint(ownerUserId)
+    if serverUserIdCertified_ == true then return false end
+    local uid = UserId.Normalize(ownerUserId)
+    if uid == nil then return false end
+    if state_.userId == uid then return false end
+    state_.userId = uid
+    print("[玩家资料] 已从经济档 owner 回填 UID: " .. tostring(uid))
+    NotifyChanged()
+    return true
+end
+
+function PlayerSystem.TryApplyConnectionIdentity()
+    if network == nil or not IsClientMode or not IsClientMode() then return false end
+    local conn = network:GetServerConnection()
+    if conn == nil or conn.identity == nil then return false end
+    local userId = UserId.ReadConnectionIdentity(conn)
+    if userId == nil then return false end
+    local nickname = state_.tapNickname
+    local nickField = conn.identity["nick_name"]
+    if nickField ~= nil then
+        local resolved = UserId.ReadIdentityValue(nickField)
+        if resolved == nil and type(nickField.GetString) == "function" then
+            local ok, text = pcall(function() return nickField:GetString() end)
+            if ok and text ~= nil and text ~= "" then resolved = TrimName(text) end
+        end
+        if resolved ~= nil and resolved ~= "" then nickname = resolved end
+    end
+    local changed = false
+    if serverUserIdCertified_ ~= true then
+        if not SameUserId(state_.userId, userId) then
+            state_.userId = userId
+            changed = true
+        end
+    end
+    if nickname ~= nil and nickname ~= "" and nickname ~= "Tap玩家" and nickname ~= state_.tapNickname then
+        state_.tapNickname = nickname
+        changed = true
+    end
+    if changed then
+        print(string.format("[玩家资料] 已从连接 Identity 读取: %s / %s", tostring(state_.userId), tostring(state_.tapNickname)))
+        NotifyChanged()
+    end
+    return changed
+end
+
 local function ApplyServerProfile(data)
     if type(data) ~= "table" or data.success == false then return false end
     local userId = data.userId
@@ -369,25 +418,33 @@ local function ApplyServerProfile(data)
     if data.avatar ~= nil then
         avatarChanged = ApplyCloudAvatar(data.avatar, "服务器")
     end
-    if SameUserId(state_.userId, userId) and state_.tapNickname == nickname and not avatarChanged then
+    local uid = UserId.Normalize(userId)
+    local uidChanged = not SameUserId(state_.userId, uid)
+    local nickChanged = nickname ~= state_.tapNickname
+    if uidChanged or nickChanged or avatarChanged then
+        state_.userId = uid
+        if nickname ~= "Tap玩家" then
+            state_.tapNickname = nickname
+            serverUserIdCertified_ = true
+            print("[玩家资料] 已从服务器认证资料读取 Tap 账号: " .. tostring(state_.userId) .. " / " .. tostring(state_.tapNickname))
+        elseif uidChanged then
+            print("[玩家资料] 已从服务器认证资料读取 UID: " .. tostring(state_.userId))
+        end
+        NotifyChanged()
         return true
     end
-    state_.userId = UserId.Normalize(userId)
-    serverUserIdCertified_ = true
-    state_.tapNickname = nickname
-    print("[玩家资料] 已从服务器认证资料读取 Tap 账号: " .. tostring(state_.userId) .. " / " .. tostring(state_.tapNickname))
-    NotifyChanged()
     return true
 end
 
-function HandlePlayerProfileResponse(eventType, eventData)
-    ApplyServerProfile(Shared.ReadEventData(eventData))
+function PlayerSystem.HandleProfileResponse(data)
+    return ApplyServerProfile(data)
 end
 
 function PlayerSystem.Init(callbacks)
     callbacks_ = callbacks or {}
     nicknameFetchAttempts_ = 0
     nicknameRetryTimer_ = 0
+    identityPollTimer_ = 0
     serverUserIdCertified_ = false
     state_ = {
         userId = nil,
@@ -398,15 +455,15 @@ function PlayerSystem.Init(callbacks)
         powerSaveMode = false,
     }
     LoadLocalProfile()
-    if subscribedProfileEvent_ ~= true and network ~= nil and IsClientMode ~= nil and IsClientMode() then
-        network:RegisterRemoteEvent(Shared.EVENTS.PLAYER_PROFILE)
-        SubscribeToEvent(Shared.EVENTS.PLAYER_PROFILE, "HandlePlayerProfileResponse")
-        subscribedProfileEvent_ = true
-    end
     FetchTapNickname()
 end
 
 function PlayerSystem.Update(dt)
+    identityPollTimer_ = identityPollTimer_ + (dt or 0)
+    if state_.tapNickname == "Tap玩家" and identityPollTimer_ >= IDENTITY_POLL_INTERVAL then
+        identityPollTimer_ = 0
+        PlayerSystem.TryApplyConnectionIdentity()
+    end
     if (state_.userId ~= nil and state_.tapNickname ~= "Tap玩家") or nicknameFetchAttempts_ >= MAX_NICKNAME_FETCH_ATTEMPTS then return end
     nicknameRetryTimer_ = nicknameRetryTimer_ + (dt or 0)
     if nicknameRetryTimer_ < 1.0 then return end
@@ -599,5 +656,7 @@ end
 function PlayerSystem.ApplyCloudAvatarProfile(avatar, source)
     return ApplyCloudAvatar(avatar, source)
 end
+
+require("systems.profile_client_events")
 
 return PlayerSystem
