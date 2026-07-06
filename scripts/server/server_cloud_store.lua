@@ -9,7 +9,18 @@ local UserId = require("utils.user_id")
 
 local ServerCloudStore = {}
 
-local ECONOMY_STATE_KEY = "garden_economy_state_v1"
+--- 写云前深拷贝，避免异步 Commit 持有内存引用时被后续 mutate 改写。
+local function DeepCopy(value, seen)
+    if type(value) ~= "table" then return value end
+    seen = seen or {}
+    if seen[value] ~= nil then return seen[value] end
+    local copy = {}
+    seen[value] = copy
+    for key, item in pairs(value) do
+        copy[DeepCopy(key, seen)] = DeepCopy(item, seen)
+    end
+    return copy
+end
 
 local function BuildUidKeyCandidates(uid)
     return UserId.BuildCloudKeyCandidates(uid)
@@ -33,14 +44,8 @@ local function StampOwner(value, uid)
     return value
 end
 
---- 选档时不再给 canonical cloudId 固定加分；内容分数优先，分数相同才偏向 canonical。
+--- 选档时不再给 canonical cloudId 固定加。内容分数相同才偏向 canonical。
 local CANONICAL_SCORE_BONUS = 0
-
-local function TouchEconomyStateIfNeeded(scoreKey, value)
-    if scoreKey ~= ECONOMY_STATE_KEY or type(value) ~= "table" then return value end
-    local ServerEconomyState = require("server.server_economy_state")
-    return ServerEconomyState.TouchEconomyState(value)
-end
 
 local function AcceptScoreRead(requestUid, value, hitKey, opts)
     opts = opts or {}
@@ -110,16 +115,17 @@ function ServerCloudStore.SetScore(uid, scoreKey, value, events)
         if events ~= nil and events.error ~= nil then events.error(nil, "NO_UID") end
         return
     end
-    value = TouchEconomyStateIfNeeded(scoreKey, value)
+    value = DeepCopy(value)
     ---@diagnostic disable-next-line: param-type-mismatch
     serverCloud:Set(cloudUid, scoreKey, StampOwner(value, uid), events)
 end
 
 --- BatchCommit 写入 score（CloudPlayerId + ownerUserId）。
+--- 注意：不再对经济档每次 Touch。Touch 会抬高 saveEpoch，旧选档逻辑会用「多种子旧档」盖掉新 revision。
 function ServerCloudStore.BatchScoreSet(commit, uid, scoreKey, value)
     local cloudUid = ServerCloudStore.CloudPlayerId(uid)
     if cloudUid == nil or commit == nil then return end
-    value = TouchEconomyStateIfNeeded(scoreKey, value)
+    value = DeepCopy(value)
     ---@diagnostic disable-next-line: param-type-mismatch
     commit:ScoreSet(cloudUid, scoreKey, StampOwner(value, uid))
 end

@@ -22,6 +22,8 @@ Shared.KEYS = {
     GIFT_SENT_TARGETS = "garden_gift_sent_targets_v1",
     SOCIAL_GOLD = "gold",
     ECONOMY_STATE = "garden_economy_state_v1",
+    -- 精简经济账本：与完整经济同批双写。完整档偶发不落盘时用 ledger 恢复金币/种子。
+    ECONOMY_LEDGER = "garden_economy_ledger_v1",
     AUTH_FARM_STATE = "garden_auth_farm_state_v1",
     SAVE_UID_RECONCILED = "garden_save_uid_reconciled_v2",
     SHARED_SEED_SHOP = "garden_shared_seed_shop_v1",

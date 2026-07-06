@@ -5,7 +5,7 @@
 local AppVersion = {}
 
 -- 与 .project/project.json -> version 同步，勿用 Text 资源加载（Web 端会报 unknown resource type）
-local VERSION = "1.4.21"
+local VERSION = "1.4.24"
 
 function AppVersion.Get()
     return VERSION

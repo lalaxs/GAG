@@ -2,7 +2,7 @@
 -- 服务端偷菜系统
 -- Grow A Garden
 -- ============================================================================
--- 从 server_main.lua 拆出的偷菜次数、作物领取记录和偷菜奖励逻辑。
+-- 目标农场走目标会话 MutateFarm；小偷经济走小偷队列；两侧均 flush 成功后再写旁路记录。
 -- ============================================================================
 
 local UserId = require("utils.user_id")
@@ -33,10 +33,6 @@ end
 
 local function NormalizePositiveCount(value, maxValue)
     return deps_.NormalizePositiveCount(value, maxValue)
-end
-
-local function NormalizeEconomyState(state)
-    return deps_.NormalizeEconomyState(state)
 end
 
 local function NormalizeUserId(userId)
@@ -70,20 +66,6 @@ local function IsStealBackoffActive(uid)
     return false
 end
 
-local function BuildInitialEconomyState()
-    return deps_.BuildInitialEconomyState()
-end
-
-local function GetExistingEconomyState(scores)
-    local state = scores and scores[deps_.Shared.KEYS.ECONOMY_STATE]
-    if type(state) ~= "table" then return nil end
-    return NormalizeEconomyState(state)
-end
-
-local function NormalizeFarmState(state)
-    return deps_.NormalizeFarmState(state)
-end
-
 local function GetFarmPlot(state, plotIndex)
     return deps_.GetFarmPlot(state, plotIndex)
 end
@@ -94,10 +76,6 @@ end
 
 local function RefreshAuthCrop(crop)
     deps_.RefreshAuthCrop(crop)
-end
-
-local function NextRevision(state)
-    deps_.NextRevision(state)
 end
 
 local function GetMaxCropsPerPlot()
@@ -134,6 +112,62 @@ function ServerSteal.BuildStealCropClaimKey(cropId)
     return "steal_crop_claim_" .. tostring(cropId or "unknown")
 end
 
+local function SendFail(connection, requestId, message, extra)
+    local payload = { success = false, message = message or "偷菜失败", requestId = requestId }
+    if type(extra) == "table" then
+        for k, v in pairs(extra) do
+            payload[k] = v
+        end
+    end
+    Send(connection, deps_.Shared.EVENTS.STEAL_RESPONSE, payload)
+end
+
+local function CommitStealSideEffects(ctx)
+    local c = serverCloud:BatchCommit("权威偷菜")
+    ---@diagnostic disable-next-line: param-type-mismatch
+    c:QuotaAdd(ctx.targetCloudUid, ctx.cropClaimKey, 1, 1)
+    ---@diagnostic disable-next-line: param-type-mismatch
+    c:ListAdd(ctx.thiefCloudUid, ctx.recordKey, {
+        targetUserId = ctx.targetUserId,
+        cropId = ctx.actualCropId,
+        stolenAt = Now(),
+    })
+    ---@diagnostic disable-next-line: param-type-mismatch
+    c:ListAdd(ctx.targetCloudUid, ctx.cropClaimKey, {
+        thiefUserId = ctx.thiefUid,
+        cropId = ctx.actualCropId,
+        stolenAt = Now(),
+    })
+    ---@diagnostic disable-next-line: param-type-mismatch
+    c:ListAdd(ctx.targetCloudUid, deps_.Shared.KEYS.STEAL_LOGS, ctx.log)
+    ---@diagnostic disable-next-line: param-type-mismatch
+    c:QuotaAdd(ctx.thiefCloudUid, "daily_steal", 1, ctx.stealLimit or deps_.dailyStealLimit, "day", 1)
+    deps_.RequestGuard.AddToCommit(c, ctx.uid, ctx.requestRecordKey, ctx.response)
+    c:Commit({
+        ok = function() end,
+        error = function(_, reason)
+            print("[偷菜] 附加记录提交失败: " .. tostring(reason))
+        end,
+    })
+    Send(ctx.connection, deps_.Shared.EVENTS.STEAL_RESPONSE, ctx.response)
+end
+
+local function RollbackTargetCrop(targetUserId, actualCropId, done)
+    deps_.PlayerStateService.MutateFarm(targetUserId, "steal_rollback", function(farm)
+        local crop = FindFarmCrop(farm, actualCropId)
+        if crop ~= nil then
+            crop.stolen = false
+            crop.stolenBy = nil
+            crop.stolenAt = nil
+            crop.stealable = true
+            crop.stealReward = nil
+        end
+        return { success = true }
+    end, function()
+        if done ~= nil then done() end
+    end)
+end
+
 function ServerSteal.RequestStealWithQuotaAvailable(uid, targetUid, cropIndex, cropId, connection, requestId, requestRecordKey, stealLimit)
     local thiefUid = NormalizeUserId(uid)
     local targetUserId = NormalizeUserId(targetUid)
@@ -142,172 +176,167 @@ function ServerSteal.RequestStealWithQuotaAvailable(uid, targetUid, cropIndex, c
     cropIndex = NormalizePositiveCount(cropIndex or 1, GetMaxCropsPerPlot())
     cropId = tostring(cropId or "")
     if thiefUid == nil or targetUserId == nil then
-        Send(connection, deps_.Shared.EVENTS.STEAL_RESPONSE, { success = false, message = "目标花园无效", requestId = requestId })
+        SendFail(connection, requestId, "目标花园无效")
         return
     end
     if thiefUid == targetUserId then
-        Send(connection, deps_.Shared.EVENTS.STEAL_RESPONSE, { success = false, message = "不能偷自己的菜", requestId = requestId })
+        SendFail(connection, requestId, "不能偷自己的菜")
         return
     end
 
-    local function beginStealWithFarm(farmState)
-            local crop, actualPlotIndex, actualIndex = FindFarmCrop(farmState, cropId)
+    local function afterListsOk()
+        -- 1) 目标农场队列：标记被偷（Load 会建会话，与目标自己的操作串行）
+        deps_.PlayerStateService.MutateFarm(targetUserId, "steal_mark", function(farm)
+            local crop, actualPlotIndex, actualIndex = FindFarmCrop(farm, cropId)
             if crop == nil and cropId == "" then
-                local plot = GetFarmPlot(farmState, 1)
-                crop = plot.plants[cropIndex]
+                local plot = GetFarmPlot(farm, 1)
+                crop = plot and plot.plants and plot.plants[cropIndex]
                 actualPlotIndex = 1
                 actualIndex = cropIndex
             end
             if crop == nil then
-                Send(connection, deps_.Shared.EVENTS.STEAL_RESPONSE, { success = false, message = "没有找到这株作物", requestId = requestId })
-                return
+                return { success = false, message = "没有找到这株作物" }
             end
             RefreshAuthCrop(crop)
             local actualCropId = tostring(crop.serverCropId or crop.cropId or cropId)
             if crop.mature ~= true then
-                Send(connection, deps_.Shared.EVENTS.STEAL_RESPONSE, { success = false, message = "这株作物还没成熟", requestId = requestId })
-                return
+                return { success = false, message = "这株作物还没成熟" }
             end
             if crop.stolen == true then
-                Send(connection, deps_.Shared.EVENTS.STEAL_RESPONSE, { success = false, message = "这株作物已经被偷过了", requestId = requestId })
+                return { success = false, message = "这株作物已经被偷过了" }
+            end
+
+            local reward = ServerSteal.RollStealReward(crop)
+            local now = Now()
+            crop.stolen = true
+            crop.stolenBy = thiefUid
+            crop.stolenAt = now
+            crop.stealable = false
+            crop.stealReward = reward
+
+            local log = {
+                thiefUserId = thiefUid,
+                targetUserId = targetUserId,
+                cropId = actualCropId,
+                cropIndex = actualIndex,
+                cropName = crop.name or "作物",
+                seedId = crop.plantIndex or reward.seedId or 1,
+                gotSeed = reward.type == "seed",
+                reward = reward,
+                stolenAt = now,
+                time = now,
+            }
+            return {
+                success = true,
+                reward = reward,
+                log = log,
+                actualCropId = actualCropId,
+                actualIndex = actualIndex,
+            }
+        end, function(markResult)
+            if markResult == nil or markResult.success ~= true then
+                SendFail(connection, requestId, markResult and markResult.message or "偷菜失败")
                 return
             end
 
-            local recordKey = ServerSteal.BuildStealRecordKey(targetUserId, actualCropId)
-            local cropClaimKey = ServerSteal.BuildStealCropClaimKey(actualCropId)
-            ServerCloudStore.ListGet(thiefCloudUid, recordKey, {
-                ok = function(records)
-                    if records ~= nil and #records > 0 then
-                        Send(connection, deps_.Shared.EVENTS.STEAL_RESPONSE, { success = false, message = "这株作物你已经偷过了", requestId = requestId })
-                        return
-                    end
-                    ServerCloudStore.ListGet(targetCloudUid, cropClaimKey, {
-                        ok = function(claimRows)
-                            if claimRows ~= nil and #claimRows > 0 then
-                                Send(connection, deps_.Shared.EVENTS.STEAL_RESPONSE, { success = false, message = "这株作物已经被偷过了", requestId = requestId })
-                                return
-                            end
+            local reward = markResult.reward
+            local log = markResult.log
+            local actualCropId = markResult.actualCropId
 
-                            local reward = ServerSteal.RollStealReward(crop)
-                            deps_.PlayerStateService.MutateEconomy(thiefUid, "steal_reward", function(economy)
-                                if reward.type == "seed" then
-                                    local seedId = NormalizePlantIndex(reward.seedId or crop.plantIndex or 1) or 1
-                                    local current = tonumber(economy.seedBag[seedId] or 0) or 0
-                                    economy.seedBag[seedId] = current + 1
-                                    economy.collectedPlants[seedId] = true
-                                    reward.seedId = seedId
-                                end
-
-                                local now = Now()
-                                crop.stolen = true
-                                crop.stolenBy = thiefUid
-                                crop.stolenAt = now
-                                crop.stealable = false
-                                crop.stealReward = reward
-                                farmState.updatedAt = now
-                                NextRevision(farmState)
-
-                                local log = {
-                                    thiefUserId = thiefUid,
-                                    targetUserId = targetUserId,
-                                    cropId = actualCropId,
-                                    cropIndex = actualIndex,
-                                    cropName = crop.name or "作物",
-                                    seedId = crop.plantIndex or reward.seedId or 1,
-                                    gotSeed = reward.type == "seed",
-                                    reward = reward,
-                                    stolenAt = now,
-                                    time = now,
-                                }
-
-                                local message = "偷菜成功，但没有获得种子"
-                                if reward.type == "seed" then
-                                    message = "偷菜成功，奖励已发放"
-                                end
-                                return {
-                                    success = true,
-                                    response = {
-                                        success = true,
-                                        message = message,
-                                        requestId = requestId,
-                                        reward = reward,
-                                        cropId = actualCropId,
-                                        cropIndex = actualIndex,
-                                        daily = { stealCountDelta = 1, limit = stealLimit or deps_.dailyStealLimit },
-                                        state = economy,
-                                    },
-                                    log = log,
-                                }
-                            end, function(result)
-                                local response = result and result.response or nil
-                                if result == nil or result.success ~= true or type(response) ~= "table" then
-                                    Send(connection, deps_.Shared.EVENTS.STEAL_RESPONSE, { success = false, message = result and result.message or "偷菜失败", requestId = requestId })
-                                    return
-                                end
-                                local log = result.log
-                                -- 目标若有内存会话，标记脏档并由会话 flush，避免用过期云档覆盖
-                                if deps_.PlayerStateService.HasLoadedSession(targetUserId) then
-                                    deps_.PlayerStateService.MarkDirty(targetUserId, "farm")
-                                    deps_.PlayerStateService.Flush(targetUserId)
-                                end
-                                local c = serverCloud:BatchCommit("权威偷菜")
-                                ---@diagnostic disable-next-line: param-type-mismatch
-                                c:QuotaAdd(targetCloudUid, cropClaimKey, 1, 1)
-                                if not deps_.PlayerStateService.HasLoadedSession(targetUserId) then
-                                    ServerCloudStore.BatchScoreSet(c, targetUserId, deps_.Shared.KEYS.AUTH_FARM_STATE, farmState)
-                                end
-                                ---@diagnostic disable-next-line: param-type-mismatch
-                                c:ListAdd(thiefCloudUid, recordKey, { targetUserId = targetUserId, cropId = actualCropId, stolenAt = Now() })
-                                ---@diagnostic disable-next-line: param-type-mismatch
-                                c:ListAdd(targetCloudUid, cropClaimKey, { thiefUserId = thiefUid, cropId = actualCropId, stolenAt = Now() })
-                                ---@diagnostic disable-next-line: param-type-mismatch
-                                c:ListAdd(targetCloudUid, deps_.Shared.KEYS.STEAL_LOGS, log)
-                                ---@diagnostic disable-next-line: param-type-mismatch
-                                c:QuotaAdd(thiefCloudUid, "daily_steal", 1, stealLimit or deps_.dailyStealLimit, "day", 1)
-                                deps_.RequestGuard.AddToCommit(c, uid, requestRecordKey, response)
-                                c:Commit({
-                                    ok = function() end,
-                                    error = function(_, reason)
-                                        print("[偷菜] 附加记录提交失败: " .. tostring(reason))
-                                    end,
-                                })
-                                Send(connection, deps_.Shared.EVENTS.STEAL_RESPONSE, response)
-                            end)
-                        end,
-                        error = function(_, reason)
-                            EnterStealBackoff(uid, reason)
-                            Send(connection, deps_.Shared.EVENTS.STEAL_RESPONSE, { success = false, message = "作物偷取记录读取失败: " .. tostring(reason), requestId = requestId })
-                        end,
-                    })
-                end,
-                error = function(_, reason)
-                    EnterStealBackoff(uid, reason)
-                    Send(connection, deps_.Shared.EVENTS.STEAL_RESPONSE, { success = false, message = "偷菜记录读取失败: " .. tostring(reason), requestId = requestId })
-                end,
-            })
+            -- 2) 小偷经济队列：发奖
+            deps_.PlayerStateService.MutateEconomy(thiefUid, "steal_reward", function(economy)
+                if reward.type == "seed" then
+                    local seedId = NormalizePlantIndex(reward.seedId or 1) or 1
+                    local current = tonumber(economy.seedBag[seedId] or 0) or 0
+                    economy.seedBag[seedId] = current + 1
+                    economy.collectedPlants[seedId] = true
+                    reward.seedId = seedId
+                end
+                local message = "偷菜成功，但没有获得种子"
+                if reward.type == "seed" then
+                    message = "偷菜成功，奖励已发放"
+                end
+                return {
+                    success = true,
+                    response = {
+                        success = true,
+                        message = message,
+                        requestId = requestId,
+                        reward = reward,
+                        cropId = actualCropId,
+                        cropIndex = markResult.actualIndex,
+                        daily = { stealCountDelta = 1, limit = stealLimit or deps_.dailyStealLimit },
+                        state = economy,
+                    },
+                }
+            end, function(rewardResult)
+                if rewardResult == nil or rewardResult.success ~= true then
+                    RollbackTargetCrop(targetUserId, actualCropId, function()
+                        SendFail(connection, requestId, rewardResult and rewardResult.message or "偷菜失败")
+                    end)
+                    return
+                end
+                CommitStealSideEffects({
+                    uid = uid,
+                    connection = connection,
+                    thiefUid = thiefUid,
+                    targetUserId = targetUserId,
+                    thiefCloudUid = thiefCloudUid,
+                    targetCloudUid = targetCloudUid,
+                    recordKey = ServerSteal.BuildStealRecordKey(targetUserId, actualCropId),
+                    cropClaimKey = ServerSteal.BuildStealCropClaimKey(actualCropId),
+                    actualCropId = actualCropId,
+                    log = log,
+                    stealLimit = stealLimit,
+                    requestRecordKey = requestRecordKey,
+                    response = rewardResult.response,
+                })
+            end)
+        end)
     end
 
-    local targetSession = deps_.PlayerStateService.GetSession(targetUserId)
-    if targetSession ~= nil and type(targetSession.farm) == "table" then
-        beginStealWithFarm(targetSession.farm)
-        return
+    -- 先用 cropId 查个人记录；最终以 mark 后的 actualCropId 写记录
+    local function checkClaimThenMark(actualCropIdForCheck)
+        local recordKeyCheck = ServerSteal.BuildStealRecordKey(targetUserId, actualCropIdForCheck)
+        local cropClaimKey = ServerSteal.BuildStealCropClaimKey(actualCropIdForCheck)
+        ServerCloudStore.ListGet(thiefCloudUid, recordKeyCheck, {
+            ok = function(records)
+                if records ~= nil and #records > 0 then
+                    SendFail(connection, requestId, "这株作物你已经偷过了")
+                    return
+                end
+                ServerCloudStore.ListGet(targetCloudUid, cropClaimKey, {
+                    ok = function(claimRows)
+                        if claimRows ~= nil and #claimRows > 0 then
+                            SendFail(connection, requestId, "这株作物已经被偷过了")
+                            return
+                        end
+                        afterListsOk()
+                    end,
+                    error = function(_, reason)
+                        EnterStealBackoff(uid, reason)
+                        SendFail(connection, requestId, "作物偷取记录读取失败: " .. tostring(reason))
+                    end,
+                })
+            end,
+            error = function(_, reason)
+                EnterStealBackoff(uid, reason)
+                SendFail(connection, requestId, "偷菜记录读取失败: " .. tostring(reason))
+            end,
+        })
     end
 
-    ServerCloudStore.Get(targetCloudUid, deps_.Shared.KEYS.AUTH_FARM_STATE, {
-        ok = function(farmScores)
-            local farmState = NormalizeFarmState(farmScores[deps_.Shared.KEYS.AUTH_FARM_STATE])
-            beginStealWithFarm(farmState)
-        end,
-        error = function(_, reason)
-            EnterStealBackoff(uid, reason)
-            Send(connection, deps_.Shared.EVENTS.STEAL_RESPONSE, { success = false, message = "读取目标花园失败: " .. tostring(reason), requestId = requestId })
-        end,
-    })
+    if cropId ~= "" then
+        checkClaimThenMark(cropId)
+    else
+        -- 无 cropId 时跳过 claim 预检，由 MutateFarm 内 stolen 标记兜底
+        afterListsOk()
+    end
 end
 
 function ServerSteal.RequestSteal(uid, targetUid, cropIndex, cropId, connection, requestId, requestRecordKey)
     if IsStealBackoffActive(uid) then
-        Send(connection, deps_.Shared.EVENTS.STEAL_RESPONSE, { success = false, message = "服务器繁忙，请稍后再偷菜", requestId = requestId })
+        SendFail(connection, requestId, "服务器繁忙，请稍后再偷菜")
         return
     end
     local thiefCloudUid = CloudUid(NormalizeUserId(uid) or uid)
@@ -334,13 +363,13 @@ function ServerSteal.RequestSteal(uid, targetUid, cropIndex, cropId, connection,
                 end,
                 error = function(_, reason)
                     EnterStealBackoff(uid, reason)
-                    Send(connection, deps_.Shared.EVENTS.STEAL_RESPONSE, { success = false, message = "偷菜次数读取失败: " .. tostring(reason), requestId = requestId })
+                    SendFail(connection, requestId, "偷菜次数读取失败: " .. tostring(reason))
                 end,
             })
         end,
         error = function(_, reason)
             EnterStealBackoff(uid, reason)
-            Send(connection, deps_.Shared.EVENTS.STEAL_RESPONSE, { success = false, message = "偷菜次数上限读取失败: " .. tostring(reason), requestId = requestId })
+            SendFail(connection, requestId, "偷菜次数上限读取失败: " .. tostring(reason))
         end,
     })
 end

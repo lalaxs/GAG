@@ -329,8 +329,19 @@ function ServerEventHandlers.HandleClientDisconnected(eventType, eventData)
             lastConnectionKey = key,
         }
         print("[服务端重连] 玩家断线，暂存重连上下文 userId=" .. tostring(uid))
-        -- 关游戏/断线时立刻尝试落云，避免内存脏档随房间销毁丢失
+        -- 关游戏/断线：尝试 flush；会话保留供同房重连，不 Clear
+        -- 玩法 mutate 已在成功回包前 flush；此处兜底未落盘脏档
         if PlayerStateService ~= nil and PlayerStateService.Flush ~= nil then
+            local session = PlayerStateService.GetSession(uid)
+            if session ~= nil then
+                print(string.format(
+                    "[PlayerState] 断线 flush begin uid=%s dirtyE=%s dirtyF=%s pending=%s",
+                    tostring(uid),
+                    tostring(session.dirtyEconomy == true),
+                    tostring(session.dirtyFarm == true),
+                    tostring(session.flushPending == true)
+                ))
+            end
             PlayerStateService.Flush(uid, function(ok, reason)
                 print(string.format(
                     "[PlayerState] 断线 flush uid=%s ok=%s reason=%s",

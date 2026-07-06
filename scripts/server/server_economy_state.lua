@@ -9,11 +9,12 @@ local UserId = require("utils.user_id")
 
 local ServerEconomyState = {}
 
---- 经济档选档优先级：schema(1e15) > saveEpoch(1e9) > revision(1e6) > 内容分
+--- 经济档选档优先级：schema(1e15) > revision(1e9) > saveEpoch(1e3) > 内容分
+--- revision 必须高于 saveEpoch：每次写云 Touch 会抬高 epoch，否则「多种子旧档」会盖掉新玩法写入。
 ServerEconomyState.SAVE_SCHEMA_VERSION = 3
 ServerEconomyState.SAVE_SCHEMA_SCALE = 1e15
-ServerEconomyState.SAVE_EPOCH_SCALE = 1e9
-ServerEconomyState.REVISION_SCALE = 1e6
+ServerEconomyState.REVISION_SCALE = 1e9
+ServerEconomyState.SAVE_EPOCH_SCALE = 1e3
 
 local deps_ = {}
 
@@ -151,9 +152,71 @@ function ServerEconomyState.ScoreEconomyRecord(state)
     local epoch = ServerEconomyState.GetSaveEpoch(state)
     local revision = math.max(0, math.floor(tonumber(state.revision or 0) or 0))
     return schema * ServerEconomyState.SAVE_SCHEMA_SCALE
-        + epoch * ServerEconomyState.SAVE_EPOCH_SCALE
         + revision * ServerEconomyState.REVISION_SCALE
+        + epoch * ServerEconomyState.SAVE_EPOCH_SCALE
         + ServerEconomyState.ScoreEconomyContent(state)
+end
+
+--- 精简经济账本：只含 revision/金币/种子袋等关键字段，体积小、与农场同批双写。
+function ServerEconomyState.BuildEconomyLedger(state)
+    if type(state) ~= "table" then return nil end
+    local seedBag = {}
+    for key, value in pairs(state.seedBag or {}) do
+        seedBag[key] = math.max(0, math.floor(tonumber(value or 0) or 0))
+    end
+    local seedBagBuffs = {}
+    for key, value in pairs(type(state.seedBagBuffs) == "table" and state.seedBagBuffs or {}) do
+        seedBagBuffs[key] = math.max(0, math.floor(tonumber(value or 0) or 0))
+    end
+    return {
+        version = 1,
+        revision = math.max(0, math.floor(tonumber(state.revision or 0) or 0)),
+        gold = math.max(0, math.floor(tonumber(state.gold or 0) or 0)),
+        seedBag = seedBag,
+        seedBagBuffs = seedBagBuffs,
+        pairedFarmRevision = tonumber(state.pairedFarmRevision),
+        updatedAt = math.max(0, math.floor(tonumber(state.updatedAt or 0) or 0)),
+        ownerUserId = state.ownerUserId,
+        userId = state.userId,
+    }
+end
+
+--- 若 ledger.revision 更高，用账本覆盖完整经济档的关键字段（修复完整档未落盘）。
+function ServerEconomyState.ApplyEconomyLedger(state, ledger)
+    if type(state) ~= "table" or type(ledger) ~= "table" then return state, false end
+    local ledgerRev = math.max(0, math.floor(tonumber(ledger.revision or 0) or 0))
+    local stateRev = math.max(0, math.floor(tonumber(state.revision or 0) or 0))
+    if ledgerRev <= stateRev then return state, false end
+    state.revision = ledgerRev
+    if ledger.gold ~= nil then
+        state.gold = math.max(0, math.floor(tonumber(ledger.gold or 0) or 0))
+    end
+    if type(ledger.seedBag) == "table" then
+        state.seedBag = {}
+        for key, value in pairs(ledger.seedBag) do
+            state.seedBag[key] = math.max(0, math.floor(tonumber(value or 0) or 0))
+        end
+    end
+    if type(ledger.seedBagBuffs) == "table" then
+        state.seedBagBuffs = {}
+        for key, value in pairs(ledger.seedBagBuffs) do
+            state.seedBagBuffs[key] = math.max(0, math.floor(tonumber(value or 0) or 0))
+        end
+    end
+    if ledger.pairedFarmRevision ~= nil then
+        state.pairedFarmRevision = tonumber(ledger.pairedFarmRevision)
+    end
+    if ledger.updatedAt ~= nil then
+        state.updatedAt = math.max(0, math.floor(tonumber(ledger.updatedAt or 0) or 0))
+    end
+    return state, true
+end
+
+--- 挂在农场档上的经济镜像（农场写入可靠，用于完整经济/ledger 都落后时恢复）。
+function ServerEconomyState.AttachEconomyMirrorToFarm(farm, economy)
+    if type(farm) ~= "table" or type(economy) ~= "table" then return end
+    farm.pairedEconomyRevision = math.max(0, math.floor(tonumber(economy.revision or 0) or 0))
+    farm.economyMirror = ServerEconomyState.BuildEconomyLedger(economy)
 end
 
 function ServerEconomyState.TouchEconomyState(state)

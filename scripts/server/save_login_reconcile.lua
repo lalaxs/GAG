@@ -121,6 +121,7 @@ local function RunMigration(uid, done)
             and type(economyInfo.value) == "table"
             and type(farmInfo.value) == "table" then
             ServerEconomyState.SyncProgressionTourValueFromFarm(economyInfo.value, farmInfo.value)
+            ServerEconomyState.AttachEconomyMirrorToFarm(farmInfo.value, economyInfo.value)
         end
         local commit = serverCloud:BatchCommit("登录存档UID归一")
         local writtenKeys = {}
@@ -133,27 +134,48 @@ local function RunMigration(uid, done)
                 print(string.format("[存档兼容] 登录归一跳过 %s：云读存在失败", tostring(spec.label or spec.key)))
                 goto continue_spec
             end
-            local stamped = ServerCloudStore.StampOwner(info.value, canonicalUid)
             local cloudUid = ServerCloudStore.CloudPlayerId(canonicalUid)
-            if spec.key == economyKey then
-                stamped = ServerEconomyState.TouchEconomyState(stamped)
+            local bestKey = info.bestKey
+            local fromLegacy = bestKey ~= nil
+                and (not UserId.Same(bestKey, canonicalUid))
+                and (not UserId.Same(bestKey, cloudUid))
+            local needsOwnerStamp = type(info.value) == "table" and info.value.ownerUserId == nil
+            -- 禁止把已在 canonical 的档再 Touch/写回：Touch 会抬高 saveEpoch，用旧内容盖掉新玩法写入
+            if not fromLegacy and not needsOwnerStamp then
+                print(string.format(
+                    "[存档兼容] 登录归一跳过 %s：canonical 已是最新 bestKey=%s revision=%s",
+                    tostring(spec.label or spec.key),
+                    tostring(bestKey),
+                    tostring(type(info.value) == "table" and info.value.revision)
+                ))
+                goto continue_spec
             end
+            local stamped = ServerCloudStore.StampOwner(info.value, canonicalUid)
             ---@diagnostic disable-next-line: param-type-mismatch
             commit:ScoreSet(cloudUid, spec.key, stamped)
             writtenKeys[spec.key] = true
-            if info.bestKey ~= nil and not UserId.Same(info.bestKey, canonicalUid) then
+            if spec.key == economyKey and type(stamped) == "table" then
+                local ledger = ServerEconomyState.BuildEconomyLedger(stamped)
+                if type(ledger) == "table" then
+                    ---@diagnostic disable-next-line: param-type-mismatch
+                    commit:ScoreSet(cloudUid, deps_.Shared.KEYS.ECONOMY_LEDGER, ServerCloudStore.StampOwner(ledger, canonicalUid))
+                end
+            end
+            if fromLegacy then
                 migratedCount = migratedCount + 1
                 print(string.format(
-                    "[存档兼容] 登录归一 %s: %s -> %s",
+                    "[存档兼容] 登录归一 %s: %s -> %s revision=%s",
                     tostring(spec.label or spec.key),
-                    tostring(info.bestKey),
-                    tostring(canonicalUid)
+                    tostring(bestKey),
+                    tostring(canonicalUid),
+                    tostring(stamped.revision)
                 ))
             else
                 print(string.format(
-                    "[存档兼容] 登录归一 %s: normalize 后写回 canonical uid=%s",
+                    "[存档兼容] 登录归一 %s: 补写 owner 标记 uid=%s revision=%s",
                     tostring(spec.label or spec.key),
-                    tostring(canonicalUid)
+                    tostring(canonicalUid),
+                    tostring(stamped.revision)
                 ))
             end
             if spec.key == economyKey then
@@ -332,13 +354,14 @@ function SaveLoginReconcile.Ensure(uid, done)
     ServerCloudStore.Get(uid, markerKey, {
         ok = function(scores)
             local marker = scores and scores[markerKey]
+            -- 清档标记优先：任意 version 的 cleared 都禁止扫 legacy 复活
+            if type(marker) == "table" and marker.cleared == true then
+                sessionDone_[uid] = true
+                complete(true)
+                return
+            end
             if type(marker) == "table" and (tonumber(marker.version or 0) or 0) >= 3 then
                 if marker.repaired == true then
-                    if marker.cleared == true then
-                        sessionDone_[uid] = true
-                        complete(true)
-                        return
-                    end
                     local economyKey = deps_.Shared and deps_.Shared.KEYS.ECONOMY_STATE
                     ServerCloudStore.ReadPlayerScore(uid, economyKey, {
                         normalize = deps_.NormalizeEconomyState,

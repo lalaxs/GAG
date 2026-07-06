@@ -99,16 +99,21 @@ end
 
 local function SendMutationResult(connection, eventName, result, fallbackRequestId)
     result = type(result) == "table" and result or {}
-    if type(result.response) == "table" then
+    -- 仅在整体成功时下发 mutator response；flush 失败时绝不能把 success=true 的旧 response 发出去
+    if result.success == true and type(result.response) == "table" then
         Send(connection, eventName, result.response)
         return
+    end
+    local requestId = fallbackRequestId
+    if type(result.response) == "table" and result.response.requestId ~= nil then
+        requestId = result.response.requestId
     end
     Send(connection, eventName, {
         success = false,
         message = result.message or "同步失败",
         code = result.code,
         retryable = result.retryable == true,
-        requestId = fallbackRequestId,
+        requestId = requestId,
     })
 end
 
@@ -240,9 +245,10 @@ function ServerEconomyActions.ClearPlayerSave(uid, connection, requestId, record
         farmState.updatedAt = now
         local socialSave = { visitablePlotIndex = 1, updatedAt = now }
         local reconcileMarker = {
-            version = 2,
+            version = 3,
             at = now,
             cleared = true,
+            repaired = true,
             migrated = 0,
             saveEpoch = now,
             saveSchemaVersion = ServerEconomyState.SAVE_SCHEMA_VERSION,
@@ -261,6 +267,7 @@ function ServerEconomyActions.ClearPlayerSave(uid, connection, requestId, record
 
         local scoreKeys = {
             deps_.Shared.KEYS.ECONOMY_STATE,
+            deps_.Shared.KEYS.ECONOMY_LEDGER,
             deps_.Shared.KEYS.AUTH_FARM_STATE,
             deps_.Shared.KEYS.SOCIAL_SAVE,
         }
@@ -276,6 +283,11 @@ function ServerEconomyActions.ClearPlayerSave(uid, connection, requestId, record
             local c = serverCloud:BatchCommit("清除游戏存档")
             ---@diagnostic disable-next-line: param-type-mismatch
             c:ScoreSet(cloudUid, deps_.Shared.KEYS.ECONOMY_STATE, economyState)
+            local ledger = ServerEconomyState.BuildEconomyLedger(economyState)
+            if type(ledger) == "table" then
+                ---@diagnostic disable-next-line: param-type-mismatch
+                c:ScoreSet(cloudUid, deps_.Shared.KEYS.ECONOMY_LEDGER, ServerCloudStore.StampOwner(ledger, canonicalUid))
+            end
             ---@diagnostic disable-next-line: param-type-mismatch
             c:ScoreSet(cloudUid, deps_.Shared.KEYS.AUTH_FARM_STATE, farmState)
             ---@diagnostic disable-next-line: param-type-mismatch
