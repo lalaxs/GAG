@@ -11,6 +11,7 @@ local Format = require("utils.format")
 local MainView = require("ui.main_view")
 local PlantPanelView = require("ui.plant_panel_view")
 local BagDetailView = require("ui.bag_detail_view")
+local ModalAnim = require("ui.modal_anim")
 
 local UIController = {}
 
@@ -20,6 +21,10 @@ local uiInitialized_ = false
 local uiRefreshTimer_ = 0
 local toastTimer_ = 0
 local modalInputGuardInstalled_ = false
+local loadingView_ = nil
+local resetSaveModal_ = nil
+local resetSaveButton_ = nil
+local resetSavePending_ = false
 
 local function InstallModalInputGuard()
     if modalInputGuardInstalled_ then return end
@@ -114,10 +119,32 @@ function UIController.Init(deps)
     -- 保留 uiInitialized_：ShowLoading 可能已调用 UI.Init，此处仅注入 deps。
     uiRefreshTimer_ = 0
     toastTimer_ = 0
+    loadingView_ = nil
+    resetSaveModal_ = nil
+    resetSaveButton_ = nil
+    resetSavePending_ = false
 end
 
 function UIController.GetLabel(name)
     return labels_[name]
+end
+
+function UIController.HandleResetSaveCompleted(success)
+    if not resetSavePending_ then return end
+
+    resetSavePending_ = false
+    if resetSaveModal_ ~= nil then
+        resetSaveModal_:Close()
+        resetSaveModal_ = nil
+    end
+    if resetSaveButton_ ~= nil then
+        resetSaveButton_:SetDisabled(false)
+        resetSaveButton_:SetText("重开存档")
+    end
+    if success == true then
+        resetSaveButton_ = nil
+        loadingView_ = nil
+    end
 end
 
 function UIController.ShowToast(text)
@@ -207,7 +234,9 @@ end
 
 function UIController.ShowLoading(text)
     EnsureUIInitialized()
+    if loadingView_ == "loading" and resetSaveModal_ == nil then return end
     labels_ = {}
+    loadingView_ = "loading"
     local loadingText = text or "正在同步花园数据..."
     UI.SetRoot(UI.Panel {
         width = "100%",
@@ -254,6 +283,187 @@ function UIController.ShowLoading(text)
             },
         },
     })
+    if deps_.NetworkRecovery ~= nil and deps_.NetworkRecovery.EnsureDisconnectModalMounted ~= nil then
+        deps_.NetworkRecovery.EnsureDisconnectModalMounted()
+    end
+end
+
+function UIController.ShowLoadingError(title, message)
+    EnsureUIInitialized()
+    if loadingView_ == "error" and resetSaveModal_ == nil then return end
+    labels_ = {}
+    loadingView_ = "error"
+    if resetSavePending_ then return end
+    resetSavePending_ = false
+    local openResetSaveConfirm
+    openResetSaveConfirm = function()
+        if resetSaveModal_ ~= nil then return end
+        if deps_.suppressWorldTap ~= nil then deps_.suppressWorldTap() end
+        resetSaveModal_ = UI.Modal {
+            title = "重新开启游戏",
+            size = "sm",
+            closeOnOverlay = true,
+            showCloseButton = true,
+            contentPadding = {16, 20, 18, 20},
+            contentGap = 14,
+            onClose = function()
+                resetSaveModal_ = nil
+            end,
+        }
+        resetSaveModal_:AddContent(UI.Panel {
+            gap = 14,
+            children = {
+                UI.Label {
+                    text = "此操作会永久删除当前账号的金币、等级、背包、农场、活动和社交存档，并在云端创建一份全新的初始存档。操作不可撤销。",
+                    width = "100%",
+                    fontSize = 14,
+                    lineHeight = 1.35,
+                    fontColor = {92, 70, 48, 255},
+                    textAlign = "center",
+                    whiteSpace = "normal",
+                    wordBreak = "break-word",
+                },
+                UI.Panel {
+                    flexDirection = "row",
+                    gap = 10,
+                    children = {
+                        UI.Button {
+                            text = "取消",
+                            height = 42,
+                            flexGrow = 1,
+                            fontSize = 15,
+                            fontWeight = "bold",
+                            backgroundColor = {245, 238, 220, 255},
+                            fontColor = {92, 72, 48, 255},
+                            borderRadius = 16,
+                            onClick = function()
+                                if resetSaveModal_ ~= nil then
+                                    resetSaveModal_:Close()
+                                    resetSaveModal_ = nil
+                                end
+                            end,
+                        },
+                        UI.Button {
+                            text = "确认重开",
+                            height = 42,
+                            flexGrow = 1,
+                            fontSize = 15,
+                            fontWeight = "bold",
+                            backgroundColor = {205, 88, 70, 255},
+                            fontColor = {255, 255, 255, 255},
+                            borderRadius = 16,
+                            onClick = function(self)
+                                if resetSavePending_ then return end
+                                if deps_.resetSave == nil then
+                                    if deps_.showToast then deps_.showToast("重开存档功能暂不可用") end
+                                    return
+                                end
+                                local requested = deps_.resetSave()
+                                if requested ~= true then
+                                    if deps_.showToast then deps_.showToast("无法发起重开请求，请稍后重试") end
+                                    return
+                                end
+                                resetSavePending_ = true
+                                resetSaveButton_ = self
+                                self:SetDisabled(true)
+                                self:SetText("重开中...")
+                                if deps_.showToast then deps_.showToast("正在清空旧存档并创建新存档...") end
+                            end,
+                        },
+                    },
+                },
+            },
+        })
+        ModalAnim.Apply(resetSaveModal_, { fixedHeight = 260 })
+        resetSaveModal_:Open()
+    end
+
+    UI.SetRoot(UI.Panel {
+        width = "100%",
+        height = "100%",
+        justifyContent = "center",
+        alignItems = "center",
+        backgroundColor = {232, 242, 226, 255},
+        children = {
+            UI.Panel {
+                width = 300,
+                paddingTop = 28,
+                paddingBottom = 28,
+                paddingLeft = 22,
+                paddingRight = 22,
+                borderRadius = 24,
+                backgroundColor = {255, 252, 240, 248},
+                borderWidth = 3,
+                borderColor = {210, 118, 86, 235},
+                alignItems = "center",
+                boxShadow = { { x = 0, y = 8, blur = 20, spread = 0, color = {65, 46, 28, 60} } },
+                children = {
+                    UI.Label {
+                        text = title or "同步失败",
+                        fontSize = 28,
+                        fontWeight = "bold",
+                        fontColor = {128, 62, 42, 255},
+                        textAlign = "center",
+                        marginBottom = 12,
+                    },
+                    UI.Label {
+                        text = message or "无法读取服务器存档，请检查网络后重试。",
+                        width = "100%",
+                        fontSize = 15,
+                        lineHeight = 1.35,
+                        fontColor = {116, 70, 48, 245},
+                        textAlign = "center",
+                        whiteSpace = "normal",
+                        wordBreak = "break-word",
+                    },
+                    UI.Label {
+                        text = "为避免显示错误存档，当前不会进入游戏。",
+                        width = "100%",
+                        marginTop = 16,
+                        fontSize = 14,
+                        lineHeight = 1.3,
+                        fontColor = {92, 70, 48, 220},
+                        textAlign = "center",
+                        whiteSpace = "normal",
+                        wordBreak = "break-word",
+                    },
+                    UI.Button {
+                        text = "重新同步",
+                        width = "100%",
+                        height = 42,
+                        marginTop = 16,
+                        fontSize = 15,
+                        fontWeight = "bold",
+                        backgroundColor = {78, 172, 110, 255},
+                        fontColor = {255, 255, 255, 255},
+                        borderRadius = 16,
+                        onClick = function()
+                            if deps_.retryLoading ~= nil then
+                                deps_.retryLoading()
+                            end
+                        end,
+                    },
+                    UI.Button {
+                        text = "重开存档",
+                        width = "100%",
+                        height = 42,
+                        marginTop = 10,
+                        fontSize = 15,
+                        fontWeight = "bold",
+                        backgroundColor = {205, 88, 70, 255},
+                        fontColor = {255, 255, 255, 255},
+                        borderRadius = 16,
+                        onClick = function()
+                            openResetSaveConfirm()
+                        end,
+                    },
+                },
+            },
+        },
+    })
+    if deps_.NetworkRecovery ~= nil and deps_.NetworkRecovery.EnsureDisconnectModalMounted ~= nil then
+        deps_.NetworkRecovery.EnsureDisconnectModalMounted()
+    end
 end
 
 function UIController.Rebuild()
@@ -271,6 +481,9 @@ function UIController.Rebuild()
         seedPackOpeningOverlay = deps_.buildSeedPackOpeningOverlay(),
     })
     UI.SetRoot(root)
+    if deps_.NetworkRecovery ~= nil and deps_.NetworkRecovery.EnsureDisconnectModalMounted ~= nil then
+        deps_.NetworkRecovery.EnsureDisconnectModalMounted()
+    end
     if previewItem ~= nil and deps_.createBagPreview ~= nil then
         deps_.createBagPreview(previewItem)
     end

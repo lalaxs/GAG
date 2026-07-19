@@ -239,6 +239,9 @@ function ServerEconomyState.NormalizeEconomyState(state, options)
         RecalculateAuthoritativeItemPrice(item)
     end
     state.seedPacks = type(state.seedPacks) == "table" and state.seedPacks or {}
+    state.adRewardReceipts = type(state.adRewardReceipts) == "table" and state.adRewardReceipts or {}
+    state.adRewardReceiptOrder = type(state.adRewardReceiptOrder) == "table" and state.adRewardReceiptOrder or {}
+    state.adRewardDaily = type(state.adRewardDaily) == "table" and state.adRewardDaily or {}
     state.collectedPlants = CopyNumericKeyMap(state.collectedPlants)
     state.tutorial = type(state.tutorial) == "table" and state.tutorial or {}
     state.tutorial.plantGuideDone = state.tutorial.plantGuideDone == true
@@ -265,6 +268,9 @@ function ServerEconomyState.BuildInitialEconomyState(options)
         seedBagBuffs = {},
         harvested = {},
         seedPacks = { pack_common = 1 },
+        adRewardReceipts = {},
+        adRewardReceiptOrder = {},
+        adRewardDaily = {},
         tutorial = { plantGuideDone = false },
         dailyTaskState = { progress = { plant = 0, harvest = 0, sell = 0 }, rewardClaimed = false },
         talent = { unlockedTalents = {}, talentPoints = 1, level = 1, exp = 0 },

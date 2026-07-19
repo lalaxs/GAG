@@ -76,6 +76,9 @@ local nicknameFetchAttempts_ = 0
 local nicknameRetryTimer_ = 0
 local identityPollTimer_ = 0
 local serverUserIdCertified_ = false
+local profileUpdateSeq_ = 0
+local pendingProfileUpdateRequestId_ = nil
+local pendingProfileUpdateNickname_ = nil
 local MAX_NICKNAME_FETCH_ATTEMPTS = 5
 local IDENTITY_POLL_INTERVAL = 0.5
 
@@ -281,22 +284,11 @@ local function ApplyCloudAvatar(avatar, source)
     local avatarEntry = AVATARS[index]
     if avatarEntry == nil then return false end
 
-    local cloudIsDefault = IsDefaultAvatarProfile(avatar)
-    local localIsDefault = IsDefaultAvatarProfile({ plantIndex = state_.selectedAvatar })
     local changed = false
 
     if not IsAvatarUnlockedIndex(index) then
         state_.unlockedAvatars[avatarEntry.id] = true
         changed = true
-    end
-
-    if cloudIsDefault and not localIsDefault then
-        if changed then
-            EnsureSelectedAvatarUnlocked()
-            SaveLocalProfile()
-            NotifyChanged()
-        end
-        return changed
     end
 
     if index ~= state_.selectedAvatar then
@@ -359,9 +351,22 @@ local function FetchTapNickname()
 end
 
 function PlayerSystem.ApplyEconomyOwnerHint(ownerUserId)
-    if serverUserIdCertified_ == true then return false end
     local uid = UserId.Normalize(ownerUserId)
     if uid == nil then return false end
+    local connectionUid = nil
+    if network ~= nil and IsClientMode ~= nil and IsClientMode() then
+        local conn = network:GetServerConnection()
+        connectionUid = UserId.ReadConnectionIdentity(conn)
+    end
+    if connectionUid ~= nil and not SameUserId(connectionUid, uid) then
+        print(string.format(
+            "[玩家资料] 拒绝经济档 owner 回填：连接UID=%s ownerUID=%s",
+            tostring(connectionUid),
+            tostring(uid)
+        ))
+        return false
+    end
+    if serverUserIdCertified_ == true then return false end
     if state_.userId == uid then return false end
     state_.userId = uid
     print("[玩家资料] 已从经济档 owner 回填 UID: " .. tostring(uid))
@@ -403,12 +408,97 @@ function PlayerSystem.TryApplyConnectionIdentity()
     return changed
 end
 
+local function IsSameProfile(data, profile)
+    if type(profile) ~= "table" then return false end
+    local customNickname = TrimName(profile.customNickname or "")
+    local tapNickname = TrimName(profile.tapNickname or "Tap玩家")
+    local currentCustom = TrimName(state_.customNickname or "")
+    local currentTap = TrimName(state_.tapNickname or "Tap玩家")
+    return customNickname == currentCustom and tapNickname == currentTap
+end
+
+local function FinishProfileUpdate(ok, message)
+    local callback = callbacks_.onProfileUpdate
+    callbacks_.onProfileUpdate = nil
+    pendingProfileUpdateRequestId_ = nil
+    pendingProfileUpdateNickname_ = nil
+    if callback ~= nil then
+        callback(ok == true, message)
+    end
+end
+
 local function ApplyServerProfile(data)
-    if type(data) ~= "table" or data.success == false then return false end
+    if type(data) ~= "table" then
+        print("[玩家资料] 服务端资料响应格式无效")
+        return false
+    end
+    local isUpdateResponse = pendingProfileUpdateRequestId_ ~= nil
+        and data.requestId ~= nil
+        and tostring(data.requestId) == tostring(pendingProfileUpdateRequestId_)
+    if data.requestId ~= nil
+        and pendingProfileUpdateRequestId_ ~= nil
+        and tostring(data.requestId) ~= tostring(pendingProfileUpdateRequestId_)
+        and data.syncId == nil then
+        print(string.format(
+            "[玩家资料] 忽略非当前资料更新响应 requestId=%s expected=%s",
+            tostring(data.requestId),
+            tostring(pendingProfileUpdateRequestId_)
+        ))
+        return false
+    end
+    if data.success == false then
+        if isUpdateResponse then
+            FinishProfileUpdate(false, data.message or data.reason or "资料保存失败")
+        end
+        print(string.format(
+            "[玩家资料] 服务端资料响应失败 requestId=%s syncId=%s reason=%s message=%s",
+            tostring(data.requestId),
+            tostring(data.syncId),
+            tostring(data.reason),
+            tostring(data.message)
+        ))
+        return false
+    end
     local userId = data.userId
-    if userId == nil or userId == 0 or userId == "" then return false end
+    if userId == nil or userId == 0 or userId == "" then
+        if isUpdateResponse then
+            FinishProfileUpdate(false, "服务端资料缺少 UID")
+        end
+        print(string.format(
+            "[玩家资料] 服务端资料缺少 UID requestId=%s syncId=%s",
+            tostring(data.requestId),
+            tostring(data.syncId)
+        ))
+        return false
+    end
+    local uid = UserId.Normalize(userId)
+    print(string.format(
+        "[玩家资料] 服务端资料到达 rawUid=%s normalizedUid=%s requestId=%s syncId=%s nicknamePresent=%s avatarPresent=%s previousUid=%s previousNickname=%s",
+        tostring(userId),
+        tostring(uid),
+        tostring(data.requestId),
+        tostring(data.syncId),
+        tostring(data.nickname ~= nil and data.nickname ~= ""),
+        tostring(data.avatar ~= nil),
+        tostring(state_.userId),
+        tostring(state_.tapNickname)
+    ))
+    local profile = type(data.profile) == "table" and data.profile or nil
+    if profile ~= nil then
+        if profile.customNickname ~= nil then
+            state_.customNickname = TrimName(profile.customNickname)
+        end
+        if profile.tapNickname ~= nil and profile.tapNickname ~= "" then
+            state_.tapNickname = TrimName(profile.tapNickname)
+        end
+        if profile.avatar ~= nil then
+            data.avatar = profile.avatar
+        end
+    end
     local nickname = state_.tapNickname
-    if data.nickname ~= nil and data.nickname ~= "" then
+    if profile ~= nil and profile.customNickname ~= nil and TrimName(profile.customNickname) ~= "" then
+        nickname = TrimName(profile.customNickname)
+    elseif data.nickname ~= nil and data.nickname ~= "" then
         nickname = TrimName(data.nickname)
     end
     if nickname == "Tap玩家" and state_.tapNickname ~= nil and state_.tapNickname ~= "" and state_.tapNickname ~= "Tap玩家" then
@@ -421,6 +511,13 @@ local function ApplyServerProfile(data)
     local uid = UserId.Normalize(userId)
     local uidChanged = not SameUserId(state_.userId, uid)
     local nickChanged = nickname ~= state_.tapNickname
+    print(string.format(
+        "[玩家资料] 服务端资料应用结果 uidChanged=%s nickChanged=%s avatarChanged=%s certifiedBefore=%s",
+        tostring(uidChanged),
+        tostring(nickChanged),
+        tostring(avatarChanged),
+        tostring(serverUserIdCertified_ == true)
+    ))
     if uidChanged or nickChanged or avatarChanged then
         state_.userId = uid
         if nickname ~= "Tap玩家" then
@@ -431,7 +528,18 @@ local function ApplyServerProfile(data)
             print("[玩家资料] 已从服务器认证资料读取 UID: " .. tostring(state_.userId))
         end
         NotifyChanged()
-        return true
+    end
+    if isUpdateResponse then
+        local savedProfile = type(data.profile) == "table" and data.profile or nil
+        local savedName = savedProfile ~= nil
+            and TrimName(savedProfile.customNickname or "")
+            or ""
+        local expectedName = TrimName(pendingProfileUpdateNickname_ or "")
+        if savedProfile == nil or savedName ~= expectedName then
+            FinishProfileUpdate(false, "服务端返回的资料与本地不一致")
+            return false
+        end
+        FinishProfileUpdate(true, data.message or "玩家资料已保存")
     end
     return true
 end
@@ -446,6 +554,10 @@ function PlayerSystem.Init(callbacks)
     nicknameRetryTimer_ = 0
     identityPollTimer_ = 0
     serverUserIdCertified_ = false
+    profileUpdateSeq_ = 0
+    pendingProfileUpdateRequestId_ = nil
+    pendingProfileUpdateNickname_ = nil
+    callbacks_.onProfileUpdate = nil
     state_ = {
         userId = nil,
         tapNickname = "Tap玩家",
@@ -499,6 +611,14 @@ function PlayerSystem.GetDisplayName()
     return state_.tapNickname or "Tap玩家"
 end
 
+function PlayerSystem.BuildServerProfile()
+    return {
+        customNickname = state_.customNickname,
+        tapNickname = state_.tapNickname,
+        avatar = PlayerSystem.GetSelectedAvatarProfile(),
+    }
+end
+
 function PlayerSystem.SetNickname(name)
     local valid, message, trimmed = PlayerSystem.ValidateNickname(name)
     if not valid then
@@ -508,6 +628,18 @@ function PlayerSystem.SetNickname(name)
     SaveLocalProfile()
     NotifyChanged()
     return state_.customNickname, nil
+end
+
+function PlayerSystem.GetProfileUpdatePayload(onComplete)
+    profileUpdateSeq_ = profileUpdateSeq_ + 1
+    local requestId = "profile_" .. tostring(profileUpdateSeq_) .. "_" .. tostring(os and os.time and os.time() or 0)
+    pendingProfileUpdateRequestId_ = requestId
+    pendingProfileUpdateNickname_ = TrimName(state_.customNickname or "")
+    callbacks_.onProfileUpdate = onComplete
+    return {
+        requestId = requestId,
+        profile = PlayerSystem.BuildServerProfile(),
+    }
 end
 
 function PlayerSystem.ClearCustomNickname()

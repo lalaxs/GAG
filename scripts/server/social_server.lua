@@ -100,6 +100,12 @@ local function BuildVisitRecordKey(visitorUid)
     return "visit_" .. DayKey() .. "_" .. tostring(visitorUid or "unknown")
 end
 
+local recentVisitRecordAtByPair_ = {}
+
+local function BuildVisitThrottleKey(visitorUid, targetUid)
+    return tostring(NormalizeUserId(visitorUid) or visitorUid or "unknown") .. "->" .. tostring(NormalizeUserId(targetUid) or targetUid or "unknown")
+end
+
 local function NormalizeAvatar(value)
     if type(value) ~= "table" then return nil end
     local plantIndex = tonumber(value.plantIndex or value.selectedAvatar or value.index)
@@ -168,7 +174,10 @@ local function MergeSnapshotProfile(snapshot, existingSnapshot, tapNickname)
 
     local incomingAvatar = NormalizeAvatar(snapshot.avatar)
     local existingAvatar = NormalizeAvatar(existingSnapshot.avatar)
-    if existingAvatar ~= nil and (incomingAvatar == nil or (IsDefaultAvatar(incomingAvatar) and not IsDefaultAvatar(existingAvatar))) then
+    -- 客户端显式提交的合法头像一律保留（含默认胡萝卜）；仅 incoming 无效时回退云端
+    if incomingAvatar ~= nil then
+        snapshot.avatar = incomingAvatar
+    elseif existingAvatar ~= nil then
         snapshot.avatar = existingAvatar
     end
 
@@ -232,6 +241,17 @@ local function RefreshRuntimeSnapshot(snapshot)
         crop.matureAt = crop.matureAt or (crop.plantedAt + crop.growTime)
         crop.elapsed = math.max(0, math.min(crop.growTime, now - crop.plantedAt))
         crop.mature = now >= crop.matureAt
+        -- 偷菜按自然日：跨日旧标记在拜访视图上放开
+        local stolenAt = tonumber(crop.stolenAt or 0) or 0
+        local stolenToday = crop.stolen == true
+            and stolenAt > 0
+            and os.date("%Y%m%d", stolenAt) == os.date("%Y%m%d", now)
+        if crop.stolen == true and stolenToday ~= true then
+            crop.stolen = false
+            crop.stolenBy = nil
+            crop.stolenAt = nil
+            crop.stealReward = nil
+        end
         crop.stealable = crop.mature == true and crop.stolen ~= true
     end
     return snapshot
@@ -718,19 +738,36 @@ function SocialServer.SaveGardenSnapshot(uid, snapshot, connection)
                 return
             end
         end
+        if PlayerStateService ~= nil and PlayerStateService.ReadTargetFarm ~= nil then
+            PlayerStateService.ReadTargetFarm(uid, function(farm)
+                done(farm)
+            end)
+            return
+        end
         ReadScoreFromUidCandidates(uid, shared.KEYS.AUTH_FARM_STATE, done)
     end
 
-    ReadScoreFromUidCandidates(uid, shared.KEYS.GARDEN_SNAPSHOT, function(existingSnapshot)
-        GetNicknameMap({ uid }, function(nickMap)
-            local canonicalUid = GetCanonicalUidKey(uid) or NormalizeUserId(uid)
-            local tapNickname = SocialProfile.LookupNickname(nickMap, canonicalUid or uid)
-            local mergedSnapshot = MergeSnapshotProfile(snapshot, existingSnapshot, tapNickname)
-            resolveFarmState(function(farmState)
-                SaveCanonicalGardenSnapshot(uid, mergedSnapshot, farmState, connection, farmState ~= nil and "保存权威社交花园" or "首次保存权威社交花园")
+    local function proceed()
+        ReadScoreFromUidCandidates(uid, shared.KEYS.GARDEN_SNAPSHOT, function(existingSnapshot)
+            GetNicknameMap({ uid }, function(nickMap)
+                local canonicalUid = GetCanonicalUidKey(uid) or NormalizeUserId(uid)
+                local tapNickname = SocialProfile.LookupNickname(nickMap, canonicalUid or uid)
+                local mergedSnapshot = MergeSnapshotProfile(snapshot, existingSnapshot, tapNickname)
+                resolveFarmState(function(farmState)
+                    SaveCanonicalGardenSnapshot(uid, mergedSnapshot, farmState, connection, farmState ~= nil and "保存权威社交花园" or "首次保存权威社交花园")
+                end)
             end)
         end)
-    end)
+    end
+
+    local PlayerStateService = deps_.PlayerStateService
+    if PlayerStateService ~= nil and PlayerStateService.WhenFlushIdle ~= nil then
+        PlayerStateService.WhenFlushIdle(uid, function()
+            proceed()
+        end)
+    else
+        proceed()
+    end
 end
 
 local function ResolveCloudReadUid(uid)
@@ -778,10 +815,8 @@ function SocialServer.RequestGardenSnapshot(requesterUid, targetUid, connection,
         end
         resolvedGarden.userId = normalizedTargetUid
         GetNicknameMap({ normalizedTargetUid }, function(targetNickMap)
-            FetchGardenProfiles({ normalizedTargetUid }, function(targetProfileMap)
-                SocialProfile.ApplyDisplayProfile(resolvedGarden, normalizedTargetUid, targetProfileMap, targetNickMap)
-                SendGardenWithLikes(resolvedGarden)
-            end)
+            SocialProfile.ApplyDisplayProfile(resolvedGarden, normalizedTargetUid, nil, targetNickMap)
+            SendGardenWithLikes(resolvedGarden)
         end)
     end
 
@@ -821,40 +856,33 @@ function SocialServer.RequestGardenSnapshot(requesterUid, targetUid, connection,
             if done then done() end
             return
         end
+        local throttleKey = BuildVisitThrottleKey(normalizedRequesterUid, normalizedTargetUid)
+        local lastAt = tonumber(recentVisitRecordAtByPair_[throttleKey] or 0) or 0
+        if Now() - lastAt < 30 then
+            print("[社交] 30 秒内重复拜访，跳过访问记录写入 key=" .. tostring(throttleKey))
+            if done then done() end
+            return
+        end
+        recentVisitRecordAtByPair_[throttleKey] = Now()
         local profile = type(visitorProfile) == "table" and visitorProfile or {}
         local visitKey = BuildVisitRecordKey(normalizedRequesterUid)
-        ServerCloudStore.ListGet(targetCloudUid, shared.KEYS.RECENT_VISITORS, {
-            ok = function(rows)
-                local c = serverCloud:BatchCommit("记录花园拜访")
-                for _, row in ipairs(rows or {}) do
-                    local value = row.value or row
-                    if type(value) == "table" and (value.visitKey == visitKey or SameUserId(value.userId, normalizedRequesterUid)) then
-                        local listId = row.list_id or row.listId or value.listId
-                        if listId ~= nil then c:ListDelete(listId) end
-                    end
-                end
-                local now = Now()
-                c:ListAdd(targetCloudUid, shared.KEYS.RECENT_VISITORS, {
-                    userId = normalizedRequesterUid,
-                    nickname = profile.nickname or "Tap玩家",
-                    avatar = NormalizeAvatar(profile.avatar),
-                    visitKey = visitKey,
-                    visitedAt = now,
-                    time = now,
-                })
-                c:Commit({
-                    ok = function()
-                        print("[社交] 花园拜访记录已写入")
-                        if done then done() end
-                    end,
-                    error = function(_, reason)
-                        print("[社交] 花园拜访记录写入失败: " .. tostring(reason))
-                        if done then done() end
-                    end,
-                })
+        local c = serverCloud:BatchCommit("记录花园拜访")
+        local now = Now()
+        c:ListAdd(targetCloudUid, shared.KEYS.RECENT_VISITORS, {
+            userId = normalizedRequesterUid,
+            nickname = profile.nickname or "Tap玩家",
+            avatar = NormalizeAvatar(profile.avatar),
+            visitKey = visitKey,
+            visitedAt = now,
+            time = now,
+        })
+        c:Commit({
+            ok = function()
+                print("[社交] 花园拜访记录已写入")
+                if done then done() end
             end,
             error = function(_, reason)
-                print("[社交] 花园拜访记录读取失败: " .. tostring(reason))
+                print("[社交] 花园拜访记录写入失败: " .. tostring(reason))
                 if done then done() end
             end,
         })
@@ -878,54 +906,71 @@ function SocialServer.RequestGardenSnapshot(requesterUid, targetUid, connection,
         else
             snapshotMeta = { visitablePlotIndex = 1, unlockedPlotCount = 1 }
         end
-        ReadTargetScoreFromUidCandidates(targetCloudUid, shared.KEYS.AUTH_FARM_STATE, function(farmState, farmKey, farmError)
-            if type(farmState) == "table" then
-                if not UserId.Same(farmKey, GetCanonicalUidKey(normalizedTargetUid)) then
-                    print(string.format("[存档兼容] 拜访花园使用历史权威农场 key=%s target=%s", tostring(farmKey), tostring(normalizedTargetUid)))
-                end
-                local authGarden = deps_.buildVisitGardenFromAuthFarm(
-                    normalizedTargetUid,
-                    snapshotValid and snapshotMeta.nickname or nil,
-                    farmState,
-                    snapshotMeta
-                )
+        local function SendVisitFromFarm(farmState, farmKey, sourceLabel)
+            if type(farmState) ~= "table" then return false end
+            if not UserId.Same(farmKey, GetCanonicalUidKey(normalizedTargetUid)) then
                 print(string.format(
-                    "[社交] 拜访命中权威农场 target=%s plants=%d",
-                    tostring(normalizedTargetUid),
-                    #(authGarden.plot and authGarden.plot.plants or {})
+                    "[存档兼容] 拜访花园使用历史%s key=%s target=%s",
+                    tostring(sourceLabel or "农场"),
+                    tostring(farmKey),
+                    tostring(normalizedTargetUid)
                 ))
-                SendTargetGarden(authGarden)
-            elseif snapshotValid and snapshotMeta.plot ~= nil then
-                SendTargetGarden(snapshotMeta)
-            else
-                print(string.format(
-                    "[社交] 拜访目标权威农场不可用 target=%s reason=%s",
-                    tostring(normalizedTargetUid),
-                    tostring(farmError or "no_farm")
-                ))
-                SendGardenResponse({
-                    success = false,
-                    retryable = true,
-                    message = "花园同步中",
-                })
             end
+            local authGarden = deps_.buildVisitGardenFromAuthFarm(
+                normalizedTargetUid,
+                snapshotValid and snapshotMeta.nickname or nil,
+                farmState,
+                snapshotMeta
+            )
+            print(string.format(
+                "[社交] 拜访命中权威农场(%s) target=%s plants=%d",
+                tostring(sourceLabel or "legacy"),
+                tostring(normalizedTargetUid),
+                #(authGarden.plot and authGarden.plot.plants or {})
+            ))
+            SendTargetGarden(authGarden)
+            return true
+        end
+
+        ReadTargetScoreFromUidCandidates(targetCloudUid, shared.KEYS.PLAYER_STATE, function(playerDoc, playerKey, playerError)
+            if type(playerDoc) == "table" and type(playerDoc.farm) == "table" then
+                if SendVisitFromFarm(playerDoc.farm, playerKey, "unified") then
+                    return
+                end
+            end
+            ReadTargetScoreFromUidCandidates(targetCloudUid, shared.KEYS.AUTH_FARM_STATE, function(farmState, farmKey, farmError)
+                if SendVisitFromFarm(farmState, farmKey, "legacy") then
+                    return
+                end
+                if snapshotValid and snapshotMeta.plot ~= nil then
+                    SendTargetGarden(snapshotMeta)
+                else
+                    print(string.format(
+                        "[社交] 拜访目标权威农场不可用 target=%s reason=%s",
+                        tostring(normalizedTargetUid),
+                        tostring(farmError or playerError or "no_farm")
+                    ))
+                    SendGardenResponse({
+                        success = false,
+                        retryable = true,
+                        message = "花园同步中",
+                    })
+                end
+            end)
         end)
 
         if normalizedRequesterUid ~= nil and normalizedRequesterUid ~= normalizedTargetUid then
             GetNicknameMap({ normalizedRequesterUid }, function(nickMap)
-                FetchGardenProfiles({ normalizedRequesterUid }, function(profileMap)
-                    local profile = profileMap[normalizedRequesterUid] or {}
-                    RecordVisit({
-                        nickname = profile.nickname or nickMap[normalizedRequesterUid] or "Tap玩家",
-                        avatar = NormalizeAvatar(profile.avatar),
-                    })
-                end)
+                RecordVisit({
+                    nickname = nickMap[normalizedRequesterUid] or "Tap玩家",
+                    avatar = nil,
+                })
             end)
         end
     end)
 end
 
-function SocialServer.RequestRank(count, connection, requesterUid)
+function SocialServer.RequestRank(count, connection, requesterUid, requestId)
     local shared = Shared()
     count = NormalizePositiveCount(count or 20, 50)
     serverCloud:GetRankList(shared.KEYS.TOUR_RANK, 1, count, {
@@ -948,14 +993,36 @@ function SocialServer.RequestRank(count, connection, requesterUid)
             GetNicknameMap(userIds, function(nickMap)
                 FetchGardenProfiles(userIds, function(profileMap)
                     local filtered = LeaderboardSanitize.FilterForDisplay(requesterUid, result, profileMap, nickMap, "tour")
-                    Send(connection, shared.EVENTS.RANK_RESPONSE, { success = true, list = filtered })
+                    Send(connection, shared.EVENTS.RANK_RESPONSE, { success = true, list = filtered, requestId = requestId })
                 end)
             end)
         end,
         error = function(_, reason)
-            Send(connection, shared.EVENTS.RANK_RESPONSE, { success = false, message = "榜单繁忙" })
+            Send(connection, shared.EVENTS.RANK_RESPONSE, { success = false, message = "榜单繁忙", requestId = requestId })
         end,
     })
+end
+
+local function MergeAuthorityAdDaily(uid, daily)
+    local PlayerStateService = deps_.PlayerStateService
+    if PlayerStateService == nil or PlayerStateService.GetSession == nil then return daily end
+    local session = PlayerStateService.GetSession(uid)
+    local authority = session ~= nil
+        and type(session.economy) == "table"
+        and session.economy.adRewardDaily
+        or nil
+    if type(authority) ~= "table" or tostring(authority.dayKey or "") ~= DayKey() then
+        return daily
+    end
+    daily.seedPackAdCount = math.max(
+        daily.seedPackAdCount or 0,
+        math.max(0, math.floor(tonumber(authority.rare_seed_pack or 0) or 0))
+    )
+    daily.matureAdCount = math.max(
+        daily.matureAdCount or 0,
+        math.max(0, math.floor(tonumber(authority.mature_plot or 0) or 0))
+    )
+    return daily
 end
 
 local function FetchDailyQuota(uid, done)
@@ -979,6 +1046,10 @@ local function FetchDailyQuota(uid, done)
                         ReadQuotaFromUidCandidates(uid, "daily_seed_gift", function(giftRows)
                             local giftRow = giftRows and giftRows[1]
                             daily.giftSentCount = math.max(0, math.floor(tonumber(giftRow and giftRow.value or 0) or 0))
+                            MergeAuthorityAdDaily(uid, daily)
+                            if deps_.ServerSteal ~= nil and deps_.ServerSteal.RefreshStealDailyCache ~= nil then
+                                deps_.ServerSteal.RefreshStealDailyCache(uid, daily)
+                            end
                             done(daily)
                         end)
                     end)

@@ -411,13 +411,29 @@ function ProfileView.SaveNickname()
         end
         nicknameDraft_ = savedName
     end
-    if deps_.showToast then deps_.showToast("昵称已更新") end
-    FloatingToast.Show("昵称已更新", { fontSize = 19, duration = 1.4, yRatio = 0.36, priority = 6 })
-    if nicknameModal_ ~= nil then
-        nicknameModal_:Close()
-        nicknameModal_ = nil
+    local function onProfileUpdateComplete(ok, message)
+        if ok ~= true then
+            if deps_.showToast then deps_.showToast(message or "资料同步失败，请稍后重试") end
+            return
+        end
+        if deps_.showToast then deps_.showToast("昵称已更新") end
+        FloatingToast.Show("昵称已更新", { fontSize = 19, duration = 1.4, yRatio = 0.36, priority = 6 })
+        if nicknameModal_ ~= nil then
+            nicknameModal_:Close()
+            nicknameModal_ = nil
+        end
+        ProfileView.RebuildProfileContent()
     end
-    ProfileView.RebuildProfileContent()
+    if deps_.updateProfile ~= nil then
+        local sent = deps_.updateProfile(onProfileUpdateComplete)
+        if sent ~= true then
+            if deps_.showToast then deps_.showToast("资料同步失败，请稍后重试") end
+            return
+        end
+        if deps_.showToast then deps_.showToast("正在同步资料...") end
+        return
+    end
+    onProfileUpdateComplete(true, nil)
 end
 
 function ProfileView.OpenProfile()

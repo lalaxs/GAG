@@ -12,8 +12,9 @@ local NetworkClient = require("client.network_client")
 
 local LeaderboardSystem = {}
 
-local REQUEST_COOLDOWN = 5
-local RATE_LIMIT_BACKOFF = 10
+local REQUEST_COOLDOWN = 8
+local RATE_LIMIT_BACKOFF = 12
+local CROSS_RANK_COOLDOWN = 12
 
 local deps_ = {}
 local requests_ = RequestStateMachine.Create("leaderboard", { timeout = 14.0 })
@@ -25,6 +26,7 @@ local state_ = {
     requestStartedAt = {},
     rateLimitUntil = 0,
     rewards = {},
+    errors = {},
     lastError = nil,
 }
 
@@ -37,12 +39,14 @@ local function Now()
 end
 
 local function IsRateLimitMessage(message)
-    return string.find(tostring(message or ""), "read rate limit exceeded", 1, true) ~= nil
+    message = tostring(message or "")
+    return string.find(message, "read rate limit exceeded", 1, true) ~= nil
+        or string.find(message, "榜单繁忙", 1, true) ~= nil
 end
 
-local function BeginRequest(requestType, payload)
+local function BeginRequest(requestType, payload, options)
     local nextPayload = payload or {}
-    nextPayload = requests_:Begin(requestType, nextPayload)
+    nextPayload = requests_:Begin(requestType, nextPayload, options or { suppressNetworkFailure = true })
     return nextPayload
 end
 
@@ -65,6 +69,24 @@ local function BuildListKey(kind, activityId)
     return tostring(kind or "income")
 end
 
+local function SetListError(key, message)
+    message = message or "排行榜读取失败"
+    state_.errors[key] = message
+    state_.lastError = message
+end
+
+local function ClearListError(key)
+    state_.errors[key] = nil
+    state_.lastError = nil
+end
+
+local function IsSocialRankCoolingDown(now)
+    local social = deps_.SocialGardenSystem
+    if social == nil or social.GetLastRankRequestAt == nil then return false end
+    local lastSocialRankAt = tonumber(social.GetLastRankRequestAt() or 0) or 0
+    return lastSocialRankAt > 0 and now - lastSocialRankAt < CROSS_RANK_COOLDOWN
+end
+
 function LeaderboardSystem.Init(deps)
     deps_ = deps or {}
     Shared.RegisterClientEvents()
@@ -76,10 +98,11 @@ end
 
 function LeaderboardSystem.Update(dt)
     requests_:Update(function(record)
-        state_.lastError = "排行榜请求超时"
         local payload = record.payload or {}
-        state_.loading[BuildListKey(payload.kind, payload.activityId)] = false
-        if deps_.showToast then deps_.showToast("排行榜请求超时") end
+        local key = BuildListKey(payload.kind, payload.activityId)
+        state_.loading[key] = false
+        SetListError(key, "网络连接失败，排行榜请求超时，请重试")
+        if deps_.showToast then deps_.showToast(state_.lastError) end
         EmitChanged("timeout")
     end)
 end
@@ -96,14 +119,28 @@ function LeaderboardSystem.IsLoading(kind, activityId)
     return state_.loading[BuildListKey(kind, activityId)] == true
 end
 
-function LeaderboardSystem.Request(kind, activityId)
+function LeaderboardSystem.GetError(kind, activityId)
+    return state_.errors[BuildListKey(kind, activityId)]
+end
+
+function LeaderboardSystem.ClearPendingRequests(reason)
+    requests_:Clear()
+    for key in pairs(state_.loading) do
+        state_.loading[key] = false
+        state_.errors[key] = "网络连接已重置，请重试"
+    end
+    state_.lastError = "网络连接已重置，请重试"
+    EmitChanged(reason or "network_reset")
+end
+
+function LeaderboardSystem.Request(kind, activityId, forceRefresh)
     kind = kind or "income"
     state_.activeKind = kind
     state_.activeActivityId = activityId
     local key = BuildListKey(kind, activityId)
     local now = Now()
     if now < (state_.rateLimitUntil or 0) then
-        state_.lastError = "榜单繁忙"
+        SetListError(key, "榜单繁忙，请稍后再试")
         if deps_.showToast then deps_.showToast(state_.lastError) end
         EmitChanged("rate_limited")
         return false
@@ -111,19 +148,39 @@ function LeaderboardSystem.Request(kind, activityId)
     if state_.loading[key] == true then
         return true
     end
+    local hasCache = state_.lists[key] ~= nil
     local lastStarted = tonumber(state_.requestStartedAt[key] or 0) or 0
-    if now - lastStarted < REQUEST_COOLDOWN and state_.lists[key] ~= nil then
+    if hasCache and now - lastStarted < REQUEST_COOLDOWN then
+        ClearListError(key)
+        EmitChanged("cached")
+        return true
+    end
+    if IsSocialRankCoolingDown(now) then
+        if hasCache then
+            ClearListError(key)
+            print("[排行榜] 社交观光榜刚刷新，主排行榜暂用缓存避免云榜限流 kind=" .. tostring(kind))
+            EmitChanged("cross_rank_cached")
+        else
+            SetListError(key, "榜单正在同步，请稍后点击刷新")
+            print("[排行榜] 社交观光榜刚刷新，延后主排行榜请求避免云榜限流 kind=" .. tostring(kind))
+            EmitChanged("cross_rank_delayed")
+        end
+        return hasCache
+    end
+    if forceRefresh ~= true and hasCache then
+        ClearListError(key)
+        EmitChanged("cached")
         return true
     end
     local payload = BeginRequest("rank", { kind = kind, activityId = activityId, count = 20 })
     state_.loading[key] = true
     state_.requestStartedAt[key] = now
-    state_.lastError = nil
+    ClearListError(key)
     EmitChanged("request")
     if SendRequest(Shared.EVENTS.REQUEST_LEADERBOARD, payload) then return true end
     FinishRequest(payload.requestId, "rank")
     state_.loading[key] = false
-    state_.lastError = "同步中"
+    SetListError(key, "网络连接失败，无法拉取排行榜数据，请检查网络后重试")
     if deps_.showToast then deps_.showToast(state_.lastError) end
     EmitChanged("request_failed")
     return false
@@ -150,9 +207,12 @@ function LeaderboardSystem.HandleLeaderboardResponse(data)
     state_.loading[key] = false
     if data.success then
         state_.lists[key] = data
-        state_.lastError = nil
+        ClearListError(key)
     else
-        state_.lastError = data.message or "排行榜读取失败"
+        SetListError(key, data.message or "排行榜读取失败")
+        if NetworkClient.ReportServerResponseFailure ~= nil then
+            NetworkClient.ReportServerResponseFailure(data, "leaderboard")
+        end
         if IsRateLimitMessage(state_.lastError) then
             state_.rateLimitUntil = Now() + RATE_LIMIT_BACKOFF
         end
@@ -181,6 +241,9 @@ function LeaderboardSystem.HandleClaimActivityRankRewardResponse(data)
         ShowRewardToast(message)
         LeaderboardSystem.Request("activity", state_.activeActivityId)
     else
+        if NetworkClient.ReportServerResponseFailure ~= nil then
+            NetworkClient.ReportServerResponseFailure(data, "claimActivityRankReward")
+        end
         ShowRewardToast(data.message or "活动排行奖励领取失败")
     end
     EmitChanged("reward")

@@ -8,7 +8,8 @@
 local ServerFarmState = {}
 
 local ServerCloudStore = require("server.server_cloud_store")
-local SaveLoginReconcile = require("server.save_login_reconcile")
+-- 禁止顶层 require save_login_reconcile：二者曾互相 require，
+-- 标准 Lua require 在环上会返回 true，导致 ScoreFarmState 变成对 true 取字段而崩服。
 local PlayerStateService = require("server.player_state_service")
 local UserId = require("utils.user_id")
 
@@ -169,6 +170,38 @@ function ServerFarmState.FindFarmCropFromHarvestPayload(state, payload)
     return nil, nil, nil
 end
 
+function ServerFarmState.GetCalendarDayKey(timestamp)
+    timestamp = tonumber(timestamp or 0) or 0
+    if timestamp <= 0 then
+        timestamp = Now()
+    end
+    return os.date("%Y%m%d", timestamp)
+end
+
+--- 偷菜按自然日计算：仅当天 stolen 生效，跨日可再偷。
+function ServerFarmState.IsCropStolenToday(crop)
+    if type(crop) ~= "table" or crop.stolen ~= true then
+        return false
+    end
+    local stolenAt = tonumber(crop.stolenAt or 0) or 0
+    if stolenAt <= 0 then
+        return false
+    end
+    return ServerFarmState.GetCalendarDayKey(stolenAt) == ServerFarmState.GetCalendarDayKey(Now())
+end
+
+function ServerFarmState.ClearExpiredCropStealMark(crop)
+    if type(crop) ~= "table" then return false end
+    if crop.stolen ~= true then return false end
+    if ServerFarmState.IsCropStolenToday(crop) then return false end
+    crop.stolen = false
+    crop.stolenBy = nil
+    crop.stolenAt = nil
+    crop.stealReward = nil
+    crop.stealable = crop.mature == true and crop.harvested ~= true
+    return true
+end
+
 function ServerFarmState.RefreshAuthCrop(crop)
     local now = Now()
     crop.growTime = math.max(1, tonumber(crop.growTime or 1) or 1)
@@ -176,7 +209,9 @@ function ServerFarmState.RefreshAuthCrop(crop)
     crop.matureAt = tonumber(crop.matureAt or (crop.plantedAt + crop.growTime)) or (crop.plantedAt + crop.growTime)
     crop.elapsed = math.max(0, math.min(crop.growTime, now - crop.plantedAt))
     crop.mature = now >= crop.matureAt
-    crop.stealable = crop.mature == true and crop.stolen ~= true and crop.harvested ~= true
+    ServerFarmState.ClearExpiredCropStealMark(crop)
+    local stolenToday = ServerFarmState.IsCropStolenToday(crop)
+    crop.stealable = crop.mature == true and stolenToday ~= true and crop.harvested ~= true
 end
 
 function ServerFarmState.CalculateAuthCropSightValue(crop)
@@ -247,44 +282,29 @@ function ServerFarmState.RequestAuthFarmState(uid, connection)
         tostring(ServerCloudStore.GetCanonicalUidKey(uid)),
         tostring(ServerCloudStore.CloudPlayerId(uid))
     ))
-    -- 与经济状态一致：归一后走 PlayerStateService 会话，避免绕过 mutate/flush 直接读云旧档
-    SaveLoginReconcile.Ensure(uid, function(ok, info)
-        if ok ~= true then
+    -- 进游戏热路径不跑 Ensure，直接 Load（统一档优先）
+    PlayerStateService.Load(uid, function(session, err)
+        if session == nil then
             Send(connection, deps_.Shared.EVENTS.AUTH_FARM_RESPONSE, {
                 success = false,
                 retryable = true,
-                message = "存档迁移中，请稍后重试",
+                message = "农场同步失败",
             })
-            print(string.format(
-                "[服务端同步] 权威农场同步前归一失败 userId=%s info=%s",
-                tostring(uid),
-                tostring(info)
-            ))
+            print(string.format("[PlayerState] request farm load failed uid=%s err=%s", tostring(uid), tostring(err)))
             return
         end
-        PlayerStateService.Load(uid, function(session, err)
-            if session == nil then
-                Send(connection, deps_.Shared.EVENTS.AUTH_FARM_RESPONSE, {
-                    success = false,
-                    retryable = true,
-                    message = "农场同步失败",
-                })
-                print(string.format("[PlayerState] request farm load failed uid=%s err=%s", tostring(uid), tostring(err)))
-                return
+        local farm = session.farm
+        for _, plot in pairs((farm and farm.plots) or {}) do
+            for _, crop in ipairs(plot.plants or {}) do
+                ServerFarmState.RefreshAuthCrop(crop)
             end
-            local farm = session.farm
-            for _, plot in pairs((farm and farm.plots) or {}) do
-                for _, crop in ipairs(plot.plants or {}) do
-                    ServerFarmState.RefreshAuthCrop(crop)
-                end
-            end
-            print(string.format(
-                "[存档] 下发会话农场 uid=%s revision=%s",
-                tostring(session.uid),
-                tostring(farm and farm.revision)
-            ))
-            Send(connection, deps_.Shared.EVENTS.AUTH_FARM_RESPONSE, { success = true, farm = farm })
-        end)
+        end
+        print(string.format(
+            "[存档] 下发会话农场 uid=%s revision=%s",
+            tostring(session.uid),
+            tostring(farm and farm.revision)
+        ))
+        Send(connection, deps_.Shared.EVENTS.AUTH_FARM_RESPONSE, { success = true, farm = farm })
     end)
 end
 

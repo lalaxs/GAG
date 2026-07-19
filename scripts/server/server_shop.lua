@@ -10,6 +10,14 @@ local ServerShop = {}
 
 local deps_ = {}
 
+-- 全服库存配额短缓存，降低连续 Get 触发的 read rate limit。
+local AVAILABLE_SHOP_CACHE_TTL = 3.0
+local availableShopCache_ = {
+    refreshId = nil,
+    fetchedAt = 0,
+    shop = nil,
+}
+
 local SEED_SHOP_ITEMS = {
     { name = "胡萝卜", rarity = "普通", guaranteed = true, stock = 99 },
     { name = "玉米", rarity = "普通", chance = 0.80, minStock = 15, maxStock = 30 },
@@ -134,6 +142,7 @@ function ServerShop.EnsureSeedShopState(callback)
         ok = function(scores)
             local shop = ServerShop.NormalizeSeedShopState(scores[deps_.Shared.KEYS.SHARED_SEED_SHOP])
             if shop.refreshId ~= currentRefreshId then
+                ServerShop.InvalidateAvailableShopCache("refresh_id_changed")
                 shop = ServerShop.BuildSeedShopState(now)
                 serverCloud:Set(deps_.globalShopUid, deps_.Shared.KEYS.SHARED_SEED_SHOP, shop, {
                     ok = function()
@@ -181,17 +190,71 @@ function ServerShop.RebuildSeedShopItemsFromStock(shop)
     shop.items = items
 end
 
+function ServerShop.InvalidateAvailableShopCache(reason)
+    if availableShopCache_.shop ~= nil then
+        print(string.format(
+            "[Shop] 失效全服库存缓存 reason=%s refreshId=%s",
+            tostring(reason or "manual"),
+            tostring(availableShopCache_.refreshId)
+        ))
+    end
+    availableShopCache_.refreshId = nil
+    availableShopCache_.fetchedAt = 0
+    availableShopCache_.shop = nil
+end
+
+function ServerShop.ApplyLocalSoldDelta(refreshId, plantIndex, soldDelta)
+    refreshId = math.floor(tonumber(refreshId or 0) or 0)
+    plantIndex = math.floor(tonumber(plantIndex or 0) or 0)
+    soldDelta = math.floor(tonumber(soldDelta or 0) or 0)
+    if availableShopCache_.shop == nil or availableShopCache_.refreshId ~= refreshId or plantIndex <= 0 or soldDelta == 0 then
+        return
+    end
+    local plant = deps_.GameConfig and deps_.GameConfig.PLANTS and deps_.GameConfig.PLANTS[plantIndex]
+    local seedName = plant and tostring(plant.name or "") or ""
+    if seedName == "" then return end
+    local stock = availableShopCache_.shop.stock
+    if type(stock) ~= "table" then return end
+    stock[seedName] = math.max(0, math.floor(tonumber(stock[seedName] or 0) or 0) - soldDelta)
+    ServerShop.RebuildSeedShopItemsFromStock(availableShopCache_.shop)
+end
+
 function ServerShop.FetchSeedShopAvailableState(shop, callback)
-    local responseShop = ServerShop.AddSeedShopResponseFields(deps_.deepCopy(shop), Now())
+    shop = ServerShop.AddSeedShopResponseFields(deps_.deepCopy(shop), Now())
+    local refreshId = math.floor(tonumber(shop.refreshId or 0) or 0)
+    local now = Now()
+    if availableShopCache_.shop ~= nil
+        and availableShopCache_.refreshId == refreshId
+        and (now - (availableShopCache_.fetchedAt or 0)) <= AVAILABLE_SHOP_CACHE_TTL then
+        local cached = deps_.deepCopy(availableShopCache_.shop)
+        cached.serverTime = now
+        cached.nextRefreshAt = shop.nextRefreshAt
+        cached.nextRefreshIn = shop.nextRefreshIn
+        print(string.format(
+            "[Shop] 命中全服库存缓存 refreshId=%s age=%.2fs",
+            tostring(refreshId),
+            now - (availableShopCache_.fetchedAt or 0)
+        ))
+        callback(cached)
+        return
+    end
+
+    local responseShop = shop
     responseShop.stock = type(responseShop.stock) == "table" and responseShop.stock or {}
 
     local pending = 1
     local completed = false
+    local rateLimited = false
     local function FinishOne()
         pending = pending - 1
         if pending <= 0 and completed ~= true then
             completed = true
             ServerShop.RebuildSeedShopItemsFromStock(responseShop)
+            if rateLimited ~= true then
+                availableShopCache_.refreshId = refreshId
+                availableShopCache_.fetchedAt = Now()
+                availableShopCache_.shop = deps_.deepCopy(responseShop)
+            end
             callback(responseShop)
         end
     end
@@ -210,7 +273,10 @@ function ServerShop.FetchSeedShopAvailableState(shop, callback)
                     responseShop.stock[seedName] = math.max(0, maxStock - soldCount)
                     FinishOne()
                 end,
-                error = function()
+                error = function(_, reason)
+                    if tostring(reason or ""):find("read rate limit exceeded", 1, true) then
+                        rateLimited = true
+                    end
                     FinishOne()
                 end,
             })

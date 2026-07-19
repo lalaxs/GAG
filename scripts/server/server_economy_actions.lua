@@ -82,6 +82,16 @@ local function RecordResponse(uid, recordKey, response)
     end
 end
 
+local function SafeRecordResponse(uid, recordKey, response)
+    if deps_.RequestGuard == nil or deps_.RequestGuard.Record == nil then return end
+    local ok, err = pcall(function()
+        deps_.RequestGuard.Record(uid, recordKey, response)
+    end)
+    if ok ~= true then
+        print("[PlayerState] request record failed uid=" .. tostring(uid) .. " err=" .. tostring(err))
+    end
+end
+
 local function CommitSideEffects(uid, label, build)
     local c = serverCloud:BatchCommit(label)
     local ok, err = pcall(build, c)
@@ -97,18 +107,70 @@ local function CommitSideEffects(uid, label, build)
     })
 end
 
-local function SendMutationResult(connection, eventName, result, fallbackRequestId)
+local function BuildStatePatch(state, options)
+    state = type(state) == "table" and state or {}
+    options = options or {}
+    local patch = {
+        revision = state.revision,
+        gold = state.gold,
+        exp = state.exp,
+        level = state.level,
+        progression = state.progression,
+        activity = state.activity,
+        dailyTaskState = state.dailyTaskState,
+        tutorial = state.tutorial,
+    }
+    if options.plantIndex ~= nil then
+        patch.seedBag = { [options.plantIndex] = state.seedBag and state.seedBag[options.plantIndex] or 0 }
+        patch.seedBagBuffs = { [options.plantIndex] = state.seedBagBuffs and state.seedBagBuffs[options.plantIndex] or 0 }
+    end
+    if options.harvestItem ~= nil then
+        patch.harvestAdd = options.harvestItem
+    end
+    if options.seedPackId ~= nil then
+        patch.seedPacks = { [options.seedPackId] = state.seedPacks and state.seedPacks[options.seedPackId] or 0 }
+    end
+    if options.collectedPlantIndex ~= nil then
+        patch.collectedPlants = { [options.collectedPlantIndex] = true }
+    end
+    if options.activityReward ~= nil and options.activityReward.type == "dark_seed" and options.activityReward.plantIndex ~= nil then
+        local plantIndex = options.activityReward.plantIndex
+        patch.seedBag = patch.seedBag or {}
+        patch.collectedPlants = patch.collectedPlants or {}
+        patch.seedBag[plantIndex] = state.seedBag and state.seedBag[plantIndex] or 0
+        patch.collectedPlants[plantIndex] = true
+    end
+    return patch
+end
+
+local function SendMutationResult(connection, eventName, result, fallbackRequestId, sendOverride, uid)
+    local function send(data)
+        if sendOverride ~= nil and uid ~= nil then
+            return sendOverride(uid, connection, eventName, data)
+        end
+        return Send(connection, eventName, data)
+    end
     result = type(result) == "table" and result or {}
     -- 仅在整体成功时下发 mutator response；flush 失败时绝不能把 success=true 的旧 response 发出去
     if result.success == true and type(result.response) == "table" then
-        Send(connection, eventName, result.response)
+        send(result.response)
+        return
+    end
+    local response = type(result.response) == "table" and result.response or nil
+    if response ~= nil and response.success ~= true then
+        response.success = false
+        if response.message == nil then response.message = result.message or "同步失败" end
+        if response.code == nil then response.code = result.code end
+        if response.retryable == nil then response.retryable = result.retryable == true end
+        if response.requestId == nil then response.requestId = fallbackRequestId end
+        send(response)
         return
     end
     local requestId = fallbackRequestId
-    if type(result.response) == "table" and result.response.requestId ~= nil then
-        requestId = result.response.requestId
+    if response ~= nil and response.requestId ~= nil then
+        requestId = response.requestId
     end
-    Send(connection, eventName, {
+    send({
         success = false,
         message = result.message or "同步失败",
         code = result.code,
@@ -120,28 +182,18 @@ end
 function ServerEconomyActions.RequestEconomyState(uid, connection)
     local canonicalUid = ServerCloudStore.GetCanonicalUidKey(uid)
     print(string.format("[存档] 请求经济状态 userId=%s cloudId=%s", tostring(canonicalUid), tostring(ServerCloudStore.CloudPlayerId(uid))))
-    SaveLoginReconcile.Ensure(uid, function(ok, info)
-        if ok ~= true then
+    -- 进游戏热路径不跑 Ensure，直接 Load（统一存档优先）
+    deps_.PlayerStateService.Load(uid, function(session, err)
+        if session == nil then
             Send(connection, deps_.Shared.EVENTS.ECONOMY_STATE_RESPONSE, {
                 success = false,
                 retryable = true,
-                message = "存档迁移中，请稍后重试",
+                message = "同步失败",
             })
-            print("[服务端同步] 经济同步前归一失败 userId=" .. tostring(canonicalUid) .. " info=" .. tostring(info))
+            print("[PlayerState] request economy load failed uid=" .. tostring(canonicalUid) .. " err=" .. tostring(err))
             return
         end
-        deps_.PlayerStateService.Load(uid, function(session, err)
-            if session == nil then
-                Send(connection, deps_.Shared.EVENTS.ECONOMY_STATE_RESPONSE, {
-                    success = false,
-                    retryable = true,
-                    message = "同步失败",
-                })
-                print("[PlayerState] request economy load failed uid=" .. tostring(canonicalUid) .. " err=" .. tostring(err))
-                return
-            end
-            Send(connection, deps_.Shared.EVENTS.ECONOMY_STATE_RESPONSE, { success = true, state = session.economy })
-        end)
+        Send(connection, deps_.Shared.EVENTS.ECONOMY_STATE_RESPONSE, { success = true, state = session.economy })
     end)
 end
 
@@ -195,6 +247,7 @@ function ServerEconomyActions.BuySeed(uid, plantIndex, _price, connection, count
                     end
                     state.gold = state.gold - totalPrice
                     state.seedBag[plantIndex] = owned + buyCount
+                    local remainingStock = math.max(0, available - buyCount)
                     return {
                         success = true,
                         response = {
@@ -205,6 +258,13 @@ function ServerEconomyActions.BuySeed(uid, plantIndex, _price, connection, count
                             price = totalPrice,
                             count = buyCount,
                             state = state,
+                            shopPatch = {
+                                refreshId = shop.refreshId,
+                                stock = { [plant.name] = remainingStock },
+                                serverTime = Now(),
+                                nextRefreshAt = shop.nextRefreshAt,
+                                nextRefreshIn = shop.nextRefreshIn,
+                            },
                         },
                     }
                 end, function(result)
@@ -214,21 +274,44 @@ function ServerEconomyActions.BuySeed(uid, plantIndex, _price, connection, count
                             c:QuotaAdd(deps_.globalShopUid, quotaKey, response.count or 1, maxStock)
                             deps_.RequestGuard.AddToCommit(c, uid, recordKey, response)
                         end)
-                        deps_.SendFullAvailableSeedShop(connection, deps_.Shared.EVENTS.BUY_SEED_RESPONSE, response)
-                        deps_.BroadcastFullAvailableSeedShop()
+                        if deps_.ServerShop ~= nil then
+                            if deps_.ServerShop.ApplyLocalSoldDelta ~= nil then
+                                deps_.ServerShop.ApplyLocalSoldDelta(shop.refreshId, plantIndex, response.count or 1)
+                            elseif deps_.ServerShop.InvalidateAvailableShopCache ~= nil then
+                                deps_.ServerShop.InvalidateAvailableShopCache("buy_seed_success")
+                            end
+                        end
+                        Send(connection, deps_.Shared.EVENTS.BUY_SEED_RESPONSE, response)
                         return
                     end
                     deps_.SendFullAvailableSeedShop(connection, deps_.Shared.EVENTS.BUY_SEED_RESPONSE, response or { success = false, message = result and result.message or "购买失败", requestId = requestId })
                 end)
             end,
             error = function(_, reason)
-                deps_.SendFullAvailableSeedShop(connection, deps_.Shared.EVENTS.BUY_SEED_RESPONSE, { success = false, message = "库存读取失败: " .. tostring(reason), requestId = requestId })
+                local reasonText = tostring(reason or "unknown")
+                -- 已限流时禁止再拉全量库存（每种子一次 QuotaGet），否则会放大限流。
+                if reasonText:find("read rate limit exceeded", 1, true) then
+                    Send(connection, deps_.Shared.EVENTS.BUY_SEED_RESPONSE, {
+                        success = false,
+                        retryable = true,
+                        message = "商店库存繁忙，请稍后再试",
+                        requestId = requestId,
+                    })
+                    return
+                end
+                deps_.SendFullAvailableSeedShop(connection, deps_.Shared.EVENTS.BUY_SEED_RESPONSE, {
+                    success = false,
+                    message = "库存读取失败: " .. reasonText,
+                    requestId = requestId,
+                    retryable = true,
+                })
             end,
         })
     end)
 end
 
-function ServerEconomyActions.ClearPlayerSave(uid, connection, requestId, recordKey)
+function ServerEconomyActions.ClearPlayerSave(uid, connection, requestId, recordKey, options)
+    options = options or {}
     uid = CloudUid(uid)
     SaveLoginReconcile.ClearSession(uid)
     SaveEconomyHealth.ClearSession(uid)
@@ -266,30 +349,70 @@ function ServerEconomyActions.ClearPlayerSave(uid, connection, requestId, record
         deps_.PlayerStateService.Reset(uid, economyState, farmState, socialSave)
 
         local scoreKeys = {
+            deps_.Shared.KEYS.PLAYER_STATE,
             deps_.Shared.KEYS.ECONOMY_STATE,
             deps_.Shared.KEYS.ECONOMY_LEDGER,
             deps_.Shared.KEYS.AUTH_FARM_STATE,
             deps_.Shared.KEYS.SOCIAL_SAVE,
         }
-        local purgePending = #scoreKeys
-        local function afterPurge()
+        if options.includeCommission == true and options.commissionStateKey ~= nil then
+            scoreKeys[#scoreKeys + 1] = options.commissionStateKey
+        end
+        local uniqueScoreKeys = {}
+        local uniqueScoreKeyList = {}
+        for _, scoreKey in ipairs(scoreKeys) do
+            if scoreKey ~= nil and uniqueScoreKeys[scoreKey] ~= true then
+                uniqueScoreKeys[scoreKey] = true
+                uniqueScoreKeyList[#uniqueScoreKeyList + 1] = scoreKey
+            end
+        end
+        scoreKeys = uniqueScoreKeyList
+        local listKeys = {
+            deps_.Shared.KEYS.GARDEN_SNAPSHOT,
+            deps_.Shared.KEYS.STEAL_LOGS,
+            deps_.Shared.KEYS.RECENT_VISITORS,
+            deps_.Shared.KEYS.SEED_REWARDS,
+            deps_.Shared.KEYS.FRIENDS,
+            deps_.Shared.KEYS.FRIEND_REQUESTS,
+            deps_.Shared.KEYS.SOCIAL_NOTICES,
+            deps_.Shared.KEYS.GIFT_SENT_TARGETS,
+        }
+        local uniqueListKeys = {}
+        local uniqueListKeyList = {}
+        for _, listKey in ipairs(listKeys) do
+            if listKey ~= nil and uniqueListKeys[listKey] ~= true then
+                uniqueListKeys[listKey] = true
+                uniqueListKeyList[#uniqueListKeyList + 1] = listKey
+            end
+        end
+
+        local purgePending = #scoreKeys + #uniqueListKeyList
+        local purgeFinished = false
+        local purgeFailed = false
+        local function afterPurge(success)
+            if purgeFinished then return end
+            if success ~= true then purgeFailed = true end
             purgePending = purgePending - 1
             if purgePending > 0 then return end
+            purgeFinished = true
+            if purgeFailed then
+                SendError(connection, deps_.Shared.EVENTS.CLEAR_SAVE_RESPONSE, "CLEAR_SAVE_FAILED", "清除旧存档失败，请稍后重试", { requestId = requestId })
+                return
+            end
             local cloudUid = CloudUid(uid)
             if cloudUid == nil then
                 SendError(connection, deps_.Shared.EVENTS.CLEAR_SAVE_RESPONSE, "CLEAR_SAVE_FAILED", "清除存档失败", { requestId = requestId })
                 return
             end
+            local PlayerSaveAssemble = require("server.player_save_assemble")
+            local unifiedDoc = PlayerSaveAssemble.BuildDoc(economyState, farmState, math.max(
+                tonumber(economyState.revision or 0) or 0,
+                tonumber(farmState.revision or 0) or 0
+            ), canonicalUid)
+            unifiedDoc.cleared = true
             local c = serverCloud:BatchCommit("清除游戏存档")
             ---@diagnostic disable-next-line: param-type-mismatch
-            c:ScoreSet(cloudUid, deps_.Shared.KEYS.ECONOMY_STATE, economyState)
-            local ledger = ServerEconomyState.BuildEconomyLedger(economyState)
-            if type(ledger) == "table" then
-                ---@diagnostic disable-next-line: param-type-mismatch
-                c:ScoreSet(cloudUid, deps_.Shared.KEYS.ECONOMY_LEDGER, ServerCloudStore.StampOwner(ledger, canonicalUid))
-            end
-            ---@diagnostic disable-next-line: param-type-mismatch
-            c:ScoreSet(cloudUid, deps_.Shared.KEYS.AUTH_FARM_STATE, farmState)
+            c:ScoreSet(cloudUid, deps_.Shared.KEYS.PLAYER_STATE, unifiedDoc)
             ---@diagnostic disable-next-line: param-type-mismatch
             c:ScoreSet(cloudUid, deps_.Shared.KEYS.SOCIAL_SAVE, socialSave)
             ---@diagnostic disable-next-line: param-type-mismatch
@@ -309,22 +432,39 @@ function ServerEconomyActions.ClearPlayerSave(uid, connection, requestId, record
         for _, scoreKey in ipairs(scoreKeys) do
             ServerCloudStore.DeleteScoreAllCandidates(uid, scoreKey, afterPurge)
         end
+        for _, listKey in ipairs(uniqueListKeyList) do
+            ServerCloudStore.DeleteListAllCandidates(uid, listKey, afterPurge)
+        end
     end
 
-    ServerCloudStore.ReadBestScore(uid, deps_.Shared.KEYS.AUTH_FARM_STATE, {
-        normalize = NormalizeFarmState,
-        score = ServerFarmState.ScoreFarmState,
-        logLabel = "清档前农场",
-    }, function(bestFarm)
-        local nextRevision = 1
-        if type(bestFarm) == "table" then
-            nextRevision = math.max(1, math.floor(tonumber(bestFarm.revision or 0) or 0) + 1)
+    -- 清档前读农场 revision：优先统一档
+    ServerCloudStore.ReadPlayerScore(uid, deps_.Shared.KEYS.PLAYER_STATE, {
+        requireOwner = true,
+        logLabel = "清档前统一档",
+    }, function(doc)
+        local bestFarm = type(doc) == "table" and doc.farm or nil
+        local function finish(farm)
+            local nextRevision = 1
+            if type(farm) == "table" then
+                nextRevision = math.max(1, math.floor(tonumber(farm.revision or 0) or 0) + 1)
+            end
+            CommitClearedSave(nextRevision)
         end
-        CommitClearedSave(nextRevision)
+        if type(bestFarm) == "table" then
+            finish(bestFarm)
+            return
+        end
+        ServerCloudStore.ReadBestScore(uid, deps_.Shared.KEYS.AUTH_FARM_STATE, {
+            normalize = NormalizeFarmState,
+            score = ServerFarmState.ScoreFarmState,
+            logLabel = "清档前农场",
+        }, function(legacyFarm)
+            finish(legacyFarm)
+        end)
     end)
 end
 
-function ServerEconomyActions.PlantSeedAuthority(uid, payload, connection)
+function ServerEconomyActions.PlantSeedAuthority(uid, payload, connection, sendOverride)
     uid = CloudUid(uid)
     payload = payload or {}
     local plantIndex = NormalizePlantIndex(payload.plantIndex)
@@ -340,18 +480,18 @@ function ServerEconomyActions.PlantSeedAuthority(uid, payload, connection)
         local owned = tonumber(state.seedBag[plantIndex] or 0) or 0
         if owned <= 0 then
             print(string.format("[播种请求][服务端] 拒绝：没有种子 uid=%s requestId=%s plant=%s owned=%s", tostring(uid), tostring(payload.requestId), tostring(plantIndex), tostring(owned)))
-            return { success = false, response = { success = false, message = "没有该种子", requestId = payload.requestId, state = state } }
+            return { success = false, response = { success = false, message = "没有该种子", requestId = payload.requestId, retryable = true, farm = farmState } }
         end
         local plot = GetFarmPlot(farmState, payload.plotIndex)
         if #plot.plants >= deps_.GetMaxCropsPerPlot() then
             print(string.format("[播种请求][服务端] 拒绝：地块已满 uid=%s requestId=%s plot=%s count=%d", tostring(uid), tostring(payload.requestId), tostring(payload.plotIndex), #plot.plants))
-            return { success = false, response = { success = false, message = "这块田地已满", requestId = payload.requestId, state = state } }
+            return { success = false, response = { success = false, message = "这块田地已满", requestId = payload.requestId, retryable = true, farm = farmState } }
         end
         local buffCount = tonumber(state.seedBagBuffs[plantIndex] or 0) or 0
         local seedBuff = buffCount > 0 and 0.01 or 0
         local crop = deps_.BuildAuthoritativeCrop(uid, payload, seedBuff, deps_.GetServerMutationTalentBonus(state))
         if crop == nil then
-            return { success = false, response = { success = false, message = "作物配置不存在", requestId = payload.requestId, state = state } }
+            return { success = false, response = { success = false, message = "作物配置不存在", requestId = payload.requestId, retryable = true, farm = farmState } }
         end
         state.seedBag[plantIndex] = owned - 1
         if buffCount > 0 then state.seedBagBuffs[plantIndex] = buffCount - 1 end
@@ -363,6 +503,7 @@ function ServerEconomyActions.PlantSeedAuthority(uid, payload, connection)
         deps_.SyncProgressionTourValueFromFarm(state, farmState)
         return {
             success = true,
+            sideState = state,
             response = {
                 success = true,
                 message = "播种确认",
@@ -373,49 +514,70 @@ function ServerEconomyActions.PlantSeedAuthority(uid, payload, connection)
                 seedBuff = seedBuff,
                 crop = crop,
                 farmPatch = { type = "addCrop", plotIndex = payload.plotIndex, crop = crop },
-                state = state,
+                statePatch = BuildStatePatch(state, { plantIndex = plantIndex }),
+                farmRevision = farmState.revision,
             },
         }
     end, function(result)
         local response = result and result.response or nil
         if result ~= nil and result.success == true and type(response) == "table" then
-            RecordResponse(uid, payload._requestRecordKey, response)
+            if sendOverride ~= nil then
+                sendOverride(uid, connection, deps_.Shared.EVENTS.PLANT_SEED_RESPONSE, response)
+            else
+                Send(connection, deps_.Shared.EVENTS.PLANT_SEED_RESPONSE, response)
+            end
+            SafeRecordResponse(uid, payload._requestRecordKey, response)
             CommitSideEffects(uid, "播种排行榜更新", function(c)
-                deps_.AddTourRankCommit(c, uid, response.state)
-                deps_.AddActivityRankCommit(c, uid, response.state)
+                local sideState = result.sideState or response.statePatch or {}
+                deps_.AddTourRankCommit(c, uid, sideState)
+                deps_.AddActivityRankCommit(c, uid, sideState)
             end)
-            Send(connection, deps_.Shared.EVENTS.PLANT_SEED_RESPONSE, response)
             return
         end
-        SendMutationResult(connection, deps_.Shared.EVENTS.PLANT_SEED_RESPONSE, result, payload.requestId)
+        SendMutationResult(connection, deps_.Shared.EVENTS.PLANT_SEED_RESPONSE, result, payload.requestId, sendOverride, uid)
     end)
 end
 
-function ServerEconomyActions.HarvestCropAuthority(uid, payload, connection)
+function ServerEconomyActions.HarvestCropAuthority(uid, payload, connection, sendOverride)
     uid = CloudUid(uid)
     payload = payload or {}
 
     deps_.PlayerStateService.MutateEconomyAndFarm(uid, "harvest_crop", function(state, farmState)
         local crop, plotIndex, cropIndex = deps_.FindFarmCropFromHarvestPayload(farmState, payload)
-        local function failure(message, extra)
+        local function failure(message, extra, opts)
+            opts = opts or {}
             local data = extra or {}
             data.success = false
             data.message = message
             data.requestId = payload.requestId
-            data.farm = farmState
-            data.state = data.state or state
+            data.retryable = opts.retryable ~= false
+            -- 仅疑似两端农场不一致时才拉 FullSync；常规失败附带 farm 让客户端软对齐，避免风暴。
+            if opts.needsFullSync == true then
+                data.needsFullSync = true
+            else
+                data.farm = farmState
+            end
             return { success = false, response = data }
         end
-        if crop == nil then return failure("作物不存在或已收获") end
+        if crop == nil then
+            return failure("作物不存在或已收获", nil, { needsFullSync = false })
+        end
         deps_.RefreshAuthCrop(crop)
         print(string.format("[权威收获] 请求 requestId=%s uid=%s plot=%s cropIndex=%s cropId=%s mature=%s", tostring(payload.requestId), tostring(uid), tostring(plotIndex), tostring(cropIndex), tostring(crop.cropId or crop.serverCropId), tostring(crop.mature)))
-        if crop.harvested == true then return failure("这株作物已经收获过了", { cropId = crop.cropId or crop.serverCropId, plotIndex = plotIndex, cropIndex = cropIndex }) end
-        if crop.mature ~= true then return failure("作物尚未成熟", { cropId = crop.cropId or crop.serverCropId, plotIndex = plotIndex, cropIndex = cropIndex }) end
+        if crop.harvested == true then
+            return failure("这株作物已经收获过了", { cropId = crop.cropId or crop.serverCropId, plotIndex = plotIndex, cropIndex = cropIndex })
+        end
+        if crop.mature ~= true then
+            return failure("作物尚未成熟", { cropId = crop.cropId or crop.serverCropId, plotIndex = plotIndex, cropIndex = cropIndex })
+        end
 
         state.harvested = state.harvested or {}
         local harvestBagCapacity = deps_.GetHarvestBagCapacityFromState(state)
         if #(state.harvested) >= harvestBagCapacity then
-            return failure("背包已满，出售作物或点天赋扩容", { bagCount = #state.harvested, bagCapacity = harvestBagCapacity })
+            return failure("背包已满，出售作物或点天赋扩容", {
+                bagCount = #state.harvested,
+                bagCapacity = harvestBagCapacity,
+            }, { retryable = false })
         end
         local harvestItem = {
             name = crop.name,
@@ -447,6 +609,7 @@ function ServerEconomyActions.HarvestCropAuthority(uid, payload, connection)
         deps_.SyncProgressionTourValueFromFarm(state, farmState)
         return {
             success = true,
+            sideState = state,
             response = {
                 success = true,
                 message = "收获确认",
@@ -460,22 +623,32 @@ function ServerEconomyActions.HarvestCropAuthority(uid, payload, connection)
                 droppedPackName = droppedPack ~= nil and deps_.GameConfig.SEED_PACK_CONFIG[droppedPack] and deps_.GameConfig.SEED_PACK_CONFIG[droppedPack].packName or nil,
                 activityReward = activityReward,
                 exp = exp,
-                farm = farmState,
-                state = state,
+                statePatch = BuildStatePatch(state, {
+                    harvestItem = harvestItem,
+                    seedPackId = droppedPack,
+                    collectedPlantIndex = crop.plantIndex,
+                    activityReward = activityReward,
+                }),
+                farmRevision = farmState.revision,
             },
         }
     end, function(result)
         local response = result and result.response or nil
         if result ~= nil and result.success == true and type(response) == "table" then
-            RecordResponse(uid, payload._requestRecordKey, response)
+            if sendOverride ~= nil then
+                sendOverride(uid, connection, deps_.Shared.EVENTS.HARVEST_CROP_RESPONSE, response)
+            else
+                Send(connection, deps_.Shared.EVENTS.HARVEST_CROP_RESPONSE, response)
+            end
+            SafeRecordResponse(uid, payload._requestRecordKey, response)
             CommitSideEffects(uid, "收获排行榜更新", function(c)
-                deps_.AddTourRankCommit(c, uid, response.state)
-                deps_.AddActivityRankCommit(c, uid, response.state)
+                local sideState = result.sideState or response.statePatch or {}
+                deps_.AddTourRankCommit(c, uid, sideState)
+                deps_.AddActivityRankCommit(c, uid, sideState)
             end)
-            Send(connection, deps_.Shared.EVENTS.HARVEST_CROP_RESPONSE, response)
             return
         end
-        SendMutationResult(connection, deps_.Shared.EVENTS.HARVEST_CROP_RESPONSE, result, payload.requestId)
+        SendMutationResult(connection, deps_.Shared.EVENTS.HARVEST_CROP_RESPONSE, result, payload.requestId, sendOverride, uid)
     end)
 end
 

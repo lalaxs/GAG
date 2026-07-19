@@ -813,74 +813,81 @@ local function BuildTalentButton(labels)
         },
     }
 
+    ---@type Widget[]
+    local entryChildren = {
+        UI.Button {
+            text = "天赋",
+            width = 69,
+            height = 66,
+            paddingTop = 0,
+            paddingRight = 16,
+            paddingBottom = 5,
+            paddingLeft = 16,
+            fontSize = 15,
+            fontWeight = "bold",
+            backgroundColor = {255, 250, 240, 245},
+            fontColor = {78, 155, 100, 255},
+            borderRadius = 14,
+            onClick = function()
+                if deps_.onTalentOpen then
+                    deps_.onTalentOpen()
+                end
+            end,
+        },
+    }
+
+    if not deps_.isExpansionMaxed or not deps_.isExpansionMaxed() then
+        entryChildren[#entryChildren + 1] = UI.Button {
+            text = "扩展",
+            width = 69,
+            height = 66,
+            paddingTop = 0,
+            paddingRight = 16,
+            paddingBottom = 5,
+            paddingLeft = 16,
+            fontSize = 15,
+            fontWeight = "bold",
+            backgroundColor = {255, 250, 240, 245},
+            fontColor = {80, 135, 185, 255},
+            borderRadius = 14,
+            onClick = function()
+                if deps_.onExpansionOpen then
+                    deps_.onExpansionOpen()
+                end
+            end,
+        }
+    end
+
+    entryChildren[#entryChildren + 1] = SocialView.BuildButton()
+    entryChildren[#entryChildren + 1] = LeaderboardView.BuildButton()
+    entryChildren[#entryChildren + 1] = UI.Button {
+        text = "图鉴",
+        width = 69,
+        height = 66,
+        paddingTop = 0,
+        paddingRight = 16,
+        paddingBottom = 5,
+        paddingLeft = 16,
+        fontSize = 15,
+        fontWeight = "bold",
+        backgroundColor = {255, 250, 240, 245},
+        fontColor = {160, 112, 62, 255},
+        borderRadius = 14,
+        onClick = function()
+            if deps_.onCodexOpen then
+                deps_.onCodexOpen()
+            end
+        end,
+    }
+    entryChildren[#entryChildren + 1] = labels.talentBadge
+
     return UI.Panel {
         position = "absolute",
         top = 152,
         left = 12,
         overflow = "visible",
         gap = 8,
-        children = {
-            UI.Button {
-                text = "天赋",
-                width = 69,
-                height = 66,
-                paddingTop = 0,
-                paddingRight = 16,
-                paddingBottom = 5,
-                paddingLeft = 16,
-                fontSize = 15,
-                fontWeight = "bold",
-                backgroundColor = {255, 250, 240, 245},
-                fontColor = {78, 155, 100, 255},
-                borderRadius = 14,
-                onClick = function()
-                    if deps_.onTalentOpen then
-                        deps_.onTalentOpen()
-                    end
-                end,
-            },
-            (not deps_.isExpansionMaxed or not deps_.isExpansionMaxed()) and UI.Button {
-                text = "扩展",
-                width = 69,
-                height = 66,
-                paddingTop = 0,
-                paddingRight = 16,
-                paddingBottom = 5,
-                paddingLeft = 16,
-                fontSize = 15,
-                fontWeight = "bold",
-                backgroundColor = {255, 250, 240, 245},
-                fontColor = {80, 135, 185, 255},
-                borderRadius = 14,
-                onClick = function()
-                    if deps_.onExpansionOpen then
-                        deps_.onExpansionOpen()
-                    end
-                end,
-            } or nil,
-            SocialView.BuildButton(),
-            LeaderboardView.BuildButton(),
-            UI.Button {
-                text = "图鉴",
-                width = 69,
-                height = 66,
-                paddingTop = 0,
-                paddingRight = 16,
-                paddingBottom = 5,
-                paddingLeft = 16,
-                fontSize = 15,
-                fontWeight = "bold",
-                backgroundColor = {255, 250, 240, 245},
-                fontColor = {160, 112, 62, 255},
-                borderRadius = 14,
-                onClick = function()
-                    if deps_.onCodexOpen then
-                        deps_.onCodexOpen()
-                    end
-                end,
-            },
-            labels.talentBadge,
-        },
+        children = entryChildren,
     }
 end
 

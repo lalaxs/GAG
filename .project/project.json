@@ -5,7 +5,7 @@
     "id": "858557875"
   },
   "entry": "main.lua",
-  "version": "1.4.24",
+  "version": "1.7.8",
   "taptap_publish": {
     "title": "小花园",
     "description": "在《小花园》里，做的事很简单——播种，等它长大，收成，再种一轮。\n不过有时候，长出来的东西会不太一样。颜色变了的、形状怪了的，碰上了就当赚到。",
@@ -49,11 +49,11 @@
   "entry@client": "main.lua",
   "entry@server": "server_main.lua",
   "metadata": {
-    "updated_at": "2026-07-06T13:45:52.476Z",
+    "updated_at": "2026-07-19T08:50:36.260Z",
     "promo_dependent_hash": "01c59639aeb13aef890c497b492f0907"
   },
   "test_qrcode": {
-    "url": "https://tapcode-sce.spark.xd.com/qrcode/p_iemc_1783345552335.png",
-    "generated_at": "2026-07-06T13:45:52.476Z"
+    "url": "https://tapcode-sce.spark.xd.com/qrcode/p_iemc_1784451036135.png",
+    "generated_at": "2026-07-19T08:50:36.260Z"
   }
 }

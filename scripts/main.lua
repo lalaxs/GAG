@@ -92,6 +92,8 @@ local dailyTaskState_ = inventoryState_.dailyTaskState
 local taskModal_ = nil
 local pendingRebuildUI_ = false
 local harvestPanelRefreshTimer_ = 0
+local lastEnterPlantAuthFarmRequestAt_ = 0
+local ENTER_PLANT_AUTH_FARM_COOLDOWN = 30
 local initialUiReady_ = false
 local initialUiBuildPending_ = false
 local initialPlayerReady_ = false
@@ -136,6 +138,17 @@ function ClearGameSave()
     saveDisabled_ = true
     return requested
 end
+
+function ResetSaveFromLoading()
+    local requested = EconomyCloudSystem.ClearSave({ reopenSave = true })
+    if not requested then
+        if ShowToast ~= nil then ShowToast("服务器尚未就绪，无法重开存档") end
+        return false
+    end
+    saveDisabled_ = true
+    return true
+end
+
 
 function ApplyAuthoritativeFarmState(farm)
     return FarmRuntime.ApplyAuthoritativeFarmState(farm)
@@ -248,8 +261,14 @@ function EnterPlantView()
         plantTab_ = "seed"
     end
     if EconomyCloudSystem ~= nil and EconomyCloudSystem.RequestAuthFarm ~= nil then
-        print(string.format("[种植模式] 进入前请求权威农场刷新 plot=%d", selectedPlot_))
-        EconomyCloudSystem.RequestAuthFarm({ reason = "enter_plant_view" })
+        local now = os and os.time and os.time() or 0
+        if now - lastEnterPlantAuthFarmRequestAt_ >= ENTER_PLANT_AUTH_FARM_COOLDOWN then
+            lastEnterPlantAuthFarmRequestAt_ = now
+            print(string.format("[种植模式] 进入前后台请求权威农场刷新 plot=%d", selectedPlot_))
+            EconomyCloudSystem.RequestAuthFarm({ reason = "enter_plant_view", background = true })
+        else
+            print(string.format("[种植模式] 跳过进入前权威刷新 plot=%d cooldown=%ds", selectedPlot_, ENTER_PLANT_AUTH_FARM_COOLDOWN - (now - lastEnterPlantAuthFarmRequestAt_)))
+        end
     end
     CameraSystem.SetTarget(FarmSystem.PlotWorldPosition(selectedPlot_))
     CameraSystem.EnterPlantView()
@@ -569,12 +588,15 @@ RebuildUI = function()
     UiRuntime.Rebuild()
 end
 
-function FlushPendingRebuildUI()
-    UiRuntime.FlushPendingRebuild()
+function FlushPendingRebuildUI(dt)
+    UiRuntime.FlushPendingRebuild(dt)
 end
 
 HandleClearSaveCompleted = function(success)
     SettingsView.HandleClearSaveCompleted(success)
+    if UIController ~= nil and UIController.HandleResetSaveCompleted ~= nil then
+        UIController.HandleResetSaveCompleted(success)
+    end
     if not success then return end
 
     if PlayerSystem ~= nil and PlayerSystem.ClearSave ~= nil then
@@ -686,6 +708,34 @@ end
 
 function HandleNetworkRecoveryServerDisconnected(eventType, eventData)
     NetworkRecovery.HandleServerDisconnected()
+end
+
+function HandleNetworkRecoveryServerConnected(eventType, eventData)
+    NetworkRecovery.HandleServerConnected()
+end
+
+function HandleNetworkRecoveryNetworkReconnecting(eventType, eventData)
+    NetworkRecovery.HandleNetworkReconnecting()
+end
+
+function HandleNetworkRecoveryNetworkReconnected(eventType, eventData)
+    NetworkRecovery.HandleNetworkReconnected()
+end
+
+function HandleNetworkRecoveryConnectFailed(eventType, eventData)
+    NetworkRecovery.HandleConnectFailed()
+end
+
+function HandleNetworkRecoveryTransportConnected(eventType, eventData)
+    NetworkRecovery.HandleTransportConnected(eventData)
+end
+
+function HandleNetworkRecoveryTransportDisconnected(eventType, eventData)
+    NetworkRecovery.HandleTransportDisconnected(eventData)
+end
+
+function HandleNetworkRecoveryTransportConnectFailed(eventType, eventData)
+    NetworkRecovery.HandleTransportConnectFailed(eventData)
 end
 
 ---@param eventType string
@@ -801,6 +851,7 @@ function Start()
         GetPlantGuideStep = GetPlantGuideStep,
         RequestMaturePlotAdReward = RequestMaturePlotAdReward,
         ClearGameSave = ClearGameSave,
+        ResetSaveFromLoading = ResetSaveFromLoading,
         ZoomPlantView = ZoomPlantView,
         SetPlotDisplayMode = SetPlotDisplayMode,
         SwitchNextFocusedPlot = SwitchNextFocusedPlot,
@@ -839,6 +890,18 @@ function Start()
         AudioSystem = AudioSystem,
         UpdateNetworkRecovery = UpdateNetworkRecovery,
         RequestNetworkRecoverySync = RequestNetworkRecoverySync,
+        RetryLoading = function()
+            if EconomyCloudSystem ~= nil and EconomyCloudSystem.RetryInitialSync ~= nil then
+                EconomyCloudSystem.RetryInitialSync("loading_retry")
+            end
+            if UIController ~= nil and UIController.ShowLoading ~= nil then
+                UIController.ShowLoading("正在重新同步存档...")
+            end
+            if NetworkRecovery ~= nil and NetworkRecovery.RetryNow ~= nil then
+                return NetworkRecovery.RetryNow()
+            end
+            return true
+        end,
         EnsureInitialUiReady = EnsureInitialUiReady,
         HandleInput = HandleInput,
         UpdateTouchCameraGesture = UpdateTouchCameraGesture,

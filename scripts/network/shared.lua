@@ -2,6 +2,8 @@
 -- 社交花园网络共享定义
 -- ============================================================================
 
+local PlayerStateCodec = require("network.player_state_codec")
+
 local Shared = {}
 
 Shared.KEYS = {
@@ -21,8 +23,10 @@ Shared.KEYS = {
     SOCIAL_NOTICES = "garden_social_notices_v1",
     GIFT_SENT_TARGETS = "garden_gift_sent_targets_v1",
     SOCIAL_GOLD = "gold",
+    -- 统一玩家存档（经济 + 农场同文档，唯一权威；Flush 只写此 key）
+    PLAYER_STATE = "garden_player_state_v1",
+    -- 旧拆分档：仅无统一档时一次性迁移读取，不再写入
     ECONOMY_STATE = "garden_economy_state_v1",
-    -- 精简经济账本：与完整经济同批双写。完整档偶发不落盘时用 ledger 恢复金币/种子。
     ECONOMY_LEDGER = "garden_economy_ledger_v1",
     AUTH_FARM_STATE = "garden_auth_farm_state_v1",
     SAVE_UID_RECONCILED = "garden_save_uid_reconciled_v2",
@@ -31,8 +35,10 @@ Shared.KEYS = {
 
 Shared.EVENTS = {
     CLIENT_READY = "GardenClientReady",
+    SERVER_SYNC_ACK = "GardenServerSyncAck",
     REQUEST_FULL_SYNC = "GardenRequestFullSync",
     PLAYER_PROFILE = "GardenPlayerProfile",
+    UPDATE_PLAYER_PROFILE = "GardenUpdatePlayerProfile",
     SAVE_GARDEN = "GardenSaveSnapshot",
     SAVE_GARDEN_RESULT = "GardenSaveSnapshotResult",
     REQUEST_GARDEN = "GardenRequestSnapshot",
@@ -106,6 +112,7 @@ Shared.EVENTS = {
 Shared.SERVER_EVENTS = {
     Shared.EVENTS.CLIENT_READY,
     Shared.EVENTS.REQUEST_FULL_SYNC,
+    Shared.EVENTS.UPDATE_PLAYER_PROFILE,
     Shared.EVENTS.SAVE_GARDEN,
     Shared.EVENTS.REQUEST_GARDEN,
     Shared.EVENTS.REQUEST_RANK,
@@ -143,6 +150,7 @@ Shared.SERVER_EVENTS = {
 }
 
 Shared.CLIENT_EVENTS = {
+    Shared.EVENTS.SERVER_SYNC_ACK,
     Shared.EVENTS.PLAYER_PROFILE,
     Shared.EVENTS.SAVE_GARDEN_RESULT,
     Shared.EVENTS.GARDEN_RESPONSE,
@@ -194,16 +202,42 @@ function Shared.RegisterClientEvents()
     end
 end
 
+function Shared.EncodeWithStatus(data)
+    local networkData = data or {}
+    if type(networkData) == "table" then
+        local sanitized = {}
+        for key, value in pairs(networkData) do sanitized[key] = value end
+        if type(sanitized.state) == "table" then
+            sanitized.state = PlayerStateCodec.SanitizeEconomyForClient(sanitized.state)
+        end
+        networkData = sanitized
+    end
+    local compactOk, compactData = pcall(PlayerStateCodec.CompactNetwork, networkData)
+    if compactOk ~= true then
+        print("[网络] payload compact failed: " .. tostring(compactData))
+        return "{}", false
+    end
+    local ok, encoded = pcall(cjson.encode, compactData)
+    if ok and encoded ~= nil then return encoded, true end
+    print("[网络] JSON encode failed: " .. tostring(encoded))
+    return "{}", false
+end
+
 function Shared.Encode(data)
-    local ok, encoded = pcall(cjson.encode, data or {})
-    if ok and encoded ~= nil then return encoded end
-    return "{}"
+    local encoded = Shared.EncodeWithStatus(data)
+    return encoded
 end
 
 function Shared.Decode(raw)
     if raw == nil or raw == "" then return {} end
     local ok, data = pcall(cjson.decode, raw)
-    if ok and type(data) == "table" then return data end
+    if ok and type(data) == "table" then
+        local hydrateOk, hydrated = pcall(PlayerStateCodec.HydrateNetwork, data)
+        if hydrateOk and type(hydrated) == "table" then return hydrated end
+        print("[网络] payload hydrate failed: " .. tostring(hydrated))
+        return {}
+    end
+    print("[网络] JSON decode failed")
     return {}
 end
 
@@ -211,18 +245,38 @@ function Shared.SendToServer(eventName, data)
     if network == nil then return false end
     local connection = network:GetServerConnection()
     if connection == nil then return false end
+    if connection.IsConnected ~= nil and connection:IsConnected() ~= true then return false end
+    if connection.connected ~= nil and connection.connected ~= true then return false end
+    local encoded, encodedOk = Shared.EncodeWithStatus(data)
+    if encodedOk ~= true then return false end
     local eventData = VariantMap()
-    eventData["Data"] = Variant(Shared.Encode(data))
-    connection:SendRemoteEvent(eventName, true, eventData)
-    return true
+    eventData["Data"] = Variant(encoded)
+    local ok, err = pcall(function()
+        connection:SendRemoteEvent(eventName, true, eventData)
+    end)
+    if ok ~= true then
+        print("[网络] SendToServer failed event=" .. tostring(eventName) .. " err=" .. tostring(err))
+        return false
+    end
+    return true, #encoded
 end
 
 function Shared.SendToClient(connection, eventName, data)
     if connection == nil then return false end
+    if connection.IsConnected ~= nil and connection:IsConnected() ~= true then return false end
+    if connection.connected ~= nil and connection.connected ~= true then return false end
+    local encoded, encodedOk = Shared.EncodeWithStatus(data)
+    if encodedOk ~= true then return false end
     local eventData = VariantMap()
-    eventData["Data"] = Variant(Shared.Encode(data))
-    connection:SendRemoteEvent(eventName, true, eventData)
-    return true
+    eventData["Data"] = Variant(encoded)
+    local ok, err = pcall(function()
+        connection:SendRemoteEvent(eventName, true, eventData)
+    end)
+    if ok ~= true then
+        print("[网络] SendToClient failed event=" .. tostring(eventName) .. " err=" .. tostring(err))
+        return false
+    end
+    return true, #encoded
 end
 
 function Shared.ReadEventData(eventData)

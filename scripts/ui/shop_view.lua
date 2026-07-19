@@ -88,6 +88,43 @@ local function TrackShopScroll(shopType, scrollX, scrollY)
     scrollState.y = math.max(0, scrollY or 0)
 end
 
+local function BuildShopStatusPanel(message, buttonText)
+    return UI.Panel {
+        height = math.max(160, shopContentMinHeight_ - GetDisplay().SHOP_LIST_HEADER_HEIGHT),
+        alignItems = "center",
+        justifyContent = "center",
+        gap = 12,
+        paddingLeft = 20,
+        paddingRight = 20,
+        children = {
+            UI.Label {
+                text = message,
+                fontSize = 15,
+                fontWeight = "bold",
+                fontColor = {120, 96, 68, 220},
+                textAlign = "center",
+                whiteSpace = "normal",
+            },
+            buttonText ~= nil and UI.Button {
+                text = buttonText,
+                width = 128,
+                height = 40,
+                fontSize = 14,
+                fontWeight = "bold",
+                variant = "primary",
+                borderRadius = 14,
+                onClick = function()
+                    local gameRef = GetGameRef()
+                    if system_.RequestSeedShopFromServer() then
+                        if gameRef.showToast then gameRef.showToast("正在同步全服商店...") end
+                    end
+                    RequestRebuild()
+                end,
+            } or nil,
+        },
+    }
+end
+
 local function GetItemAlpha(index)
     if staggerDone_ then return 1.0 end
     local appearStart = (index - 1) * STAGGER_DELAY
@@ -479,34 +516,42 @@ local function BuildSeedShopContent()
 
     local listHeight = math.max(display.SHOP_LIST_MIN_HEIGHT, shopContentMinHeight_ - display.SHOP_LIST_HEADER_HEIGHT)
 
-    local gridContainer = UI.Panel {
-        width = "100%",
-        flexDirection = "row",
-        flexWrap = "wrap",
-        justifyContent = "flex-start",
-        gap = 4,
-        paddingLeft = 4,
-        paddingRight = 4,
-        children = listItems,
-    }
+    local bodyContent
+    if state.serverAuthoritative and state.seed.lastError ~= nil and state.seed.lastError ~= "" then
+        bodyContent = BuildShopStatusPanel(state.seed.lastError, "重试同步")
+    elseif state.serverAuthoritative and state.seed.awaitingServer == true and #seeds == 0 then
+        bodyContent = BuildShopStatusPanel("正在同步全服商店...", nil)
+    else
+        local gridContainer = UI.Panel {
+            width = "100%",
+            flexDirection = "row",
+            flexWrap = "wrap",
+            justifyContent = "flex-start",
+            gap = 4,
+            paddingLeft = 4,
+            paddingRight = 4,
+            children = listItems,
+        }
 
-    seedListPanel_ = UI.ScrollView {
-        height = listHeight,
-        scrollY = true,
-        showScrollbar = false,
-        bounces = false,
-        onScroll = function(self, scrollX, scrollY)
-            TrackShopScroll("seed", scrollX, scrollY)
-        end,
-        children = { gridContainer },
-    }
-    RestoreShopScrollState("seed", seedListPanel_)
+        seedListPanel_ = UI.ScrollView {
+            height = listHeight,
+            scrollY = true,
+            showScrollbar = false,
+            bounces = false,
+            onScroll = function(self, scrollX, scrollY)
+                TrackShopScroll("seed", scrollX, scrollY)
+            end,
+            children = { gridContainer },
+        }
+        RestoreShopScrollState("seed", seedListPanel_)
+        bodyContent = seedListPanel_
+    end
 
     return UI.Panel {
         height = shopContentMinHeight_,
         children = {
             header,
-            seedListPanel_,
+            bodyContent,
         },
     }
 end
@@ -694,7 +739,9 @@ function ShopView.Open()
 
     local state = GetState()
     if state.serverAuthoritative then
-        system_.RequestSeedShopFromServer()
+        if system_.RequestSeedShopFromServer() ~= true then
+            ShopView.RebuildShopContent()
+        end
     end
 
     print("[Shop] 商店已打开")

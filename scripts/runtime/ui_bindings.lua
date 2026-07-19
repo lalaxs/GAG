@@ -28,6 +28,7 @@ end
 function UiBindings.InitUIController()
     deps_.UIController.Init({
         config = deps_.CONFIG,
+        NetworkRecovery = deps_.NetworkRecovery,
         plants = deps_.PLANTS,
         seedBag = deps_.getSeedBag(),
         getPlots = deps_.getPlots,
@@ -51,6 +52,10 @@ function UiBindings.InitUIController()
         buildSeedPackOverlay = deps_.buildSeedPackOverlay,
         buildSeedPackOpeningOverlay = deps_.buildSeedPackOpeningOverlay,
         createBagPreview = deps_.createBagPreview,
+        retryLoading = deps_.retryLoading,
+        resetSave = deps_.resetSave,
+        suppressWorldTap = deps_.suppressWorldTap,
+        showToast = deps_.showToast,
     })
 end
 
@@ -329,6 +334,12 @@ function UiBindings.InitProfileView()
         getSelectedAvatarIndex = function() return deps_.PlayerSystem.GetSelectedAvatarIndex() end,
         selectAvatar = function(index) return deps_.PlayerSystem.SelectAvatar(index) end,
         setNickname = function(name) return deps_.PlayerSystem.SetNickname(name) end,
+        NetworkClient = deps_.NetworkClient,
+        Shared = deps_.Shared,
+        updateProfile = function(onComplete)
+            local payload = deps_.PlayerSystem.GetProfileUpdatePayload(onComplete)
+            return deps_.NetworkClient.SendRequest(deps_.Shared.EVENTS.UPDATE_PLAYER_PROFILE, payload)
+        end,
         getLevel = function() return deps_.TalentSystem.GetLevel() end,
         getExp = function() return deps_.TalentSystem.GetExp() end,
         getExpToNextLevel = function() return deps_.TalentSystem.GetExpToNextLevel() end,

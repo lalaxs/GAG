@@ -30,7 +30,17 @@ local function GetSelectedPlot()
     return plots[GetSelectedPlotIndex()]
 end
 
+local function CanStartAdReward()
+    if deps_.EconomyCloudSystem.HasPendingAdReward ~= nil
+        and deps_.EconomyCloudSystem.HasPendingAdReward() then
+        ShowToast("上一笔广告奖励仍在确认中，请稍后")
+        return false
+    end
+    return true
+end
+
 function AdRewardActions.ShowPrompt(title, message, rewardType, extra)
+    if not CanStartAdReward() then return false end
     return deps_.AdRewardSystem.ConfirmAndShow({
         title = title,
         message = message,
@@ -43,6 +53,7 @@ function AdRewardActions.ShowPrompt(title, message, rewardType, extra)
 end
 
 function AdRewardActions.RequestStealAttempts()
+    if not CanStartAdReward() then return false end
     return deps_.AdRewardSystem.Show({
         onSuccess = function()
             if deps_.EconomyCloudSystem.RequestAdReward("steal_attempts", {}) then

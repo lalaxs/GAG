@@ -109,13 +109,22 @@ local function IsCurrentLoading()
     return system.IsLoading(activeTab_)
 end
 
-local function RefreshCurrent()
+local function GetCurrentError()
+    local system = GetSystem()
+    if system == nil or system.GetError == nil then return nil end
+    if activeTab_ == "activity" then
+        return system.GetError("activity", GetActiveActivityId())
+    end
+    return system.GetError(activeTab_)
+end
+
+local function RefreshCurrent(forceRefresh)
     local system = GetSystem()
     if system == nil then return false end
     if activeTab_ == "activity" then
-        return system.Request("activity", GetActiveActivityId())
+        return system.Request("activity", GetActiveActivityId(), forceRefresh == true)
     end
-    return system.Request(activeTab_)
+    return system.Request(activeTab_, nil, forceRefresh == true)
 end
 
 local function FormatScore(value)
@@ -175,7 +184,7 @@ local function BuildTabButton(tab)
         onClick = function()
             Suppress()
             activeTab_ = tab.id
-            RefreshCurrent()
+            RefreshCurrent(true)
             RebuildContent()
         end,
     }
@@ -218,6 +227,14 @@ local function ResolveAvatar(entry)
         return deps_.getMyAvatar() or entry.avatar
     end
     return entry and entry.avatar or nil
+end
+
+local function GetVisitError()
+    local system = deps_.SocialGardenSystem
+    if system ~= nil and system.GetRequestError ~= nil then
+        return system.GetRequestError("visit")
+    end
+    return nil
 end
 
 local function BuildAvatar(entry, size)
@@ -287,7 +304,9 @@ local function BuildVisitButton(entry)
         borderRadius = 14,
         onClick = function()
             Suppress()
-            VisitPlayer(entry.userId)
+            if VisitPlayer(entry.userId) ~= true and deps_.showToast then
+                deps_.showToast(GetVisitError() or "网络连接失败，无法拜访该花园，请检查网络后重试")
+            end
         end,
     }
 end
@@ -348,7 +367,7 @@ local function BuildLeaderboardRow(entry)
     }
 end
 
-local function BuildEmptyPanel()
+local function BuildStatusPanel(message, buttonText)
     return UI.Panel {
         width = "100%",
         flexGrow = 1,
@@ -358,16 +377,49 @@ local function BuildEmptyPanel()
         borderRadius = 18,
         alignItems = "center",
         justifyContent = "center",
+        gap = 14,
+        paddingLeft = 24,
+        paddingRight = 24,
         children = {
             UI.Label {
-                text = IsCurrentLoading() and "排行榜加载中..." or "暂无排行榜数据",
+                text = message,
                 fontSize = 16,
                 fontWeight = "bold",
                 fontColor = COLORS.muted,
                 textAlign = "center",
+                whiteSpace = "normal",
             },
+            buttonText ~= nil and UI.Button {
+                text = buttonText,
+                width = 128,
+                height = 40,
+                fontSize = 14,
+                fontWeight = "bold",
+                backgroundColor = COLORS.green,
+                hoverBackgroundColor = {94, 194, 131, 255},
+                pressedBackgroundColor = COLORS.greenDeep,
+                textColor = {255, 255, 255, 255},
+                fontColor = {255, 255, 255, 255},
+                borderRadius = 14,
+                onClick = function()
+                    Suppress()
+                    RefreshCurrent(true)
+                    RebuildContent()
+                end,
+            } or nil,
         },
     }
+end
+
+local function BuildEmptyPanel()
+    local errorText = GetCurrentError()
+    if errorText ~= nil and errorText ~= "" then
+        return BuildStatusPanel(errorText, "重试")
+    end
+    if IsCurrentLoading() then
+        return BuildStatusPanel("排行榜加载中...", nil)
+    end
+    return BuildStatusPanel("暂无排行榜数据", "刷新")
 end
 
 local function BuildListPanel(data)
@@ -528,7 +580,7 @@ local function BuildContentPanel()
                         borderRadius = 14,
                         onClick = function()
                             Suppress()
-                            RefreshCurrent()
+                            RefreshCurrent(true)
                             RebuildContent()
                         end,
                     },

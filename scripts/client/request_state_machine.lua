@@ -9,9 +9,27 @@ local RequestStateMachine = {}
 RequestStateMachine.__index = RequestStateMachine
 
 local DEFAULT_TIMEOUT = 12.0
+local CRITICAL_TIMEOUT_REASON = {
+    load = true,
+    authFarm = true,
+}
+
+local function NotifyNetworkFailure(record)
+    if record ~= nil and record.suppressNetworkFailure == true then return end
+    local ok, NetworkClient = pcall(require, "client.network_client")
+    if ok and NetworkClient ~= nil and NetworkClient.ReportRequestFailure ~= nil then
+        local requestType = tostring(record and record.type or "unknown")
+        NetworkClient.ReportRequestFailure(
+            "request_timeout_" .. requestType,
+            "服务器响应较慢，正在继续同步数据。请保持网络连接",
+            false,
+            { critical = CRITICAL_TIMEOUT_REASON[requestType] == true }
+        )
+    end
+end
 
 local function Now()
-    return os and os.clock and os.clock() or 0
+    return os and os.time and os.time() or 0
 end
 
 local function WallTime()
@@ -45,6 +63,7 @@ function RequestStateMachine:Begin(requestType, payload, options)
         payload = payload,
         startedAt = Now(),
         timeout = options and options.timeout or self.timeout,
+        suppressNetworkFailure = options and options.suppressNetworkFailure == true,
     }
     self.byId[requestId] = record
     self.byType[requestType] = record
@@ -107,6 +126,7 @@ function RequestStateMachine:Update(onTimeout)
     for _, record in ipairs(expired) do
         self:Finish(record.id)
         self.lastError = "timeout"
+        NotifyNetworkFailure(record)
         if onTimeout then onTimeout(record) end
     end
     return #expired

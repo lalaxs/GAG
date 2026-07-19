@@ -61,6 +61,15 @@ local function AcceptScoreRead(requestUid, value, hitKey, opts)
             return false
         end
         if not UserId.Same(hitKey, requestUid) then return false end
+        if value.userId ~= nil and not UserId.Same(value.userId, requestUid) then
+            print(string.format(
+                "[存档隔离] 拒绝 legacy embedded userId 不匹配 request=%s embedded=%s hitKey=%s",
+                tostring(GetCanonicalUidKey(requestUid)),
+                tostring(UserId.Normalize(value.userId)),
+                tostring(hitKey)
+            ))
+            return false
+        end
         print(string.format(
             "[存档隔离] legacy 无 owner 标记，按 key 接受 uid=%s hitKey=%s",
             tostring(GetCanonicalUidKey(requestUid)),
@@ -106,6 +115,53 @@ end
 
 function ServerCloudStore.StampOwner(value, uid)
     return StampOwner(value, uid)
+end
+
+--- 校验 score 表是否属于该 uid（防串档）。
+function ServerCloudStore.AcceptOwnedTable(uid, value, opts)
+    local hitKey = ServerCloudStore.CloudPlayerId(uid) or GetCanonicalUidKey(uid)
+    return AcceptScoreRead(uid, value, hitKey, opts or { requireOwner = true })
+end
+
+--- 登录热路径：对 canonical cloudId 一次 BatchGet 拉齐多个 score key。
+---@param uid any
+---@param keys string[]
+---@param done fun(ok: boolean, scores: table|nil, cloudUid: any, err: any)
+function ServerCloudStore.BatchGetLoginScores(uid, keys, done)
+    local cloudUid = ServerCloudStore.CloudPlayerId(uid)
+    if cloudUid == nil then
+        if done ~= nil then done(false, nil, nil, "NO_UID") end
+        return
+    end
+    if serverCloud == nil or type(serverCloud.BatchGet) ~= "function" then
+        if done ~= nil then done(false, nil, cloudUid, "NO_BATCH_GET") end
+        return
+    end
+    keys = keys or {}
+    if #keys <= 0 then
+        if done ~= nil then done(true, {}, cloudUid, nil) end
+        return
+    end
+    ---@diagnostic disable-next-line: param-type-mismatch
+    local batch = serverCloud:BatchGet(cloudUid)
+    for i = 1, #keys do
+        ---@diagnostic disable-next-line: param-type-mismatch
+        batch = batch:Key(keys[i])
+    end
+    batch:Fetch({
+        ok = function(scores, _iscores, _sscores)
+            local result = {}
+            if type(scores) == "table" then
+                for key, value in pairs(scores) do
+                    result[key] = value
+                end
+            end
+            if done ~= nil then done(true, result, cloudUid, nil) end
+        end,
+        error = function(code, reason)
+            if done ~= nil then done(false, nil, cloudUid, reason or code) end
+        end,
+    })
 end
 
 --- 写入 score 存档（使用 CloudPlayerId + ownerUserId 标记）。
@@ -290,6 +346,17 @@ function ServerCloudStore.ReadBestScore(uid, scoreKey, opts, done)
         local key = candidates[index]
         index = index + 1
         if key == nil then
+            print(string.format(
+                "[存档读] complete uid=%s scoreKey=%s label=%s candidates=%d hitKey=%s hit=%s bestScore=%s hadReadError=%s",
+                tostring(canonicalUid),
+                tostring(scoreKey),
+                tostring(logLabel),
+                #candidates,
+                tostring(bestKey),
+                tostring(type(bestValue) == "table"),
+                tostring(bestScore),
+                tostring(hadReadError)
+            ))
             done(bestValue, bestKey, hadReadError)
             return
         end
@@ -365,6 +432,59 @@ function ServerCloudStore.DeleteScoreAllCandidates(uid, scoreKey, done)
     end
 end
 
+--- 删除 uid 所有候选 key 上的列表项。
+function ServerCloudStore.DeleteListAllCandidates(uid, listKey, done)
+    ServerCloudStore.ListGet(uid, listKey, {
+        ok = function(rows)
+            local listIds = {}
+            local seen = {}
+            for _, row in ipairs(rows or {}) do
+                local value = row.value or row
+                local listId = row.list_id or row.listId
+                    or (type(value) == "table" and (value.listId or value.giftId) or nil)
+                if listId ~= nil then
+                    local marker = type(listId) .. ":" .. tostring(listId)
+                    if seen[marker] ~= true then
+                        seen[marker] = true
+                        listIds[#listIds + 1] = tonumber(listId) or listId
+                    end
+                end
+            end
+            if #listIds <= 0 then
+                if done ~= nil then done(true) end
+                return
+            end
+            local c = serverCloud:BatchCommit("清除玩家列表存档-" .. tostring(listKey))
+            for _, listId in ipairs(listIds) do
+                c:ListDelete(listId)
+            end
+            c:Commit({
+                ok = function()
+                    if done ~= nil then done(true) end
+                end,
+                error = function(_, reason)
+                    print(string.format(
+                        "[存档] 删除列表失败 uid=%s listKey=%s reason=%s",
+                        tostring(GetCanonicalUidKey(uid)),
+                        tostring(listKey),
+                        tostring(reason)
+                    ))
+                    if done ~= nil then done(false) end
+                end,
+            })
+        end,
+        error = function(_, reason)
+            print(string.format(
+                "[存档] 读取列表失败 uid=%s listKey=%s reason=%s",
+                tostring(GetCanonicalUidKey(uid)),
+                tostring(listKey),
+                tostring(reason)
+            ))
+            if done ~= nil then done(false) end
+        end,
+    })
+end
+
 --- 删除非 canonical cloudId 的候选 key 副本（登录归一后保留主档）。
 function ServerCloudStore.DeleteNonCanonicalScoreCopies(uid, scoreKey, done)
     uid = GetCanonicalUidKey(uid) or uid
@@ -422,7 +542,12 @@ end
 
 local function ShouldAttemptLegacyRescue(primaryValue, opts)
     if opts.allowLegacyRescue ~= true then return false end
-    if primaryValue == nil then return true end
+    -- 无 owner 的历史档没有可信归属证明，登录热路径默认永久禁用自动认领。
+    -- 仅允许由显式的一次性迁移工具开启，避免新号初始档在下次登录时又被高分旧档覆盖。
+    if opts.allowOwnerlessLegacyRescue ~= true then return false end
+    if primaryValue == nil then
+        return opts.allowMissingPrimaryLegacyRescue == true
+    end
     if opts.shouldLegacyRescue ~= nil then return opts.shouldLegacyRescue(primaryValue) == true end
     return false
 end
@@ -438,7 +563,9 @@ end
 
 --- 玩家读档：优先 canonical cloudId（与 BatchScoreSet 写入一致）。
 --- opts.canonicalOnly=true 时不回退全量扫描（清档后防污染复活）。
---- opts.allowLegacyRescue=true 时：requireOwner 读空/像新号后，再扫无 owner 的 legacy 档救援。
+--- opts.allowLegacyRescue=true 仅表示调用方具备救援流程；还必须显式传 allowOwnerlessLegacyRescue=true。
+--- 登录热路径不传该资格，因此不会自动认领无 owner 历史档。
+--- primaryValue=nil 还需额外传 allowMissingPrimaryLegacyRescue=true。
 function ServerCloudStore.ReadPlayerScore(uid, scoreKey, opts, done)
     opts = opts or {}
     if opts.canonicalOnly == true then
@@ -546,6 +673,7 @@ function ServerCloudStore.CanonicalUid(uid)
 end
 
 --- 若命中历史 uid key，则迁移到 canonical key 后再回调。
+--- 登录热路径已改 BatchGet；此函数仅供少数冷路径兼容调用。
 --- opts.respondBeforeWrite=true 时先 onReady 再异步写云，避免 Set 挂起阻塞下发。
 function ServerCloudStore.MigrateScoreIfNeeded(canonicalUid, bestKey, scoreKey, value, opts)
     opts = opts or {}

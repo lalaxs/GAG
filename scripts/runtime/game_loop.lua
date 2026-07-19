@@ -13,6 +13,7 @@ end
 
 function GameLoop.HandleUpdate(eventType, eventData)
     local dt = eventData["TimeStep"]:GetFloat()
+    deps_.updateNetworkClient(dt)
     deps_.updateNetworkRecovery(dt)
 
     if not deps_.isInitialUiReady() then
@@ -21,7 +22,17 @@ function GameLoop.HandleUpdate(eventType, eventData)
         deps_.AdRewardSystem.Update(dt)
         deps_.SocialGardenSystem.Update(dt)
         deps_.LeaderboardSystem.Update(dt)
-        if deps_.NetworkRecovery.UpdateLoading(dt) then
+        if deps_.EconomyCloudSystem.IsInitialAuthorityDegraded ~= nil and deps_.EconomyCloudSystem.IsInitialAuthorityDegraded() then
+            local errorText = "服务器数据同步失败，暂时无法进入游戏。请检查网络后重试。"
+            if deps_.EconomyCloudSystem.GetInitialSyncErrorText ~= nil then
+                errorText = deps_.EconomyCloudSystem.GetInitialSyncErrorText() or errorText
+            end
+            if deps_.UIController.ShowLoadingError ~= nil then
+                deps_.UIController.ShowLoadingError("同步失败", errorText)
+            else
+                deps_.UIController.ShowLoading(errorText)
+            end
+        elseif deps_.NetworkRecovery.UpdateLoading(dt) then
             if deps_.PlayerSystem.TryApplyConnectionIdentity ~= nil then
                 deps_.PlayerSystem.TryApplyConnectionIdentity()
             end
@@ -36,8 +47,14 @@ function GameLoop.HandleUpdate(eventType, eventData)
                     end
                 end
             else
-                deps_.UIController.ShowLoading("服务器响应较慢，正在重试同步...")
-                deps_.requestNetworkRecoverySync("loading_timeout")
+                local loadingMessage = "服务器响应较慢，正在重试同步..."
+                if deps_.NetworkRecovery.GetLoadingMessage ~= nil then
+                    loadingMessage = deps_.NetworkRecovery.GetLoadingMessage()
+                end
+                deps_.UIController.ShowLoading(loadingMessage)
+                if deps_.NetworkRecovery.HasRawServerConnection == nil or deps_.NetworkRecovery.HasRawServerConnection() then
+                    deps_.requestNetworkRecoverySync("loading_timeout")
+                end
             end
         end
         deps_.ensureInitialUiReady()
@@ -64,7 +81,7 @@ function GameLoop.HandleUpdate(eventType, eventData)
     deps_.CommissionSystem.Update(dt)
     deps_.FloatingToast.Update(dt)
     deps_.UIController.Update(dt)
-    deps_.flushPendingRebuildUI()
+    deps_.flushPendingRebuildUI(dt)
     deps_.AudioSystem.Update(dt)
     deps_.refreshUI(false)
 end

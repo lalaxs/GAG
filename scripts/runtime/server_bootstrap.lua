@@ -100,6 +100,7 @@ function ServerBootstrap.Start(ctx)
         RequestGuard = ctx.RequestGuard,
         PlayerStateService = ctx.PlayerStateService,
         SocialServer = ctx.SocialServer,
+        ServerSteal = ctx.ServerSteal,
         Send = ctx.Send,
         Now = ctx.Now,
         GetCurrentActivityCycleInfo = ctx.GetCurrentActivityCycleInfo,
@@ -181,6 +182,7 @@ function ServerBootstrap.Start(ctx)
         SendFullAvailableSeedShop = ctx.SendFullAvailableSeedShop,
         BroadcastFullAvailableSeedShop = ctx.BroadcastFullAvailableSeedShop,
         BuildSeedShopQuotaKey = ctx.BuildSeedShopQuotaKey,
+        ServerShop = ctx.ServerShop,
         globalShopUid = ctx.ServerTuning.globalShopUid,
         GetServerMutationTalentBonus = ctx.GetServerMutationTalentBonus,
         GetMaxCropsPerPlot = ctx.GetMaxCropsPerPlot,
@@ -211,8 +213,10 @@ function ServerBootstrap.Start(ctx)
         GetFarmPlot = ctx.GetFarmPlot,
         FindFarmCrop = ctx.FindFarmCrop,
         RefreshAuthCrop = ctx.RefreshAuthCrop,
+        IsCropStolenToday = ctx.ServerFarmState.IsCropStolenToday,
         GetMaxCropsPerPlot = ctx.GetMaxCropsPerPlot,
         dailyStealLimit = ctx.ServerTuning.dailyStealLimit,
+        ServerSteal = ctx.ServerSteal,
     })
     ctx.GiftServer.Init({
         Shared = ctx.Shared,
@@ -237,6 +241,7 @@ function ServerBootstrap.Start(ctx)
         Shared = ctx.Shared,
         RequestGuard = ctx.RequestGuard,
         PlayerStateService = ctx.PlayerStateService,
+        ServerSteal = ctx.ServerSteal,
         maxSocialRows = ctx.ServerTuning.maxSocialRows,
         friendLimit = ctx.ServerTuning.friendLimit,
         dailyStealLimit = ctx.ServerTuning.dailyStealLimit,
@@ -273,7 +278,12 @@ function ServerBootstrap.Start(ctx)
         connectionUsers = ctx.connectionUsers,
         scene = ctx.getScene(),
         GetConnectionKey = ctx.GetConnectionKey,
+        GetConnectionGameSessionId = ctx.GetConnectionGameSessionId,
         GetConnectionUserId = ctx.GetConnectionUserId,
+        RegisterConnection = ctx.RegisterConnection,
+        GetConnectionGeneration = ctx.GetConnectionGeneration,
+        IsCurrentConnection = ctx.IsCurrentConnection,
+        InvalidateConnection = ctx.InvalidateConnection,
         ReadConnectionIdentity = ctx.ReadConnectionIdentity,
         RegisterConnectionUserId = ctx.RegisterConnectionUserId,
         ClearConnectionUserId = ctx.ClearConnectionUserId,
@@ -284,12 +294,12 @@ function ServerBootstrap.Start(ctx)
         SendSeedShopState = ctx.SendSeedShopState,
         SendPlayerProfile = ctx.SendPlayerProfile,
         PlayerStateService = ctx.PlayerStateService,
-        SaveLoginReconcile = SaveLoginReconcile,
         RequestEconomyState = ctx.RequestEconomyState,
         RequestAuthFarmState = ctx.RequestAuthFarmState,
         RequestLeaderboardAuthority = ctx.RequestLeaderboardAuthority,
         ClaimActivityRankRewardAuthority = ctx.ClaimActivityRankRewardAuthority,
         RequestSteal = ctx.RequestSteal,
+        commissionStateKey = ServerConfig.Commission.STATE_KEY,
         GrantAdReward = ctx.GrantAdReward,
         BuySeed = ctx.BuySeed,
         ClearPlayerSave = ctx.ClearPlayerSave,
@@ -311,7 +321,20 @@ function ServerBootstrap.Start(ctx)
     ctx.ServerGlobals.BindEventHandlers(ctx.ServerEventHandlers)
     _G.HandleServerPlayerStateUpdate = function(eventType, eventData)
         local dt = eventData["TimeStep"]:GetFloat()
-        ctx.PlayerStateService.Update(dt)
+        local okPlayer, errPlayer = pcall(function()
+            ctx.PlayerStateService.Update(dt)
+        end)
+        if okPlayer ~= true then
+            print("[服务端异常] PlayerStateService.Update: " .. tostring(errPlayer))
+        end
+        local okHandlers, errHandlers = pcall(function()
+            if ctx.ServerEventHandlers ~= nil and ctx.ServerEventHandlers.Update ~= nil then
+                ctx.ServerEventHandlers.Update(dt)
+            end
+        end)
+        if okHandlers ~= true then
+            print("[服务端异常] ServerEventHandlers.Update: " .. tostring(errHandlers))
+        end
     end
     SubscribeToEvent("Update", "HandleServerPlayerStateUpdate")
     ctx.ServerEventHandlers.Register()

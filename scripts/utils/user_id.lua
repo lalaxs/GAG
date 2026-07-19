@@ -7,6 +7,31 @@
 
 local UserId = {}
 
+local INVALID_UID_TEXT = {
+    ["nil"] = true,
+    ["null"] = true,
+    ["undefined"] = true,
+    ["nan"] = true,
+    ["unknown"] = true,
+    ["guest"] = true,
+    ["anonymous"] = true,
+    ["none"] = true,
+}
+
+local function TrimText(value)
+    local text = tostring(value)
+    text = string.gsub(text, "^%s+", "")
+    text = string.gsub(text, "%s+$", "")
+    return text
+end
+
+local function IsInvalidUidText(text)
+    if text == nil then return true end
+    text = TrimText(text)
+    if text == "" or text == "0" then return true end
+    return INVALID_UID_TEXT[string.lower(text)] == true
+end
+
 --- 从连接 identity Variant 读取 Tap UID（兼容正式服 string / int64）。
 ---@param value any
 ---@return string|nil
@@ -30,6 +55,59 @@ function UserId.ReadIdentityValue(value)
         end
     end
     return UserId.Normalize(value)
+end
+
+--- 从任意 identity 字段读取字符串值。
+---@param value any
+---@return string|nil
+function UserId.ReadIdentityText(value)
+    if value == nil then return nil end
+    if type(value) == "string" or type(value) == "number" then
+        local text = TrimText(value)
+        if not IsInvalidUidText(text) then return text end
+        return nil
+    end
+    if type(value.GetString) == "function" then
+        local ok, text = pcall(function() return value:GetString() end)
+        if ok and text ~= nil then
+            text = TrimText(text)
+            if not IsInvalidUidText(text) then return text end
+        end
+    end
+    if type(value.GetInt64) == "function" then
+        local ok, numeric = pcall(function() return value:GetInt64() end)
+        if ok and numeric ~= nil and numeric ~= 0 then return tostring(numeric) end
+    end
+    if type(value.GetInt) == "function" then
+        local ok, numeric = pcall(function() return value:GetInt() end)
+        if ok and numeric ~= nil and numeric ~= 0 then return tostring(numeric) end
+    end
+    local text = TrimText(value)
+    if not IsInvalidUidText(text) then return text end
+    return nil
+end
+
+--- 从 Connection.identity 读取 game session / room / match 标识。
+---@param connection any
+---@return string|nil, string|nil
+function UserId.ReadConnectionGameSessionId(connection)
+    if connection == nil or connection.identity == nil then return nil, nil end
+    local keys = {
+        "game_session_id",
+        "gameSessionId",
+        "game_session",
+        "session_id",
+        "sessionId",
+        "room_id",
+        "roomId",
+        "match_id",
+        "matchId",
+    }
+    for _, key in ipairs(keys) do
+        local text = UserId.ReadIdentityText(connection.identity[key])
+        if text ~= nil then return text, key end
+    end
+    return nil, nil
 end
 
 --- 从 Connection.identity 读取 user_id（仅 ClientIdentity 时调用一次）。
@@ -60,12 +138,13 @@ end
 ---@return string|nil
 function UserId.Normalize(userId)
     if userId == nil or userId == 0 or userId == "" then return nil end
-    local text = tostring(userId)
-    text = string.gsub(text, "^%s+", "")
-    text = string.gsub(text, "%s+$", "")
-    if text == "" or text == "0" then return nil end
+    local text = TrimText(userId)
+    if IsInvalidUidText(text) then return nil end
     local integerText = string.match(text, "^(%-?%d+)%.0+$")
-    if integerText ~= nil then return integerText end
+    if integerText ~= nil then
+        if IsInvalidUidText(integerText) then return nil end
+        return integerText
+    end
     local numericId = tonumber(text)
     if numericId ~= nil and numericId == math.floor(numericId) and math.abs(numericId) < 9007199254740992 then
         return string.format("%.0f", numericId)
@@ -87,6 +166,8 @@ end
 ---@param uid any
 ---@return table
 function UserId.BuildKeyCandidates(uid)
+    local normalized = UserId.Normalize(uid)
+    if normalized == nil then return {} end
     local keys = {}
     local seen = {}
     local function add(key)
@@ -97,9 +178,8 @@ function UserId.BuildKeyCandidates(uid)
         keys[#keys + 1] = key
     end
     add(uid)
-    local normalized = UserId.Normalize(uid)
     add(normalized)
-    local numeric = tonumber(normalized or uid)
+    local numeric = tonumber(normalized)
     if numeric ~= nil and numeric == math.floor(numeric) and math.abs(numeric) < 9007199254740992 then
         add(numeric)
     end
@@ -137,6 +217,8 @@ end
 ---@param uid any
 ---@return table
 function UserId.BuildCloudKeyCandidates(uid)
+    local normalized = UserId.Normalize(uid)
+    if normalized == nil then return {} end
     local keys = {}
     local seen = {}
     local function add(key)
@@ -146,8 +228,8 @@ function UserId.BuildCloudKeyCandidates(uid)
         seen[marker] = true
         keys[#keys + 1] = key
     end
-    add(UserId.CloudPlayerId(uid))
-    add(UserId.Normalize(uid))
+    add(UserId.CloudPlayerId(normalized))
+    add(normalized)
     add(uid)
     return keys
 end

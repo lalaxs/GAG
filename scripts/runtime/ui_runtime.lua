@@ -9,6 +9,8 @@
 local UiRuntime = {}
 
 local deps_ = {}
+local REBUILD_DEBOUNCE_SEC = 0.08
+local rebuildDelayRemaining_ = 0
 
 function UiRuntime.Init(deps)
     deps_ = deps or {}
@@ -54,10 +56,21 @@ local function ShowToast(text, silent)
     if deps_.showToast ~= nil then deps_.showToast(text, silent) end
 end
 
+local function ExecuteRebuild()
+    rebuildDelayRemaining_ = 0
+    SetPendingRebuildUI(false)
+    deps_.UIController.Rebuild()
+end
+
 function UiRuntime.IsInitialDataReady()
-    -- 进主界面只等核心权威数据：经济+农场（IsInitialSyncReady）与玩家 UID。
-    -- 完整社交（好友/排行等）在 SOCIAL_STATE phase=full 后异步补齐。
-    local economyReady = deps_.EconomyCloudSystem.IsInitialSyncReady ~= nil and deps_.EconomyCloudSystem.IsInitialSyncReady()
+    -- 进主界面必须等核心权威数据：经济+农场真实首包。失败只显示 Loading/重开页。
+    local economy = deps_.EconomyCloudSystem
+    local economyReady = false
+    if economy ~= nil and economy.CanEnterInitialUi ~= nil then
+        economyReady = economy.CanEnterInitialUi()
+    elseif economy ~= nil and economy.IsInitialSyncReady ~= nil then
+        economyReady = economy.IsInitialSyncReady()
+    end
     local playerReady = deps_.isInitialPlayerReady == nil or deps_.isInitialPlayerReady()
     return economyReady and playerReady
 end
@@ -75,10 +88,17 @@ function UiRuntime.EnsureInitialUiReady()
         deps_.PlotBounceAnimator.StartAll(deps_.getPlots())
         SetInitialPlotBounceStarted(true)
     end
-    deps_.UIController.Rebuild()
+    ExecuteRebuild()
     UiRuntime.Refresh(true)
     if IsInitialSocialSnapshotUploaded() ~= true then
-        if deps_.SocialGardenSystem.UploadSnapshot() then
+        local canUploadSnapshot = true
+        if deps_.EconomyCloudSystem ~= nil
+            and deps_.EconomyCloudSystem.IsInitialAuthorityDegraded ~= nil
+            and deps_.EconomyCloudSystem.IsInitialAuthorityDegraded() == true then
+            canUploadSnapshot = false
+            print("[启动同步] 当前为只读降级模式，跳过初始花园快照上传")
+        end
+        if canUploadSnapshot and deps_.SocialGardenSystem.UploadSnapshot() then
             SetInitialSocialSnapshotUploaded(true)
         end
     end
@@ -103,22 +123,26 @@ function UiRuntime.Rebuild()
         SetInitialUiBuildPending(true)
         return
     end
-    if deps_.ModalRegistry.AnyOpen() then
-        SetPendingRebuildUI(true)
-        return
+    SetPendingRebuildUI(true)
+    if rebuildDelayRemaining_ <= 0 then
+        rebuildDelayRemaining_ = REBUILD_DEBOUNCE_SEC
     end
-    SetPendingRebuildUI(false)
-    deps_.UIController.Rebuild()
 end
 
-function UiRuntime.FlushPendingRebuild()
+function UiRuntime.FlushPendingRebuild(dt)
     if not IsInitialUiReady() then
         UiRuntime.EnsureInitialUiReady()
         return
     end
-    if IsPendingRebuildUI() and not deps_.ModalRegistry.AnyOpen() then
-        SetPendingRebuildUI(false)
-        deps_.UIController.Rebuild()
+    if not IsPendingRebuildUI() or deps_.ModalRegistry.AnyOpen() then return end
+
+    if dt == nil then
+        rebuildDelayRemaining_ = 0
+    else
+        rebuildDelayRemaining_ = math.max(0, rebuildDelayRemaining_ - dt)
+    end
+    if rebuildDelayRemaining_ <= 0 then
+        ExecuteRebuild()
     end
 end
 

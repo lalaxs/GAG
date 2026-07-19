@@ -13,9 +13,11 @@ local deps_ = {}
 local pending_ = false
 local pendingTimer_ = 0
 local activeSession_ = nil
+local sessionStates_ = {}
 local sessionSeq_ = 0
 local confirmModal_ = nil
 local AD_TIMEOUT_SECONDS = 120
+local LATE_CALLBACK_RETENTION_SECONDS = 3600
 
 local function ShowToast(text)
     if deps_.showToast ~= nil then deps_.showToast(text) end
@@ -33,6 +35,7 @@ function AdRewardSystem.Init(deps)
     pending_ = false
     pendingTimer_ = 0
     activeSession_ = nil
+    sessionStates_ = {}
     confirmModal_ = nil
 end
 
@@ -41,13 +44,27 @@ function AdRewardSystem.IsPending()
 end
 
 function AdRewardSystem.Update(dt)
+    local delta = dt or 0
+    for session, state in pairs(sessionStates_) do
+        state.elapsed = (state.elapsed or 0) + delta
+        if state.elapsed >= LATE_CALLBACK_RETENTION_SECONDS then
+            sessionStates_[session] = nil
+            if session == activeSession_ then
+                pending_ = false
+                pendingTimer_ = 0
+                activeSession_ = nil
+                ShowToast("广告回调长时间未返回，请稍后重试")
+            end
+        end
+    end
     if not pending_ then return end
-    pendingTimer_ = pendingTimer_ + (dt or 0)
+    pendingTimer_ = pendingTimer_ + delta
     if pendingTimer_ < AD_TIMEOUT_SECONDS then return end
-    pending_ = false
-    pendingTimer_ = 0
-    activeSession_ = nil
-    ShowToast("广告响应超时，请稍后重试")
+    local activeState = activeSession_ ~= nil and sessionStates_[activeSession_] or nil
+    if activeState ~= nil and activeState.timeoutNotified ~= true then
+        activeState.timeoutNotified = true
+        ShowToast("广告响应较慢，若已完整观看，奖励将在回调到达后自动发放")
+    end
 end
 
 function AdRewardSystem.Show(options)
@@ -67,14 +84,23 @@ function AdRewardSystem.Show(options)
     sessionSeq_ = sessionSeq_ + 1
     activeSession_ = sessionSeq_
     local session = activeSession_
+    sessionStates_[session] = {
+        elapsed = 0,
+        options = options,
+    }
     sdkApi:ShowRewardVideoAd(function(result)
-        if session ~= activeSession_ then return end
-        pending_ = false
-        pendingTimer_ = 0
-        activeSession_ = nil
+        local state = sessionStates_[session]
+        if state == nil then return end
+        sessionStates_[session] = nil
+        if session == activeSession_ then
+            pending_ = false
+            pendingTimer_ = 0
+            activeSession_ = nil
+        end
         result = result or { success = false, msg = "unknown" }
+        local callbacks = state.options or options
         if result.success == true then
-            if options.onSuccess ~= nil then options.onSuccess(result) end
+            if callbacks.onSuccess ~= nil then callbacks.onSuccess(result) end
         else
             local msg = tostring(result.msg or "广告播放失败")
             if msg == "embed manual close" then
@@ -82,7 +108,7 @@ function AdRewardSystem.Show(options)
             else
                 ShowToast("广告播放失败: " .. msg)
             end
-            if options.onFail ~= nil then options.onFail(result) end
+            if callbacks.onFail ~= nil then callbacks.onFail(result) end
         end
     end)
     return true

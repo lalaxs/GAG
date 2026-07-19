@@ -43,8 +43,28 @@ local function GetConnectionKey(connection)
     return ServerUtils.GetConnectionKey(connection)
 end
 
+local function GetConnectionGameSessionId(connection)
+    return ServerUtils.GetConnectionGameSessionId(connection)
+end
+
 local function GetConnectionUserId(connection)
     return ServerUtils.GetConnectionUserId(connection)
+end
+
+local function RegisterConnection(connection)
+    return ServerUtils.RegisterConnection(connection)
+end
+
+local function GetConnectionGeneration(connection)
+    return ServerUtils.GetConnectionGeneration(connection)
+end
+
+local function IsCurrentConnection(connection, generation)
+    return ServerUtils.IsCurrentConnection(connection, generation)
+end
+
+local function InvalidateConnection(connection)
+    ServerUtils.InvalidateConnection(connection)
 end
 
 local function ReadConnectionIdentity(connection)
@@ -130,7 +150,11 @@ local function FetchSeedShopAvailableState(shop, callback)
 end
 
 local function Send(connection, eventName, data)
-    Shared.SendToClient(connection, eventName, data)
+    local ok = Shared.SendToClient(connection, eventName, data)
+    if ok ~= true then
+        print("[服务端网络] Send failed event=" .. tostring(eventName) .. " addr=" .. tostring(connection ~= nil and connection.GetAddress ~= nil and connection:GetAddress() or "nil"))
+    end
+    return ok
 end
 
 local function BroadcastSeedShopState(shop)
@@ -562,21 +586,48 @@ end
 local function SendPlayerProfile(uid, connection)
     if uid == nil then return end
 
-    local function deliverProfile(nickname, avatar)
+    local function deliverProfile(nickname, avatar, profile, requestId)
         Send(connection, Shared.EVENTS.PLAYER_PROFILE, {
             success = true,
             userId = uid,
             nickname = nickname or "Tap玩家",
             avatar = avatar,
+            profile = profile,
+            requestId = requestId,
         })
     end
 
+    local loadedProfile = PlayerStateService.GetProfile ~= nil and PlayerStateService.GetProfile(uid) or nil
+    local loadedAvatar = type(loadedProfile) == "table" and loadedProfile.avatar or nil
+    local loadedNickname = type(loadedProfile) == "table"
+        and ((loadedProfile.customNickname or "") ~= "" and loadedProfile.customNickname or loadedProfile.tapNickname)
+        or nil
+    if loadedNickname ~= nil and loadedNickname ~= "" and loadedNickname ~= "Tap玩家" then
+        deliverProfile(loadedNickname, loadedAvatar, loadedProfile)
+        return
+    end
+
+    local function persistTapProfile(nickname, avatar)
+        local profile = type(loadedProfile) == "table" and loadedProfile or {}
+        profile.tapNickname = nickname or profile.tapNickname or "Tap玩家"
+        if avatar ~= nil then profile.avatar = avatar end
+        if PlayerStateService.SetProfile ~= nil then
+            PlayerStateService.SetProfile(uid, profile, function(ok, reason)
+                if ok ~= true then
+                    print(string.format("[玩家资料] Tap 昵称写入统一档失败 uid=%s reason=%s", tostring(uid), tostring(reason)))
+                end
+            end)
+        end
+        return profile
+    end
+
     -- 先下发 UID，避免昵称异步查询未完成时客户端长期无资料。
-    deliverProfile("Tap玩家", nil)
+    deliverProfile("Tap玩家", loadedAvatar, loadedProfile)
 
     SocialServer.GetPlayerGardenAvatar(uid, function(avatar)
         if GetUserNickname == nil then
-            deliverProfile("Tap玩家", avatar)
+            local profile = persistTapProfile("Tap玩家", avatar)
+            deliverProfile("Tap玩家", avatar, profile)
             return
         end
         GetUserNickname({
@@ -589,11 +640,13 @@ local function SendPlayerProfile(uid, connection)
                         break
                     end
                 end
-                deliverProfile(nickname, avatar)
+                local profile = persistTapProfile(nickname, avatar)
+                deliverProfile(nickname, avatar, profile)
             end,
             onError = function(errorCode)
                 print("[玩家资料] 服务端昵称查询失败: " .. tostring(errorCode))
-                deliverProfile("Tap玩家", avatar)
+                local profile = persistTapProfile("Tap玩家", avatar)
+                deliverProfile("Tap玩家", avatar, profile)
             end,
         })
     end)
@@ -612,41 +665,42 @@ local function PickGiftSeedId()
 end
 
 function Start()
-    ServerBootstrap.Start({
-        Shared = Shared,
-        GameConfig = GameConfig,
-        ServerTuning = ServerTuning,
-        ServerConfig = ServerConfig,
-        InventoryRules = InventoryRules,
-        RequestGuard = RequestGuard,
-        ServerShop = ServerShop,
-        ServerCropRules = ServerCropRules,
-        ServerFarmState = ServerFarmState,
-        ServerEconomyState = ServerEconomyState,
-        ServerCommission = ServerCommission,
-        ServerActivity = ServerActivity,
-        ServerLeaderboard = ServerLeaderboard,
-        ServerRewards = ServerRewards,
-        ServerEconomyActions = ServerEconomyActions,
-        PlayerStateService = PlayerStateService,
-        ServerPlayerDataCache = ServerPlayerDataCache,
-        ServerSteal = ServerSteal,
-        GiftServer = GiftServer,
-        SocialServer = SocialServer,
-        ServerEventHandlers = ServerEventHandlers,
-        ServerGlobals = ServerGlobals,
-        SERVER_MUTATION_TALENT_BONUSES = SERVER_MUTATION_TALENT_BONUSES,
-        DEFAULT_HARVEST_BAG_CAPACITY = DEFAULT_HARVEST_BAG_CAPACITY,
-        MAX_HARVEST_BAG_CAPACITY = MAX_HARVEST_BAG_CAPACITY,
-        BAG_CAPACITY_BONUSES = BAG_CAPACITY_BONUSES,
-        connections = connections_,
-        connectionUsers = connectionUsers_,
-        setScene = function(scene) scene_ = scene end,
-        getScene = function() return scene_ end,
-        Send = Send,
-        Now = Now,
-        DeepCopy = DeepCopy,
-        PickGiftSeedId = PickGiftSeedId,
+    local ok, err = pcall(function()
+        ServerBootstrap.Start({
+            Shared = Shared,
+            GameConfig = GameConfig,
+            ServerTuning = ServerTuning,
+            ServerConfig = ServerConfig,
+            InventoryRules = InventoryRules,
+            RequestGuard = RequestGuard,
+            ServerShop = ServerShop,
+            ServerCropRules = ServerCropRules,
+            ServerFarmState = ServerFarmState,
+            ServerEconomyState = ServerEconomyState,
+            ServerCommission = ServerCommission,
+            ServerActivity = ServerActivity,
+            ServerLeaderboard = ServerLeaderboard,
+            ServerRewards = ServerRewards,
+            ServerEconomyActions = ServerEconomyActions,
+            PlayerStateService = PlayerStateService,
+            ServerPlayerDataCache = ServerPlayerDataCache,
+            ServerSteal = ServerSteal,
+            GiftServer = GiftServer,
+            SocialServer = SocialServer,
+            ServerEventHandlers = ServerEventHandlers,
+            ServerGlobals = ServerGlobals,
+            SERVER_MUTATION_TALENT_BONUSES = SERVER_MUTATION_TALENT_BONUSES,
+            DEFAULT_HARVEST_BAG_CAPACITY = DEFAULT_HARVEST_BAG_CAPACITY,
+            MAX_HARVEST_BAG_CAPACITY = MAX_HARVEST_BAG_CAPACITY,
+            BAG_CAPACITY_BONUSES = BAG_CAPACITY_BONUSES,
+            connections = connections_,
+            connectionUsers = connectionUsers_,
+            setScene = function(scene) scene_ = scene end,
+            getScene = function() return scene_ end,
+            Send = Send,
+            Now = Now,
+            DeepCopy = DeepCopy,
+            PickGiftSeedId = PickGiftSeedId,
         NormalizePlantIndex = NormalizePlantIndex,
         NormalizePlotIndex = NormalizePlotIndex,
         NormalizeLocalPos = NormalizeLocalPos,
@@ -720,11 +774,20 @@ function Start()
         UnlockTalentAuthority = ServerRewards.UnlockTalentAuthority,
         ExpandPlotAuthority = ServerRewards.ExpandPlotAuthority,
         GetConnectionKey = GetConnectionKey,
+        GetConnectionGameSessionId = GetConnectionGameSessionId,
         GetConnectionUserId = GetConnectionUserId,
+        RegisterConnection = RegisterConnection,
+        GetConnectionGeneration = GetConnectionGeneration,
+        IsCurrentConnection = IsCurrentConnection,
+        InvalidateConnection = InvalidateConnection,
         ReadConnectionIdentity = ReadConnectionIdentity,
         RegisterConnectionUserId = RegisterConnectionUserId,
         ClearConnectionUserId = ClearConnectionUserId,
         GetRequestUserId = GetRequestUserId,
         ReadRequest = ReadRequest,
-    })
+        })
+    end)
+    if ok ~= true then
+        print("[服务端异常] Start failed: " .. tostring(err))
+    end
 end

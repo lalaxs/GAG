@@ -16,6 +16,7 @@ local CONNECTION_HANDLERS = {
 local GARDEN_HANDLERS = {
     "HandleGardenClientReady",
     "HandleGardenRequestFullSync",
+    "HandleGardenUpdatePlayerProfile",
     "HandleGardenSaveSnapshot",
     "HandleGardenRequestSnapshot",
     "HandleGardenRequestRank",
@@ -53,15 +54,28 @@ local GARDEN_HANDLERS = {
 }
 
 function ServerGlobals.BindEventHandlers(serverEventHandlers)
-    for _, name in ipairs(CONNECTION_HANDLERS) do
-        _G[name] = function(eventType, eventData)
-            serverEventHandlers[name](eventType, eventData)
+    local function wrap(name)
+        return function(eventType, eventData)
+            local handler = serverEventHandlers[name]
+            if handler == nil then
+                print("[服务端] 缺少事件处理函数 " .. tostring(name))
+                return
+            end
+            local ok, err = pcall(handler, eventType, eventData)
+            if ok ~= true then
+                print(string.format(
+                    "[服务端异常] %s: %s",
+                    tostring(name),
+                    tostring(err)
+                ))
+            end
         end
     end
+    for _, name in ipairs(CONNECTION_HANDLERS) do
+        _G[name] = wrap(name)
+    end
     for _, name in ipairs(GARDEN_HANDLERS) do
-        _G[name] = function(eventType, eventData)
-            serverEventHandlers[name](eventType, eventData)
-        end
+        _G[name] = wrap(name)
     end
 end
 

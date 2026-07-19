@@ -19,7 +19,9 @@ local searchUserInput_ = ""
 local showMessages_ = false
 local activeView_ = "friends"
 local friendDetailModal_ = nil
+local visitErrorModal_ = nil
 local CloseFriendDetailModal = nil
+local ShowVisitError = nil
 local RebuildContent = nil
 
 local FRIEND_LIMIT = 50
@@ -152,8 +154,11 @@ local function BuildLeaderboardRow(entry)
                 borderRadius = 12,
                 onClick = function()
                     Suppress()
-                    SocialView.Close()
-                    system.VisitPlayer(entry.userId)
+                    if system.VisitPlayer(entry.userId) then
+                        SocialView.Close()
+                    else
+                        ShowVisitError(system.GetRequestError and system.GetRequestError("visit") or nil)
+                    end
                 end,
             },
         },
@@ -162,12 +167,18 @@ end
 
 local function BuildLeaderboardSection()
     local system = GetSystem()
+    local loading = system.IsLeaderboardLoading and system.IsLeaderboardLoading() == true
+    local rankError = system.GetRequestError and system.GetRequestError("rank") or nil
     local rows = {}
     for _, entry in ipairs(system.GetLeaderboard()) do
         table.insert(rows, BuildLeaderboardRow(entry))
     end
-    if #rows == 0 then
-        table.insert(rows, BuildSmallNote("暂无排行榜数据，先同步一次花园。"))
+    if loading then
+        table.insert(rows, BuildSmallNote("榜单刷新中，请稍候..."))
+    elseif rankError ~= nil and rankError ~= "" then
+        table.insert(rows, BuildSmallNote(tostring(rankError) .. "，请稍后再试。"))
+    elseif #rows == 0 then
+        table.insert(rows, BuildSmallNote("暂无排行榜数据，点击刷新同步花园榜单。"))
     end
     return UI.Panel {
         gap = 8,
@@ -185,11 +196,11 @@ local function BuildLeaderboardSection()
                 children = {
                     UI.Label { text = "观光排行榜", flexGrow = 1, fontSize = 16, fontWeight = "bold", fontColor = {74, 55, 38, 255} },
                     UI.Button {
-                        text = "刷新",
-                        width = 62,
+                        text = loading and "刷新中" or "刷新",
+                        width = 70,
                         height = 32,
                         fontSize = 12,
-                        backgroundColor = {80, 135, 185, 255},
+                        backgroundColor = loading and {150, 140, 125, 220} or {80, 135, 185, 255},
                         fontColor = {255, 255, 255, 255},
                         borderRadius = 12,
                         onClick = function()
@@ -284,6 +295,70 @@ local function BuildSourceBadge(source)
     }
 end
 
+ShowVisitError = function(message)
+    local root = UI.GetRoot()
+    if root == nil then return end
+    if visitErrorModal_ ~= nil and visitErrorModal_.parent ~= nil then
+        visitErrorModal_.parent:RemoveChild(visitErrorModal_)
+    end
+    visitErrorModal_ = UI.Panel {
+        position = "absolute",
+        left = 0,
+        top = 0,
+        right = 0,
+        bottom = 0,
+        zIndex = 1250,
+        backgroundColor = {0, 0, 0, 120},
+        alignItems = "center",
+        justifyContent = "center",
+        onTap = function()
+            Suppress()
+            if visitErrorModal_ ~= nil and visitErrorModal_.parent ~= nil then
+                visitErrorModal_.parent:RemoveChild(visitErrorModal_)
+            end
+            visitErrorModal_ = nil
+        end,
+        children = {
+            UI.Panel {
+                width = 380,
+                backgroundColor = COLORS.surfaceRaised,
+                borderRadius = 24,
+                borderWidth = 4,
+                borderColor = COLORS.borderStrong,
+                paddingTop = 24,
+                paddingLeft = 22,
+                paddingRight = 22,
+                paddingBottom = 22,
+                gap = 14,
+                onTap = function(event)
+                    if event and event.StopPropagation then event:StopPropagation() end
+                    Suppress()
+                end,
+                children = {
+                    UI.Label { text = "网络连接失败", fontSize = 22, fontWeight = "bold", fontColor = COLORS.text, textAlign = "center" },
+                    UI.Label { text = message or "无法拜访该花园，请检查网络后重试", fontSize = 15, fontColor = COLORS.textMuted, textAlign = "center", whiteSpace = "normal" },
+                    UI.Button {
+                        text = "知道了",
+                        height = 42,
+                        fontSize = 15,
+                        fontWeight = "bold",
+                        backgroundColor = COLORS.primary,
+                        fontColor = {255, 255, 255, 255},
+                        borderRadius = 16,
+                        onClick = function()
+                            if visitErrorModal_ ~= nil and visitErrorModal_.parent ~= nil then
+                                visitErrorModal_.parent:RemoveChild(visitErrorModal_)
+                            end
+                            visitErrorModal_ = nil
+                        end,
+                    },
+                },
+            },
+        },
+    }
+    root:AddChild(visitErrorModal_)
+end
+
 local function BuildFriendActionButton(text, color, onClick)
     return UI.Button {
         text = text,
@@ -307,6 +382,12 @@ CloseFriendDetailModal = function()
             friendDetailModal_.parent:RemoveChild(friendDetailModal_)
         end
         friendDetailModal_ = nil
+    end
+    if visitErrorModal_ ~= nil then
+        if visitErrorModal_.parent ~= nil then
+            visitErrorModal_.parent:RemoveChild(visitErrorModal_)
+        end
+        visitErrorModal_ = nil
     end
 end
 
@@ -616,6 +697,8 @@ local function BuildFriendRow(entry)
                     BuildFriendActionButton("拜访", COLORS.primary, function()
                         if system.VisitPlayer(entry.userId) then
                             SocialView.Close()
+                        else
+                            ShowVisitError(system.GetRequestError and system.GetRequestError("visit") or nil)
                         end
                     end),
                 },
@@ -793,6 +876,8 @@ local function BuildSearchFriendPanel()
                             Suppress()
                             if system.VisitByInput(searchUserInput_) then
                                 SocialView.Close()
+                            else
+                                ShowVisitError(system.GetRequestError and system.GetRequestError("visit") or nil)
                             end
                         end,
                     },
@@ -816,6 +901,46 @@ local function BuildSearchFriendPanel()
     }
 end
 
+local function BuildNetworkErrorPanel(message, buttonText, onRetry)
+    return UI.Panel {
+        height = 160,
+        alignItems = "center",
+        justifyContent = "center",
+        gap = 12,
+        backgroundColor = COLORS.surfaceRaised,
+        borderRadius = 20,
+        borderWidth = 3,
+        borderColor = COLORS.border,
+        paddingLeft = 20,
+        paddingRight = 20,
+        children = {
+            UI.Label {
+                text = message,
+                fontSize = 15,
+                fontWeight = "bold",
+                fontColor = COLORS.textMuted,
+                textAlign = "center",
+                whiteSpace = "normal",
+            },
+            UI.Button {
+                text = buttonText or "重试",
+                width = 120,
+                height = 40,
+                fontSize = 14,
+                fontWeight = "bold",
+                backgroundColor = COLORS.primary,
+                fontColor = {255, 255, 255, 255},
+                borderRadius = 16,
+                onClick = function()
+                    Suppress()
+                    if onRetry then onRetry() end
+                    RebuildContent()
+                end,
+            },
+        },
+    }
+end
+
 local function BuildFriendsSection()
     local system = GetSystem()
     local friends = system.GetFriends()
@@ -824,8 +949,14 @@ local function BuildFriendsSection()
         and system.IsSocialStateLoading()
         and system.HasSocialStateSynced
         and not system.HasSocialStateSynced()
+    local socialError = system.GetRequestError and system.GetRequestError("socialState") or nil
 
-    if waitingFirstSync then
+    if socialError ~= nil and socialError ~= "" then
+        table.insert(rows, BuildNetworkErrorPanel(socialError, "重试同步", function()
+            system.RequestSocialState({ force = true, reason = "ui_retry", interactive = true })
+            system.RequestGifts()
+        end))
+    elseif waitingFirstSync then
         table.insert(rows, UI.Panel {
             height = 160,
             alignItems = "center",
@@ -994,53 +1125,66 @@ local function BuildMessagesSection()
     local rows = {}
     local friends = system.GetFriends()
     local friendCount = #friends
+    local messageError = nil
+    if system.GetRequestError ~= nil then
+        messageError = system.GetRequestError("gifts") or system.GetRequestError("socialState")
+    end
 
-    if system.GetFriendRequests ~= nil then
-        for _, request in ipairs(system.GetFriendRequests()) do
+    if messageError ~= nil and messageError ~= "" then
+        rows[#rows + 1] = BuildNetworkErrorPanel(messageError, "重试", function()
+            system.RequestSocialState({ force = true, reason = "ui_retry_messages", interactive = true })
+            system.RequestGifts()
+        end)
+    else
+        if system.GetFriendRequests ~= nil then
+            for _, request in ipairs(system.GetFriendRequests()) do
+                rows[#rows + 1] = BuildMessageRow(
+                    tostring(request.fromNickname or request.fromUserId or "玩家") .. " 请求添加你为好友",
+                    {
+                        BuildMessageActionButton("同意", COLORS.primary, function()
+                            system.RespondFriendRequest(request, true)
+                        end),
+                        BuildMessageActionButton("拒绝", COLORS.secondary, function()
+                            system.RespondFriendRequest(request, false)
+                        end),
+                    }
+                )
+            end
+        end
+
+        if system.GetSocialNotices ~= nil then
+            for _, notice in ipairs(system.GetSocialNotices()) do
+                rows[#rows + 1] = BuildMessageRow(BuildSocialNoticeText(notice))
+            end
+        end
+
+        for _, visitor in ipairs(system.GetRecentVisitors()) do
             rows[#rows + 1] = BuildMessageRow(
-                tostring(request.fromNickname or request.fromUserId or "玩家") .. " 请求添加你为好友",
+                tostring(visitor.nickname or visitor.userId or "玩家") .. "拜访了你的花园",
                 {
-                    BuildMessageActionButton("同意", COLORS.primary, function()
-                        system.RespondFriendRequest(request, true)
-                    end),
-                    BuildMessageActionButton("拒绝", COLORS.secondary, function()
-                        system.RespondFriendRequest(request, false)
+                    BuildMessageActionButton("回访", COLORS.primary, function()
+                        if system.VisitPlayer(visitor.userId) then
+                            SocialView.Close()
+                        else
+                            ShowVisitError(system.GetRequestError and system.GetRequestError("visit") or nil)
+                        end
                     end),
                 }
             )
         end
-    end
 
-    if system.GetSocialNotices ~= nil then
-        for _, notice in ipairs(system.GetSocialNotices()) do
-            rows[#rows + 1] = BuildMessageRow(BuildSocialNoticeText(notice))
+        for _, log in ipairs(system.GetStealLogs()) do
+            rows[#rows + 1] = BuildMessageRow(string.format("%s从你的花园里偷走了%s的种子", tostring(log.thiefNickname or log.thiefUserId or "玩家"), tostring(log.cropName or "作物")))
         end
-    end
 
-    for _, visitor in ipairs(system.GetRecentVisitors()) do
-        rows[#rows + 1] = BuildMessageRow(
-            tostring(visitor.nickname or visitor.userId or "玩家") .. "拜访了你的花园",
-            {
-                BuildMessageActionButton("回访", COLORS.primary, function()
-                    if system.VisitPlayer(visitor.userId) then
-                        SocialView.Close()
-                    end
+        for _, gift in ipairs(system.GetGifts()) do
+            local fromName = tostring(gift.fromNickname or gift.fromUserId or "好友")
+            rows[#rows + 1] = BuildMessageRow(string.format("%s给你送来了%s", fromName, GetGiftDescription(gift)), {
+                BuildMessageActionButton("领取", COLORS.info, function()
+                    system.ClaimGift(gift)
                 end),
-            }
-        )
-    end
-
-    for _, log in ipairs(system.GetStealLogs()) do
-        rows[#rows + 1] = BuildMessageRow(string.format("%s从你的花园里偷走了%s的种子", tostring(log.thiefNickname or log.thiefUserId or "玩家"), tostring(log.cropName or "作物")))
-    end
-
-    for _, gift in ipairs(system.GetGifts()) do
-        local fromName = tostring(gift.fromNickname or gift.fromUserId or "好友")
-        rows[#rows + 1] = BuildMessageRow(string.format("%s给你送来了%s", fromName, GetGiftDescription(gift)), {
-            BuildMessageActionButton("领取", COLORS.info, function()
-                system.ClaimGift(gift)
-            end),
-        })
+            })
+        end
     end
 
     if #rows == 0 then
@@ -1143,8 +1287,11 @@ local function BuildSocialLogSection()
                     borderRadius = 12,
                     onClick = function()
                         Suppress()
-                        SocialView.Close()
-                        system.VisitPlayer(visitor.userId)
+                        if system.VisitPlayer(visitor.userId) then
+                            SocialView.Close()
+                        else
+                            ShowVisitError(system.GetRequestError and system.GetRequestError("visit") or nil)
+                        end
                     end,
                 },
             },

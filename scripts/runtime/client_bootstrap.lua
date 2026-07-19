@@ -66,6 +66,7 @@ function ClientBootstrap.Start(ctx)
     ctx.NetworkRecovery.Init({
         SocialGardenSystem = ctx.SocialGardenSystem,
         EconomyCloudSystem = ctx.EconomyCloudSystem,
+        ModalRegistry = ctx.ModalRegistry,
         showToast = ctx.ShowToast,
         getScene = ctx.getScene,
     })
@@ -152,6 +153,17 @@ function ClientBootstrap.Start(ctx)
         DAILY_TASK_CONFIG = ctx.DAILY_TASK_CONFIG,
         ViewMode = ctx.ViewMode,
         UIController = ctx.UIController,
+        NetworkRecovery = ctx.NetworkRecovery,
+        retryLoading = function()
+            if ctx.RetryLoading ~= nil then return ctx.RetryLoading() end
+            return false
+        end,
+        resetSave = function()
+            if ctx.ResetSaveFromLoading ~= nil then return ctx.ResetSaveFromLoading() end
+            return false
+        end,
+        suppressWorldTap = ctx.RequestSuppressWorldTap,
+        showToast = ctx.ShowToast,
         SeedPackView = ctx.SeedPackView,
         TaskView = ctx.TaskView,
         ActivityView = ctx.ActivityView,
@@ -170,6 +182,8 @@ function ClientBootstrap.Start(ctx)
         LeaderboardView = ctx.LeaderboardView,
         Shop = ctx.Shop,
         PlayerSystem = ctx.PlayerSystem,
+        NetworkClient = NetworkClient,
+        Shared = ctx.Shared,
         LeaderboardSystem = ctx.LeaderboardSystem,
         PlotDisplayController = ctx.PlotDisplayController,
         ActivitySystem = ctx.ActivitySystem,
@@ -588,23 +602,17 @@ function ClientBootstrap.Start(ctx)
             if ctx.EconomyCloudSystem ~= nil and ctx.EconomyCloudSystem.HoldFarmOperations ~= nil then
                 ctx.EconomyCloudSystem.HoldFarmOperations(1.2, "return_home")
             end
-            local fullSyncRequested = false
-            if ctx.SocialGardenSystem ~= nil and ctx.SocialGardenSystem.RequestFullSync ~= nil then
-                fullSyncRequested = ctx.SocialGardenSystem.RequestFullSync("return_home_force_sync") == true
+            -- 必须走 Economy FullSync（带 requestId / force 清 pending）。
+            -- 仅发社交侧无 requestId 的 FullSync 会导致本批响应被残留 activeRequestId 误丢，回家后卡「同步中」。
+            if ctx.EconomyCloudSystem ~= nil and ctx.EconomyCloudSystem.RequestFullSync ~= nil then
+                ctx.EconomyCloudSystem.RequestFullSync("return_home_force_sync", { force = true })
+            elseif ctx.EconomyCloudSystem ~= nil and ctx.EconomyCloudSystem.RequestState ~= nil then
+                ctx.EconomyCloudSystem.RequestState({ force = true, reason = "return_home_force_sync" })
+            elseif ctx.SocialGardenSystem ~= nil and ctx.SocialGardenSystem.RequestFullSync ~= nil then
+                ctx.SocialGardenSystem.RequestFullSync("return_home_force_sync")
             end
-            if not fullSyncRequested then
-                if ctx.EconomyCloudSystem ~= nil and ctx.EconomyCloudSystem.RequestState ~= nil then
-                    ctx.EconomyCloudSystem.RequestState({ force = true, reason = "return_home_force_sync" })
-                end
-                if ctx.EconomyCloudSystem ~= nil and ctx.EconomyCloudSystem.RequestSeedShop ~= nil then
-                    ctx.EconomyCloudSystem.RequestSeedShop()
-                end
-                if ctx.EconomyCloudSystem ~= nil and ctx.EconomyCloudSystem.RequestAuthFarm ~= nil then
-                    ctx.EconomyCloudSystem.RequestAuthFarm({ force = true, reason = "return_home_force_sync" })
-                end
-                if ctx.SocialGardenSystem ~= nil and ctx.SocialGardenSystem.RequestSocialState ~= nil then
-                    ctx.SocialGardenSystem.RequestSocialState({ force = true, reason = "return_home_force_sync" })
-                end
+            if ctx.EconomyCloudSystem ~= nil and ctx.EconomyCloudSystem.RequestSeedShop ~= nil then
+                ctx.EconomyCloudSystem.RequestSeedShop()
             end
             if ctx.RebuildUI ~= nil then ctx.RebuildUI() end
         end,
@@ -631,15 +639,21 @@ function ClientBootstrap.Start(ctx)
         end,
         onServerBound = function()
             ctx.PlayerSystem.TryApplyConnectionIdentity()
+            if ctx.NetworkRecovery ~= nil and ctx.NetworkRecovery.NotifyInitialClientReady ~= nil then
+                ctx.NetworkRecovery.NotifyInitialClientReady()
+            end
         end,
     })
 
     NetworkClient.Init({
         SocialGardenSystem = ctx.SocialGardenSystem,
         EconomyCloudSystem = ctx.EconomyCloudSystem,
+        NetworkRecovery = ctx.NetworkRecovery,
+        showToast = ctx.ShowToast,
     })
 
     ctx.LeaderboardSystem.Init({
+        SocialGardenSystem = ctx.SocialGardenSystem,
         showToast = ctx.ShowToast,
         showFloatingToast = function(text)
             ctx.FloatingToast.Show(text, { fontSize = 20, duration = 1.5, yRatio = 0.34, priority = 8 })
@@ -703,6 +717,9 @@ function ClientBootstrap.Start(ctx)
     ctx.NetworkRecovery.ResetConnectionState()
 
     ctx.GameLoop.Init({
+        updateNetworkClient = function(dt)
+            NetworkClient.Update(dt)
+        end,
         updateNetworkRecovery = ctx.UpdateNetworkRecovery,
         isInitialUiReady = ctx.isInitialUiReady,
         isInitialPlayerReady = ctx.isInitialPlayerReady,
@@ -739,7 +756,14 @@ function ClientBootstrap.Start(ctx)
     end
     SubscribeToEvent("Update", "HandleUpdate")
     SubscribeToEvent("ServerReady", "HandleNetworkRecoveryServerReady")
+    SubscribeToEvent("ServerConnected", "HandleNetworkRecoveryServerConnected")
     SubscribeToEvent("ServerDisconnected", "HandleNetworkRecoveryServerDisconnected")
+    SubscribeToEvent("NetworkReconnecting", "HandleNetworkRecoveryNetworkReconnecting")
+    SubscribeToEvent("NetworkReconnected", "HandleNetworkRecoveryNetworkReconnected")
+    SubscribeToEvent("ConnectFailed", "HandleNetworkRecoveryConnectFailed")
+    SubscribeToEvent("TransportConnected", "HandleNetworkRecoveryTransportConnected")
+    SubscribeToEvent("TransportDisconnected", "HandleNetworkRecoveryTransportDisconnected")
+    SubscribeToEvent("TransportConnectFailed", "HandleNetworkRecoveryTransportConnectFailed")
     SubscribeToEvent("MouseButtonDown", "HandleMouseButtonDown")
     SubscribeToEvent("MouseMove", "HandleMouseMove")
     SubscribeToEvent("MouseWheel", "HandleMouseWheel")

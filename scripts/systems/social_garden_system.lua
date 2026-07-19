@@ -22,7 +22,10 @@ local DAILY_STEAL_LIMIT = ServerConfig.Tuning.dailyStealLimit
 local DAILY_GIFT_LIMIT = ServerConfig.Tuning.dailyGiftLimit
 local STEAL_REQUEST_COOLDOWN = 1
 local STEAL_RATE_LIMIT_BACKOFF = 8
-local SOCIAL_STATE_REFRESH_DELAY = 2
+local SOCIAL_RANK_REQUEST_COOLDOWN = 12
+local SOCIAL_STATE_REFRESH_DELAY = 3
+local SOCIAL_STATE_REQUEST_MIN_INTERVAL = 15
+local SOCIAL_STATE_FORCE_MIN_INTERVAL = 6
 local ALLOW_DEMO_SOCIAL = false
 local ALLOW_DEMO_ECONOMY_REWARDS = false
 
@@ -45,6 +48,7 @@ local state_ = {
     recentVisitors = {},
     stealLogs = {},
     pending = {},
+    errors = {},
     daily = {
         stealCount = 0,
         giftSentCount = 0,
@@ -66,8 +70,14 @@ local state_ = {
     stealBackoffUntil = 0,
     socialStateRefreshAt = nil,
     socialStateRefreshReason = nil,
+    visitRetryAt = nil,
+    visitRetryUserId = nil,
+    visitRetryCount = 0,
     likedGardens = {},
     likeDeltas = {},
+    lastRankRequestAt = 0,
+    lastRankSuccessAt = 0,
+    lastSocialStateRequestAt = 0,
 }
 
 local function IsClientNetworkAvailable()
@@ -82,9 +92,9 @@ local function NormalizeUserId(userId)
     return UserId.Normalize(userId)
 end
 
-local function BeginRequest(requestType, payload)
+local function BeginRequest(requestType, payload, options)
     local nextPayload = payload or {}
-    nextPayload = requests_:Begin(requestType, nextPayload)
+    nextPayload = requests_:Begin(requestType, nextPayload, options or { suppressNetworkFailure = true })
     requests_:SyncLegacyPending(state_.pending)
     return nextPayload
 end
@@ -102,6 +112,17 @@ local function FinishRequestExact(requestId)
     end
     requests_:SyncLegacyPending(state_.pending)
     return record
+end
+
+local function SetRequestError(requestType, message)
+    if requestType == nil then return end
+    state_.errors[tostring(requestType)] = message or "网络连接失败，请重试"
+    EmitSocialChanged("error")
+end
+
+local function ClearRequestError(requestType)
+    if requestType == nil then return end
+    state_.errors[tostring(requestType)] = nil
 end
 
 local function MarkGiftTarget(targetUserId, value)
@@ -178,8 +199,30 @@ end
 
 local function IsCloudRateLimitError(data)
     if data == nil then return false end
+    if data.code == "RATE_LIMITED" then return true end
     local message = tostring(data.message or "")
     return string.find(message, "read rate limit exceeded", 1, true) ~= nil
+end
+
+local function IsGardenSyncingMessage(data)
+    if data == nil then return false end
+    return string.find(tostring(data.message or ""), "花园同步中", 1, true) ~= nil
+end
+
+local function ScheduleVisitRetry(userId)
+    if userId == nil then return false end
+    local nextCount = (tonumber(state_.visitRetryCount or 0) or 0) + 1
+    if nextCount > 3 then
+        state_.visitRetryAt = nil
+        state_.visitRetryUserId = nil
+        state_.visitRetryCount = nextCount
+        return false
+    end
+    state_.visitRetryCount = nextCount
+    state_.visitRetryUserId = NormalizeUserId(userId) or userId
+    state_.visitRetryAt = GetNow() + math.min(5, 1 + state_.visitRetryCount)
+    print("[社交花园] 目标花园同步中，已安排拜访重试 target=" .. tostring(state_.visitRetryUserId) .. " count=" .. tostring(state_.visitRetryCount))
+    return true
 end
 
 local function ScheduleSocialStateRefresh(reason)
@@ -198,6 +241,23 @@ local function FlushScheduledSocialStateRefresh()
     state_.socialStateRefreshAt = nil
     state_.socialStateRefreshReason = nil
     SocialGardenSystem.RequestSocialState({ reason = reason })
+end
+
+local function FlushScheduledVisitRetry()
+    if state_.visitRetryAt == nil then return end
+    if GetNow() < state_.visitRetryAt then return end
+    if requests_:IsPending("visit") then return end
+    local targetUserId = state_.visitRetryUserId
+    state_.visitRetryAt = nil
+    state_.visitRetryUserId = nil
+    if targetUserId == nil then return end
+    if (tonumber(state_.visitRetryCount or 0) or 0) > 3 then
+        SetRequestError("visit", "对方花园仍在同步中，请稍后再试")
+        if deps_.showToast then deps_.showToast("对方花园仍在同步中，请稍后再试") end
+        return
+    end
+    print("[社交花园] 执行拜访自动重试 target=" .. tostring(targetUserId))
+    SocialGardenSystem.VisitPlayer(targetUserId, { autoRetry = true })
 end
 
 local function GetSeedDisplayName(seedId, cropIndex)
@@ -355,6 +415,13 @@ local function SendRequest(eventName, payload)
     return NetworkClient.SendRequest(eventName, payload)
 end
 
+local function ReportServerFailure(data, reason)
+    if NetworkClient.ReportServerResponseFailure ~= nil then
+        return NetworkClient.ReportServerResponseFailure(data, reason)
+    end
+    return false
+end
+
 local function ApplyGiftReward(gift)
     if ALLOW_DEMO_ECONOMY_REWARDS ~= true then return false end
     if gift == nil then return false end
@@ -427,8 +494,14 @@ function SocialGardenSystem.IsServerBound()
     return state_.serverEnabled == true and state_.boundConnectionKey ~= nil
 end
 
+--- 清除 CLIENT_READY 绑定（僵尸连接恢复时调用，不主动 Disconnect）。
+function SocialGardenSystem.ClearServerBind()
+    state_.serverEnabled = false
+    state_.boundConnectionKey = nil
+end
+
 function SocialGardenSystem.BindServerConnection(forceReady)
-    local conn = NetworkClient.GetConnection()
+    local conn = NetworkClient.GetAliveConnection ~= nil and NetworkClient.GetAliveConnection() or NetworkClient.GetConnection()
     if conn ~= nil and deps_.getScene ~= nil then
         local scene = deps_.getScene()
         if scene == nil then
@@ -436,15 +509,27 @@ function SocialGardenSystem.BindServerConnection(forceReady)
         end
         NetworkClient.EnsureConnectionScene(deps_.getScene)
         conn.scene = scene
-        local connectionKey = "connected"
+        local connectionKey = NetworkClient.GetConnectionKey ~= nil and NetworkClient.GetConnectionKey() or nil
+        connectionKey = connectionKey or "connected"
         if forceReady ~= true and state_.serverEnabled == true and state_.boundConnectionKey == connectionKey then
             return true, false
         end
         state_.boundConnectionKey = connectionKey
-        conn:SendRemoteEvent(Shared.EVENTS.CLIENT_READY, true)
+        local sent = Shared.SendToServer(Shared.EVENTS.CLIENT_READY, {
+            reason = forceReady == true and "force_bind" or "bind",
+            forceReady = forceReady == true,
+            clientConnectionGeneration = NetworkClient.GetConnectionGeneration(),
+            gameSessionId = NetworkClient.GetGameSessionId(),
+        })
+        if sent ~= true then
+            state_.serverEnabled = false
+            state_.boundConnectionKey = nil
+            print("[社交花园] CLIENT_READY 发送失败，等待重新绑定 " .. NetworkClient.GetConnectionLogContext())
+            return false, false
+        end
         -- 社交状态由服务端 CLIENT_READY → SendFullSync 推送；重连走 SessionSync / NetworkRecovery。
         state_.serverEnabled = true
-        print("[社交花园] 已绑定后台服务器连接并发送客户端就绪")
+        print("[社交花园] 已绑定后台服务器连接并发送客户端就绪 " .. NetworkClient.GetConnectionLogContext())
         if deps_.onServerBound ~= nil then deps_.onServerBound() end
         return true, true
     end
@@ -455,7 +540,10 @@ end
 
 function SocialGardenSystem.RequestFullSync(reason)
     if not IsClientNetworkAvailable() then return false end
-    return SendRequest(Shared.EVENTS.REQUEST_FULL_SYNC, { reason = reason or "manual" })
+    local syncReason = reason or "manual"
+    local sent = SendRequest(Shared.EVENTS.REQUEST_FULL_SYNC, { reason = syncReason })
+    print("[社交花园] 请求服务端全量同步 reason=" .. tostring(syncReason) .. " sent=" .. tostring(sent == true) .. " " .. NetworkClient.GetConnectionLogContext())
+    return sent
 end
 
 function SocialGardenSystem.GetSaveData()
@@ -484,23 +572,40 @@ function SocialGardenSystem.GetState()
     return state_
 end
 
+function SocialGardenSystem.GetRequestError(requestType)
+    if requestType == nil then return nil end
+    return state_.errors[tostring(requestType)]
+end
+
+function SocialGardenSystem.ClearPendingRequests(reason)
+    requests_:Clear()
+    requests_:SyncLegacyPending(state_.pending)
+    state_.pending.visitUserId = nil
+    SetRequestError("visit", "网络连接已重置，请重试拜访")
+    SetRequestError("socialState", "网络连接已重置，请重试同步好友资料")
+    print("[社交花园] 已清理未完成请求 reason=" .. tostring(reason or "network_reset"))
+end
+
 function SocialGardenSystem.Update(_dt)
     requests_:Update(function(record)
         requests_:SyncLegacyPending(state_.pending)
         state_.lastSyncText = "请求超时"
         if record.type == "visit" then
+            SetRequestError("visit", "网络连接失败，拜访请求超时，请重试")
             if record.payload ~= nil and record.payload.targetUserId ~= nil then
                 EnterFallbackGarden(record.payload.targetUserId)
             elseif deps_.showToast then
                 deps_.showToast("拜访超时")
             end
         elseif record.type == "steal" then
+            SetRequestError("steal", "网络连接失败，偷菜请求超时，请重试")
             SocialGardenSystem.MarkVisitCropStealPending(record.payload and record.payload.cropId, record.payload and record.payload.cropIndex, false)
             if deps_.showToast then
                 deps_.showToast("偷菜超时")
             end
-        elseif deps_.showToast then
-            deps_.showToast("社交同步中")
+        else
+            SetRequestError(record.type, "网络连接失败，社交请求超时，请重试")
+            if deps_.showToast then deps_.showToast("社交同步中") end
         end
         if record.type ~= "socialState" then
             SocialGardenSystem.RequestSocialState({ force = true, reason = "timeout_" .. tostring(record.type) })
@@ -508,6 +613,7 @@ function SocialGardenSystem.Update(_dt)
         print("[社交花园] 请求超时: " .. tostring(record.type) .. " " .. tostring(record.id))
     end)
     FlushScheduledSocialStateRefresh()
+    FlushScheduledVisitRetry()
 end
 
 function SocialGardenSystem.IsVisitMode()
@@ -584,13 +690,31 @@ function SocialGardenSystem.UploadSnapshot(options)
     return false
 end
 
-function SocialGardenSystem.RequestLeaderboard()
-    local payload = BeginRequest("rank", { count = 20 })
+function SocialGardenSystem.RequestLeaderboard(options)
+    options = options or {}
+    local now = GetNow()
+    if options.force ~= true and #state_.leaderboard > 0 and now - (tonumber(state_.lastRankRequestAt or 0) or 0) < SOCIAL_RANK_REQUEST_COOLDOWN then
+        ClearRequestError("rank")
+        print("[社交花园] 观光榜使用本地缓存，避免短时间重复读取云榜")
+        EmitSocialChanged("rank_cached")
+        return true
+    end
+    if requests_:IsPending("rank") then return true end
+    requests_:Cancel("rank")
+    requests_:SyncLegacyPending(state_.pending)
+    ClearRequestError("rank")
+    local payload = BeginRequest("rank", { count = 20, force = options.force == true })
+    state_.lastRankRequestAt = now
     if SendRequest(Shared.EVENTS.REQUEST_RANK, payload) then return true end
     FinishRequest(payload.requestId, "rank")
+    SetRequestError("rank", "网络异常，排行榜暂时无法读取")
     if ALLOW_DEMO_SOCIAL then EnsureDemoData() end
     if deps_.showToast then deps_.showToast("网络异常，排行榜暂时无法读取") end
     return false
+end
+
+function SocialGardenSystem.GetLastRankRequestAt()
+    return tonumber(state_.lastRankRequestAt or 0) or 0
 end
 
 local function MergeLeaderboardWithFallback(list)
@@ -630,6 +754,10 @@ function SocialGardenSystem.GetFriends()
     return state_.friends or {}
 end
 
+function SocialGardenSystem.IsLeaderboardLoading()
+    return requests_:IsPending("rank")
+end
+
 function SocialGardenSystem.IsSocialStateLoading()
     return requests_:IsPending("socialState")
 end
@@ -648,11 +776,33 @@ end
 
 function SocialGardenSystem.RequestSocialState(options)
     options = options or {}
+    local now = GetNow()
+    local reason = options.reason or "sync"
+    local interactive = options.interactive == true or reason == "ui_retry" or reason == "ui_retry_messages"
+    local minInterval = SOCIAL_STATE_REQUEST_MIN_INTERVAL
+    if options.force == true and interactive ~= true then
+        minInterval = SOCIAL_STATE_FORCE_MIN_INTERVAL
+    end
+    if interactive ~= true and now - (tonumber(state_.lastSocialStateRequestAt or 0) or 0) < minInterval then
+        ScheduleSocialStateRefresh(reason)
+        print("[社交花园] 社交状态请求过于频繁，已合并延迟 reason=" .. tostring(reason))
+        return true
+    end
+    -- 非交互 force：若已有 pending，只合并延迟，避免 Cancel 后立刻重打加重云读。
+    if options.force == true and interactive ~= true and requests_:IsPending("socialState") then
+        ScheduleSocialStateRefresh(reason)
+        print("[社交花园] 社交状态已在请求中，合并延迟 reason=" .. tostring(reason))
+        return true
+    end
     if options.force == true then requests_:Cancel("socialState") end
     if requests_:IsPending("socialState") then return true end
-    local payload = BeginRequest("socialState", { userId = GetUserId(), reason = options.reason or "sync" })
+    ClearRequestError("socialState")
+    local payload = BeginRequest("socialState", { userId = GetUserId(), reason = reason })
+    state_.lastSocialStateRequestAt = now
     if SendRequest(Shared.EVENTS.REQUEST_SOCIAL_STATE, payload) then return true end
+    state_.lastSocialStateRequestAt = 0
     FinishRequest(payload.requestId, "socialState")
+    SetRequestError("socialState", "网络连接失败，无法同步好友资料，请检查网络后重试")
     return false
 end
 
@@ -683,12 +833,19 @@ EnterFallbackGarden = function(userId)
     return true
 end
 
-function SocialGardenSystem.VisitPlayer(userId)
+function SocialGardenSystem.VisitPlayer(userId, options)
+    options = options or {}
     if userId == nil then return false end
     local pendingVisit = requests_:GetPending("visit")
     if pendingVisit ~= nil and pendingVisit.payload ~= nil and tostring(pendingVisit.payload.targetUserId) == tostring(userId) then
         if deps_.showToast then deps_.showToast("正在拜访该花园，请稍候") end
         return false
+    end
+    ClearRequestError("visit")
+    if options.autoRetry ~= true then
+        state_.visitRetryAt = nil
+        state_.visitRetryUserId = nil
+        state_.visitRetryCount = 0
     end
     local payload = BeginRequest("visit", { targetUserId = NormalizeUserId(userId) or userId })
     state_.pending.visitUserId = NormalizeUserId(userId) or userId
@@ -696,6 +853,7 @@ function SocialGardenSystem.VisitPlayer(userId)
         if deps_.showToast then deps_.showToast("正在前往对方花园...") end
         return true
     end
+    SetRequestError("visit", "网络连接失败，无法拜访该花园，请检查网络后重试")
     return EnterFallbackGarden(userId)
 end
 
@@ -709,9 +867,17 @@ function SocialGardenSystem.VisitByInput(text)
 end
 
 function SocialGardenSystem.ReturnHome()
+    local wasStealing = state_.stealingMode == true
+    local visitGarden = state_.visitGarden
     state_.mode = MODE_OWN
     state_.visitGarden = nil
     state_.stealingMode = false
+    -- 偷菜模式进入时 enterStealingMode 把 displayMode_ 设为 "single" 并切到 PlantView；
+    -- 若不调用 exitStealingMode 复位，返回自己花园后只有 focusedPlotIndex 那块地 visible=true，
+    -- 其余地块被 PlotHitFromScreen 跳过，点击完全无反应（无法播种）。
+    if wasStealing and deps_.exitStealingMode then
+        deps_.exitStealingMode(visitGarden)
+    end
     if deps_.returnHome then deps_.returnHome() end
     if deps_.showToast then deps_.showToast("已返回我的花园") end
 end
@@ -956,9 +1122,11 @@ function SocialGardenSystem.SendSeedGift(targetUserId, seedId)
 end
 
 function SocialGardenSystem.RequestGifts()
+    ClearRequestError("gifts")
     local payload = BeginRequest("gifts", {})
     if SendRequest(Shared.EVENTS.REQUEST_GIFTS, payload) then return true end
     FinishRequest(payload.requestId, "gifts")
+    SetRequestError("gifts", "网络连接失败，无法读取好友礼物，请重试")
     return false
 end
 
@@ -1193,6 +1361,7 @@ end
 function SocialGardenSystem.HandleSaveSnapshotResult(data)
     FinishRequest(data.requestId, "saveGarden")
     state_.lastSyncText = data.success and "已同步" or "同步失败"
+    if data.success ~= true then ReportServerFailure(data, "saveGarden") end
     if deps_.showToast then deps_.showToast(data.message or state_.lastSyncText) end
 end
 
@@ -1229,6 +1398,17 @@ function SocialGardenSystem.HandleGardenResponse(data)
         or UserId.Normalize(pending.payload and pending.payload.targetUserId)
     state_.pending.visitUserId = nil
     if data.success ~= true then
+        if IsGardenSyncingMessage(data) then
+            SetRequestError("visit", "对方花园正在同步，稍后自动重试")
+            if ScheduleVisitRetry(targetUserId) then
+                if deps_.showToast then deps_.showToast("对方花园正在同步，稍后自动重试") end
+            elseif deps_.showToast then
+                deps_.showToast("对方花园仍在同步中，请稍后再试")
+            end
+            return
+        end
+        SetRequestError("visit", data.message or "网络连接失败，花园读取失败，请重试")
+        ReportServerFailure(data, "visit")
         if deps_.showToast then deps_.showToast(data.message or "花园读取失败") end
         return
     end
@@ -1252,6 +1432,10 @@ function SocialGardenSystem.HandleGardenResponse(data)
         end
     end
     EnterVisitMode(garden)
+    state_.visitRetryAt = nil
+    state_.visitRetryUserId = nil
+    state_.visitRetryCount = 0
+    ClearRequestError("visit")
     if garden.likedByMe == true then
         state_.likedGardens[tostring(garden.userId or "fallback")] = true
     end
@@ -1261,10 +1445,15 @@ end
 function SocialGardenSystem.HandleRankResponse(data)
     FinishRequest(data.requestId, "rank")
     if data.success and type(data.list) == "table" then
+        ClearRequestError("rank")
+        state_.lastRankSuccessAt = GetNow()
         state_.leaderboard = MergeLeaderboardWithFallback(data.list)
         EmitSocialChanged("updated")
-    elseif deps_.showToast then
-        deps_.showToast(data.message or "排行榜读取失败")
+    else
+        local message = data.message or "排行榜读取失败"
+        SetRequestError("rank", message)
+        ReportServerFailure(data, "socialRank")
+        if deps_.showToast then deps_.showToast(message) end
     end
 end
 
@@ -1294,11 +1483,11 @@ function SocialGardenSystem.HandleStealResponse(data)
         if deps_.showFloatingToast then deps_.showFloatingToast(floatingMessage) end
         if deps_.markDirty then deps_.markDirty() end
         EmitSocialChanged("updated")
-    elseif deps_.showToast then
+    else
         SocialGardenSystem.MarkVisitCropStealPending(data.cropId or (pending and pending.payload and pending.payload.cropId), data.cropIndex or (pending and pending.payload and pending.payload.cropIndex), false)
+        ReportServerFailure(data, "steal")
         if IsCloudRateLimitError(data) then
             state_.stealBackoffUntil = GetNow() + STEAL_RATE_LIMIT_BACKOFF
-            ScheduleSocialStateRefresh("steal_rate_limited")
         end
         if IsStealLimitError(data) then
             if data.daily ~= nil then
@@ -1311,7 +1500,7 @@ function SocialGardenSystem.HandleStealResponse(data)
             end
             ShowStealLimitInsufficient()
         else
-            deps_.showToast(data.message or "偷菜失败")
+            if deps_.showToast then deps_.showToast(data.message or "偷菜失败") end
         end
     end
 end
@@ -1332,6 +1521,7 @@ end
 function SocialGardenSystem.HandleSocialStateResponse(data)
     FinishRequest(data.requestId, "socialState")
     if data.success then
+        ClearRequestError("socialState")
         local phase = data.phase or "full"
         SocialGardenSystem.LoadSaveData(type(data.socialSave) == "table" and data.socialSave or {})
         if phase == "save" then
@@ -1368,8 +1558,10 @@ function SocialGardenSystem.HandleSocialStateResponse(data)
         end
         EmitSocialChanged("updated")
         if deps_.onSocialStateSynced ~= nil then deps_.onSocialStateSynced() end
-    elseif deps_.showToast then
-        deps_.showToast(data.message or "社交数据读取失败")
+    else
+        SetRequestError("socialState", data.message or "网络连接失败，社交数据读取失败，请重试")
+        ReportServerFailure(data, "socialState")
+        if deps_.showToast then deps_.showToast(data.message or "社交数据读取失败") end
     end
 end
 
@@ -1392,10 +1584,11 @@ function SocialGardenSystem.HandleSendSeedGiftResponse(data)
         SocialGardenSystem.RequestSocialState()
         if deps_.markDirty then deps_.markDirty() end
         EmitSocialChanged("updated")
-    elseif deps_.showToast then
+    else
         if data.state ~= nil and deps_.applyEconomyState ~= nil then
             deps_.applyEconomyState(data.state)
         end
+        ReportServerFailure(data, "gift")
         if data.targetUserId ~= nil and ShouldRollbackGiftTarget(data.targetUserId) then
             MarkGiftTarget(data.targetUserId, false)
             EmitSocialChanged("updated")
@@ -1430,6 +1623,7 @@ function SocialGardenSystem.HandleLikeGardenResponse(data)
             EmitSocialChanged("updated")
             if deps_.markDirty then deps_.markDirty() end
         end
+        ReportServerFailure(data, "like")
         if deps_.showToast then deps_.showToast(data.message or "点赞失败") end
     end
 end
@@ -1439,8 +1633,9 @@ function SocialGardenSystem.HandleSendFriendRequestResponse(data)
     if data.success then
         ShowToastMessage("已发送好友申请", true)
         SocialGardenSystem.RequestSocialState()
-    elseif deps_.showToast then
-        deps_.showToast(data.message or "好友申请发送失败")
+    else
+        ReportServerFailure(data, "friendRequest")
+        if deps_.showToast then deps_.showToast(data.message or "好友申请发送失败") end
     end
 end
 
@@ -1452,8 +1647,9 @@ function SocialGardenSystem.HandleRespondFriendRequestResponse(data)
         end
         if deps_.showToast then deps_.showToast(data.message or "好友申请已处理") end
         EmitSocialChanged("updated")
-    elseif deps_.showToast then
-        deps_.showToast(data.message or "好友申请处理失败")
+    else
+        ReportServerFailure(data, "friendRespond")
+        if deps_.showToast then deps_.showToast(data.message or "好友申请处理失败") end
     end
     SocialGardenSystem.RequestSocialState({ force = true, reason = data.success and "friend_respond" or "friend_respond_failed" })
 end
@@ -1472,8 +1668,9 @@ function SocialGardenSystem.HandleRemoveFriendResponse(data)
         if deps_.showToast then deps_.showToast(data.message or "已删除好友") end
         EmitSocialChanged("updated")
         SocialGardenSystem.RequestSocialState()
-    elseif deps_.showToast then
-        deps_.showToast(data.message or "删除好友失败")
+    else
+        ReportServerFailure(data, "removeFriend")
+        if deps_.showToast then deps_.showToast(data.message or "删除好友失败") end
     end
 end
 
@@ -1488,18 +1685,22 @@ function SocialGardenSystem.HandleClearSocialMessagesResponse(data)
         SocialGardenSystem.RequestGifts()
         if deps_.showToast then deps_.showToast(data.message or "消息已清除") end
         EmitSocialChanged("updated")
-    elseif deps_.showToast then
-        deps_.showToast(data.message or "消息清除失败")
+    else
+        ReportServerFailure(data, "clearMessages")
+        if deps_.showToast then deps_.showToast(data.message or "消息清除失败") end
     end
 end
 
 function SocialGardenSystem.HandleGiftsResponse(data)
     FinishRequest(data.requestId, "gifts")
     if data.success and type(data.gifts) == "table" then
+        ClearRequestError("gifts")
         state_.gifts = data.gifts
         EmitSocialChanged("updated")
-    elseif deps_.showToast then
-        deps_.showToast(data.message or "礼物读取失败")
+    else
+        SetRequestError("gifts", data.message or "网络连接失败，礼物读取失败，请重试")
+        ReportServerFailure(data, "gifts")
+        if deps_.showToast then deps_.showToast(data.message or "礼物读取失败") end
     end
 end
 
@@ -1528,6 +1729,7 @@ function SocialGardenSystem.HandleClaimGiftResponse(data)
         SocialGardenSystem.RequestGifts()
         if deps_.markDirty then deps_.markDirty() end
     else
+        ReportServerFailure(data, "claimGift")
         local message = data.message or "领取失败"
         if deps_.showToast then deps_.showToast(message) end
         if deps_.showFloatingToast then deps_.showFloatingToast(message) end

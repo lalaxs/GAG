@@ -27,6 +27,10 @@ local gameConfig_ = nil
 --- ClientIdentity 认证后的 UID 缓存。存档读写只允许使用此缓存，禁止重复读 identity 兜底。
 
 local certifiedConnUid_ = {}
+local connectionStates_ = {}
+local activeConnectionByKey_ = {}
+local activeConnectionByUid_ = {}
+local nextConnectionGeneration_ = 0
 
 
 
@@ -56,10 +60,94 @@ function ServerUtils.GetConnectionKey(connection)
 
 end
 
+function ServerUtils.GetConnectionGameSessionId(connection)
 
+    return UserId.ReadConnectionGameSessionId(connection)
+
+end
+
+
+
+function ServerUtils.RegisterConnection(connection)
+    if connection == nil then return nil end
+    local key = ServerUtils.GetConnectionKey(connection)
+    nextConnectionGeneration_ = nextConnectionGeneration_ + 1
+    local previous = activeConnectionByKey_[key]
+    if previous ~= nil and previous ~= connection then
+        local previousState = connectionStates_[previous]
+        if previousState ~= nil then
+            previousState.active = false
+            previousState.invalidatedReason = "connection_replaced"
+        end
+        certifiedConnUid_[key] = nil
+        print(string.format(
+            "[服务端连接] 替换旧连接 key=%s oldGeneration=%s newGeneration=%s",
+            tostring(key),
+            tostring(previousState and previousState.generation),
+            tostring(nextConnectionGeneration_)
+        ))
+    end
+    local state = {
+        connection = connection,
+        key = key,
+        generation = nextConnectionGeneration_,
+        active = true,
+        identityReady = false,
+        userId = nil,
+        gameSessionId = ServerUtils.GetConnectionGameSessionId(connection),
+    }
+    connectionStates_[connection] = state
+    activeConnectionByKey_[key] = connection
+    print(string.format(
+        "[服务端连接] 注册连接 key=%s generation=%s game_session_id=%s",
+        tostring(key),
+        tostring(state.generation),
+        tostring(state.gameSessionId or "unknown")
+    ))
+    return state
+end
+
+function ServerUtils.GetConnectionState(connection)
+    return connectionStates_[connection]
+end
+
+function ServerUtils.GetConnectionGeneration(connection)
+    local state = connectionStates_[connection]
+    return state and state.generation or nil
+end
+
+function ServerUtils.IsCurrentConnection(connection, generation)
+    local state = connectionStates_[connection]
+    if state == nil or state.active ~= true then return false end
+    if activeConnectionByKey_[state.key] ~= connection then return false end
+    return generation == nil or state.generation == generation
+end
+
+function ServerUtils.InvalidateConnection(connection)
+    if connection == nil then return end
+    local state = connectionStates_[connection]
+    if state == nil then
+        certifiedConnUid_[ServerUtils.GetConnectionKey(connection)] = nil
+        return
+    end
+    state.active = false
+    state.invalidatedReason = "client_disconnected"
+    if state.userId ~= nil and activeConnectionByUid_[state.userId] == connection then
+        activeConnectionByUid_[state.userId] = nil
+    end
+    if activeConnectionByKey_[state.key] == connection then
+        activeConnectionByKey_[state.key] = nil
+        certifiedConnUid_[state.key] = nil
+    end
+    print(string.format(
+        "[服务端连接] 失效连接 key=%s generation=%s userId=%s",
+        tostring(state.key),
+        tostring(state.generation),
+        tostring(state.userId)
+    ))
+end
 
 --- ClientIdentity 事件中调用：认证 UID 只读取一次并锁定。
-
 function ServerUtils.RegisterConnectionUserId(connection, uid)
 
     uid = UserId.Normalize(uid)
@@ -68,7 +156,28 @@ function ServerUtils.RegisterConnectionUserId(connection, uid)
 
     local key = ServerUtils.GetConnectionKey(connection)
 
+    local state = connectionStates_[connection]
+    if state == nil or state.active ~= true or activeConnectionByKey_[key] ~= connection then
+        return nil
+    end
+    local previousForUid = activeConnectionByUid_[uid]
+    if previousForUid ~= nil and previousForUid ~= connection then
+        local previousState = connectionStates_[previousForUid]
+        if previousState ~= nil then
+            previousState.active = false
+            previousState.invalidatedReason = "uid_replaced"
+        end
+        print(string.format(
+            "[服务端认证] 同 UID 新连接替换旧连接 uid=%s oldGeneration=%s newGeneration=%s",
+            tostring(uid),
+            tostring(previousState and previousState.generation),
+            tostring(state.generation)
+        ))
+    end
     certifiedConnUid_[key] = uid
+    state.userId = uid
+    state.identityReady = true
+    activeConnectionByUid_[uid] = connection
 
     return uid
 
@@ -77,11 +186,20 @@ end
 
 
 function ServerUtils.ClearConnectionUserId(connection)
-
     if connection == nil then return end
-
-    certifiedConnUid_[ServerUtils.GetConnectionKey(connection)] = nil
-
+    local state = connectionStates_[connection]
+    local key = ServerUtils.GetConnectionKey(connection)
+    if state ~= nil and activeConnectionByKey_[key] ~= connection then
+        return
+    end
+    certifiedConnUid_[key] = nil
+    if state ~= nil then
+        if state.userId ~= nil and activeConnectionByUid_[state.userId] == connection then
+            activeConnectionByUid_[state.userId] = nil
+        end
+        state.userId = nil
+        state.identityReady = false
+    end
 end
 
 
@@ -96,14 +214,14 @@ end
 
 
 
---- 获取已认证的玩家 UID。未经过 ClientIdentity 时返回 nil（不做任何兜底猜测）。
-
+--- 获取已认证的玩家 UID。必须先经过 ClientIdentity，不再从普通业务请求回读 identity。
 function ServerUtils.GetConnectionUserId(connection)
-
     if connection == nil then return nil end
-
-    return certifiedConnUid_[ServerUtils.GetConnectionKey(connection)]
-
+    local state = connectionStates_[connection]
+    if state == nil or state.active ~= true or state.identityReady ~= true then
+        return nil
+    end
+    return state.userId or certifiedConnUid_[state.key]
 end
 
 

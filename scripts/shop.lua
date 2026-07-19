@@ -52,7 +52,22 @@ function Shop.ApplyServerSeedShop(data)
         ShopView.RefreshAfterServerSync()
         return true
     end
+    ShopView.RefreshAfterServerSync()
     return false
+end
+
+function Shop.ApplyServerSeedShopPatch(patch)
+    if SeedShopSystem.ApplyServerSeedShopPatch(patch) then
+        ShopView.RefreshAfterServerSync()
+        return true
+    end
+    ShopView.RefreshAfterServerSync()
+    return false
+end
+
+function Shop.SetSeedShopError(message)
+    SeedShopSystem.SetSeedShopError(message)
+    ShopView.RefreshAfterServerSync()
 end
 
 function Shop.RebuildShopContent()

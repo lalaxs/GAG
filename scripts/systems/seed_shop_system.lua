@@ -112,6 +112,7 @@ local state_ = {
         localElapsedSinceServerSync = 0,
         nextRefreshAt = 0,
         awaitingServer = false,
+        lastError = nil,
     },
     tool = {
         stock = {},
@@ -245,6 +246,7 @@ local function SyncSeedShopFromData(data)
     state_.seed.lastRefreshRealTime = math.floor(serverTime)
     state_.seed.awaitingServer = false
     print(string.format("[Shop] 已同步全服种子商店：批次%d，上架%d种，%.1f秒后刷新", state_.seed.refreshId, #state_.seed.items, state_.seed.timer))
+    state_.seed.lastError = nil
     return true
 end
 
@@ -390,9 +392,11 @@ end
 function SeedShopSystem.RequestSeedShopFromServer()
     if not state_.serverAuthoritative or gameRef_.requestSeedShop == nil then return false end
     state_.seed.awaitingServer = true
+    state_.seed.lastError = nil
     local ok = gameRef_.requestSeedShop()
     if not ok then
         state_.seed.awaitingServer = false
+        state_.seed.lastError = "网络连接失败，无法同步全服商店，请检查网络后重试"
     end
     return ok
 end
@@ -475,7 +479,42 @@ function SeedShopSystem.ApplyServerSeedShop(data)
         return true
     end
     state_.seed.awaitingServer = false
+    state_.seed.lastError = "商店数据无效，请稍后重试"
     return false
+end
+
+function SeedShopSystem.ApplyServerSeedShopPatch(patch)
+    if type(patch) ~= "table" then return false end
+    local refreshId = math.floor(tonumber(patch.refreshId or state_.seed.refreshId) or state_.seed.refreshId)
+    if refreshId ~= state_.seed.refreshId then
+        state_.seed.awaitingServer = false
+        return false
+    end
+    if type(patch.stock) == "table" then
+        for seedName, stock in pairs(patch.stock) do
+            local key = tostring(seedName)
+            state_.seed.stock[key] = math.max(0, math.floor(tonumber(stock or 0) or 0))
+        end
+    end
+    local items = {}
+    for _, seedName in ipairs(state_.seed.items or {}) do
+        if (state_.seed.stock[seedName] or 0) > 0 then
+            items[#items + 1] = seedName
+        end
+    end
+    state_.seed.items = items
+    state_.seed.awaitingServer = false
+    state_.seed.lastError = nil
+    return true
+end
+
+function SeedShopSystem.SetSeedShopError(message)
+    state_.seed.awaitingServer = false
+    state_.seed.lastError = message or "商店同步失败，请稍后重试"
+end
+
+function SeedShopSystem.ClearSeedShopError()
+    state_.seed.lastError = nil
 end
 
 function SeedShopSystem.IsOpen()

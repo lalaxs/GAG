@@ -16,6 +16,10 @@ local deps_ = {}
 local ServerCloudStore = require("server.server_cloud_store")
 local LeaderboardSanitize = require("server.leaderboard_sanitize")
 local UserId = require("utils.user_id")
+local ServerUtils = require("server.server_utils")
+
+local RANK_CACHE_TTL = 90
+local leaderboardCacheByKey_ = {}
 
 local function CloudUid(uid)
     return ServerCloudStore.CloudPlayerId(uid) or ServerCloudStore.CanonicalUid(uid)
@@ -60,6 +64,37 @@ local function IsBackoffActive(uid)
     return false
 end
 
+local function CacheKey(info)
+    return tostring(info and info.key or "unknown") .. ":" .. tostring(info and info.kind or "rank")
+end
+
+local function GetCachedList(info)
+    local cached = leaderboardCacheByKey_[CacheKey(info)]
+    if cached == nil then return nil end
+    if Now() - (tonumber(cached.at or 0) or 0) > RANK_CACHE_TTL then
+        leaderboardCacheByKey_[CacheKey(info)] = nil
+        return nil
+    end
+    return ServerUtils.DeepCopy(cached.list or {})
+end
+
+local function SetCachedList(info, list)
+    leaderboardCacheByKey_[CacheKey(info)] = {
+        at = Now(),
+        list = ServerUtils.DeepCopy(list or {}),
+    }
+end
+
+local function SendCachedLeaderboard(uid, connection, requestId, info, message)
+    local cached = GetCachedList(info)
+    if cached == nil then return false end
+    ServerLeaderboard.SendLeaderboardWithMyRank(uid, connection, requestId, info, cached, {
+        stale = true,
+        message = message or "云榜繁忙，已显示最近榜单",
+    })
+    return true
+end
+
 local function Send(connection, eventName, data)
     deps_.Send(connection, eventName, data)
 end
@@ -76,40 +111,53 @@ local function RepairTourRankIfNeeded(uid, done)
         return
     end
     tourRankRepairAtByUid_[key] = now
-    ServerCloudStore.ReadPlayerScore(uid, deps_.Shared.KEYS.AUTH_FARM_STATE, {
-        normalize = deps_.NormalizeFarmState,
-        score = deps_.ScoreFarmState,
-        compareScore = deps_.ScoreFarmState,
+    ServerCloudStore.ReadPlayerScore(uid, deps_.Shared.KEYS.PLAYER_STATE, {
         requireOwner = true,
-        allowLegacyRescue = true,
-        shouldLegacyRescue = deps_.FarmLooksEmpty,
-        logLabel = "观光榜修复农场",
-    }, function(farmState)
-        if type(farmState) ~= "table" then
-            done()
-            return
-        end
-        local score = math.max(0, math.floor(tonumber(deps_.CalculateAuthFarmTourValue(farmState) or 0) or 0))
-        if score <= 0 then
-            done()
-            return
-        end
-        local rankUid = RankUid(uid)
-        if rankUid == nil then
-            done()
-            return
-        end
-        ---@diagnostic disable-next-line: param-type-mismatch
-        serverCloud:SetInt(rankUid, deps_.Shared.KEYS.TOUR_RANK, score, {
-            ok = function()
-                print(string.format("[排行榜] 观光榜补交成功 uid=%s score=%s", tostring(uid), tostring(score)))
+        logLabel = "观光榜修复统一档",
+    }, function(doc)
+        local farmState = type(doc) == "table" and doc.farm or nil
+        local function applyFarm(farm)
+            if type(farm) ~= "table" then
                 done()
-            end,
-            error = function(_, reason)
-                print(string.format("[排行榜] 观光榜补交失败 uid=%s score=%s reason=%s", tostring(uid), tostring(score), tostring(reason)))
+                return
+            end
+            local score = math.max(0, math.floor(tonumber(deps_.CalculateAuthFarmTourValue(farm) or 0) or 0))
+            if score <= 0 then
                 done()
-            end,
-        })
+                return
+            end
+            local rankUid = RankUid(uid)
+            if rankUid == nil then
+                done()
+                return
+            end
+            ---@diagnostic disable-next-line: param-type-mismatch
+            serverCloud:SetInt(rankUid, deps_.Shared.KEYS.TOUR_RANK, score, {
+                ok = function()
+                    print(string.format("[排行榜] 观光榜补交成功 uid=%s score=%s", tostring(uid), tostring(score)))
+                    done()
+                end,
+                error = function(_, reason)
+                    print(string.format("[排行榜] 观光榜补交失败 uid=%s score=%s reason=%s", tostring(uid), tostring(score), tostring(reason)))
+                    done()
+                end,
+            })
+        end
+        if type(farmState) == "table" then
+            applyFarm(farmState)
+            return
+        end
+        ServerCloudStore.ReadPlayerScore(uid, deps_.Shared.KEYS.AUTH_FARM_STATE, {
+            normalize = deps_.NormalizeFarmState,
+            score = deps_.ScoreFarmState,
+            compareScore = deps_.ScoreFarmState,
+            requireOwner = true,
+            allowLegacyRescue = true,
+            shouldLegacyRescue = deps_.FarmLooksEmpty,
+            logLabel = "观光榜修复农场",
+        }, function(legacyFarm)
+            applyFarm(legacyFarm)
+        end)
     end)
 end
 
@@ -216,7 +264,8 @@ function ServerLeaderboard.AddPreviousActivityRewardStatus(uid, data, done)
     })
 end
 
-function ServerLeaderboard.SendLeaderboardWithMyRank(uid, connection, requestId, info, list)
+function ServerLeaderboard.SendLeaderboardWithMyRank(uid, connection, requestId, info, list, meta)
+    meta = meta or {}
     uid = CloudUid(uid)
     ---@diagnostic disable-next-line: param-type-mismatch
     serverCloud:GetUserRank(RankUid(uid), info.key, {
@@ -246,6 +295,8 @@ function ServerLeaderboard.SendLeaderboardWithMyRank(uid, connection, requestId,
                     myScore = myScoreValue,
                     rewardEligible = info.kind == "activity" and myRank ~= nil and myRank <= deps_.activityRankRewardTop,
                     rewardClaimed = rewardClaimed == true,
+                    stale = meta.stale == true,
+                    message = meta.message,
                 }
                 ServerLeaderboard.AddPreviousActivityRewardStatus(uid, data, function(response)
                     Send(connection, deps_.Shared.EVENTS.LEADERBOARD_RESPONSE, response)
@@ -265,7 +316,7 @@ function ServerLeaderboard.SendLeaderboardWithMyRank(uid, connection, requestId,
             })
         end,
         error = function()
-            local data = { success = true, requestId = requestId, kind = info.kind, activityId = info.activityId, cycleId = info.cycleId, resetMode = info.resetMode, title = info.title, list = list, myRank = nil, myScore = 0 }
+            local data = { success = true, requestId = requestId, kind = info.kind, activityId = info.activityId, cycleId = info.cycleId, resetMode = info.resetMode, title = info.title, list = list, myRank = nil, myScore = 0, stale = meta.stale == true, message = meta.message }
             ServerLeaderboard.AddPreviousActivityRewardStatus(uid, data, function(response)
                 Send(connection, deps_.Shared.EVENTS.LEADERBOARD_RESPONSE, response)
             end)
@@ -276,11 +327,12 @@ end
 function ServerLeaderboard.RequestLeaderboardAuthority(uid, payload, connection)
     uid = CloudUid(uid)
     payload = payload or {}
+    local info = ServerLeaderboard.ResolveLeaderboardInfo(payload.kind, payload.activityId)
     if IsBackoffActive(uid) then
+        if SendCachedLeaderboard(uid, connection, payload.requestId, info) then return end
         Send(connection, deps_.Shared.EVENTS.LEADERBOARD_RESPONSE, { success = false, requestId = payload.requestId, kind = payload.kind, activityId = payload.activityId, message = "榜单繁忙" })
         return
     end
-    local info = ServerLeaderboard.ResolveLeaderboardInfo(payload.kind, payload.activityId)
     local count = deps_.NormalizePositiveCount(payload.count or 20, 50)
     local function fetchRankList()
         serverCloud:GetRankList(info.key, 1, count, {
@@ -302,12 +354,14 @@ function ServerLeaderboard.RequestLeaderboardAuthority(uid, payload, connection)
                 deps_.GetNicknameMap(userIds, function(nickMap)
                     deps_.SocialServer.FetchGardenProfiles(userIds, function(profileMap)
                         local filtered = LeaderboardSanitize.FilterForDisplay(uid, result, profileMap, nickMap, info.kind)
+                        SetCachedList(info, filtered)
                         ServerLeaderboard.SendLeaderboardWithMyRank(uid, connection, payload.requestId, info, filtered)
                     end)
                 end)
             end,
             error = function(_, reason)
                 EnterBackoff(uid, reason)
+                if SendCachedLeaderboard(uid, connection, payload.requestId, info) then return end
                 Send(connection, deps_.Shared.EVENTS.LEADERBOARD_RESPONSE, { success = false, requestId = payload.requestId, kind = payload.kind, activityId = payload.activityId, message = "榜单繁忙" })
             end,
         })

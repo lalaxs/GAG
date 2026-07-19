@@ -11,7 +11,9 @@ local ServerCloudStore = require("server.server_cloud_store")
 local ServerSteal = {}
 
 local STEAL_RATE_LIMIT_BACKOFF = 8
+local STEAL_DAILY_CACHE_TTL = 12
 local stealBackoffUntilByUid_ = {}
+local stealDailyCacheByUid_ = {}
 
 local deps_ = {}
 
@@ -66,6 +68,54 @@ local function IsStealBackoffActive(uid)
     return false
 end
 
+local function SendRateLimitedPayload()
+    return {
+        code = "RATE_LIMITED",
+        retryable = true,
+    }
+end
+
+local function GetCachedStealDaily(uid)
+    local cache = stealDailyCacheByUid_[StealBackoffKey(uid)]
+    if cache == nil then return nil end
+    if tostring(cache.day or "") ~= tostring(os and os.date and os.date("%Y%m%d", Now()) or "unknown") then
+        stealDailyCacheByUid_[StealBackoffKey(uid)] = nil
+        return nil
+    end
+    if Now() - (tonumber(cache.updatedAt or 0) or 0) > STEAL_DAILY_CACHE_TTL then return nil end
+    return cache
+end
+
+local function StoreStealDaily(uid, stealCount, stealLimit)
+    local count = math.max(0, math.floor(tonumber(stealCount or 0) or 0))
+    local limit = math.max(0, math.floor(tonumber(stealLimit or deps_.dailyStealLimit or 0) or 0))
+    stealDailyCacheByUid_[StealBackoffKey(uid)] = {
+        stealCount = count,
+        stealLimit = limit,
+        updatedAt = Now(),
+        day = os and os.date and os.date("%Y%m%d", Now()) or "unknown",
+    }
+    return count, limit
+end
+
+local function AddCachedStealCount(uid, delta, stealLimit)
+    local cache = GetCachedStealDaily(uid)
+    local current = cache and cache.stealCount or 0
+    local limit = stealLimit or (cache and cache.stealLimit) or deps_.dailyStealLimit
+    StoreStealDaily(uid, current + (delta or 0), limit)
+end
+
+function ServerSteal.RefreshStealDailyCache(uid, daily)
+    if type(daily) ~= "table" then return false end
+    local cached = GetCachedStealDaily(uid)
+    local stealCount = tonumber(daily.stealCount)
+    if stealCount == nil and cached ~= nil then stealCount = cached.stealCount end
+    if stealCount == nil then return false end
+    local stealLimit = tonumber(daily.stealLimit or daily.limit or (cached and cached.stealLimit) or deps_.dailyStealLimit)
+    StoreStealDaily(uid, stealCount, stealLimit)
+    return true
+end
+
 local function GetFarmPlot(state, plotIndex)
     return deps_.GetFarmPlot(state, plotIndex)
 end
@@ -76,6 +126,32 @@ end
 
 local function RefreshAuthCrop(crop)
     deps_.RefreshAuthCrop(crop)
+end
+
+local function IsCropStolenToday(crop)
+    if deps_.IsCropStolenToday ~= nil then
+        return deps_.IsCropStolenToday(crop) == true
+    end
+    if type(crop) ~= "table" or crop.stolen ~= true then return false end
+    local stolenAt = tonumber(crop.stolenAt or 0) or 0
+    if stolenAt <= 0 then return false end
+    return os.date("%Y%m%d", stolenAt) == os.date("%Y%m%d", Now())
+end
+
+local function IsStealTimestampToday(timestamp)
+    timestamp = tonumber(timestamp or 0) or 0
+    if timestamp <= 0 then return false end
+    return os.date("%Y%m%d", timestamp) == os.date("%Y%m%d", Now())
+end
+
+local function HasTodayStealRows(rows)
+    for _, row in ipairs(rows or {}) do
+        local value = row.value or row
+        if type(value) == "table" and IsStealTimestampToday(value.stolenAt or value.time) then
+            return true
+        end
+    end
+    return false
 end
 
 local function GetMaxCropsPerPlot()
@@ -125,7 +201,8 @@ end
 local function CommitStealSideEffects(ctx)
     local c = serverCloud:BatchCommit("权威偷菜")
     ---@diagnostic disable-next-line: param-type-mismatch
-    c:QuotaAdd(ctx.targetCloudUid, ctx.cropClaimKey, 1, 1)
+    -- 按自然日刷新：跨天后同一作物可再次被抢占（与 stealable 日重置一致）
+    c:QuotaAdd(ctx.targetCloudUid, ctx.cropClaimKey, 1, 1, "day", 1)
     ---@diagnostic disable-next-line: param-type-mismatch
     c:ListAdd(ctx.thiefCloudUid, ctx.recordKey, {
         targetUserId = ctx.targetUserId,
@@ -149,6 +226,7 @@ local function CommitStealSideEffects(ctx)
             print("[偷菜] 附加记录提交失败: " .. tostring(reason))
         end,
     })
+    AddCachedStealCount(ctx.uid, 1, ctx.stealLimit)
     Send(ctx.connection, deps_.Shared.EVENTS.STEAL_RESPONSE, ctx.response)
 end
 
@@ -202,8 +280,15 @@ function ServerSteal.RequestStealWithQuotaAvailable(uid, targetUid, cropIndex, c
             if crop.mature ~= true then
                 return { success = false, message = "这株作物还没成熟" }
             end
+            if IsCropStolenToday(crop) then
+                return { success = false, message = "这株作物今天已经被偷过了" }
+            end
+            -- 跨日旧标记：清掉后允许今日再偷
             if crop.stolen == true then
-                return { success = false, message = "这株作物已经被偷过了" }
+                crop.stolen = false
+                crop.stolenBy = nil
+                crop.stolenAt = nil
+                crop.stealReward = nil
             end
 
             local reward = ServerSteal.RollStealReward(crop)
@@ -301,27 +386,35 @@ function ServerSteal.RequestStealWithQuotaAvailable(uid, targetUid, cropIndex, c
         local cropClaimKey = ServerSteal.BuildStealCropClaimKey(actualCropIdForCheck)
         ServerCloudStore.ListGet(thiefCloudUid, recordKeyCheck, {
             ok = function(records)
-                if records ~= nil and #records > 0 then
-                    SendFail(connection, requestId, "这株作物你已经偷过了")
+                if HasTodayStealRows(records) then
+                    SendFail(connection, requestId, "这株作物你今天已经偷过了")
                     return
                 end
                 ServerCloudStore.ListGet(targetCloudUid, cropClaimKey, {
                     ok = function(claimRows)
-                        if claimRows ~= nil and #claimRows > 0 then
-                            SendFail(connection, requestId, "这株作物已经被偷过了")
+                        if HasTodayStealRows(claimRows) then
+                            SendFail(connection, requestId, "这株作物今天已经被偷过了")
                             return
                         end
                         afterListsOk()
                     end,
                     error = function(_, reason)
                         EnterStealBackoff(uid, reason)
-                        SendFail(connection, requestId, "作物偷取记录读取失败: " .. tostring(reason))
+                        if IsRateLimitReason(reason) then
+                            SendFail(connection, requestId, "服务器繁忙，请稍后再试", SendRateLimitedPayload())
+                        else
+                            SendFail(connection, requestId, "作物偷取记录读取失败: " .. tostring(reason))
+                        end
                     end,
                 })
             end,
             error = function(_, reason)
                 EnterStealBackoff(uid, reason)
-                SendFail(connection, requestId, "偷菜记录读取失败: " .. tostring(reason))
+                if IsRateLimitReason(reason) then
+                    SendFail(connection, requestId, "服务器繁忙，请稍后再试", SendRateLimitedPayload())
+                else
+                    SendFail(connection, requestId, "偷菜记录读取失败: " .. tostring(reason))
+                end
             end,
         })
     end
@@ -336,7 +429,24 @@ end
 
 function ServerSteal.RequestSteal(uid, targetUid, cropIndex, cropId, connection, requestId, requestRecordKey)
     if IsStealBackoffActive(uid) then
-        SendFail(connection, requestId, "服务器繁忙，请稍后再偷菜")
+        SendFail(connection, requestId, "服务器繁忙，请稍后再试", SendRateLimitedPayload())
+        return
+    end
+    local cachedDaily = GetCachedStealDaily(uid)
+    if cachedDaily ~= nil then
+        local stealCount = math.max(0, math.floor(tonumber(cachedDaily.stealCount or 0) or 0))
+        local stealLimit = math.max(0, math.floor(tonumber(cachedDaily.stealLimit or deps_.dailyStealLimit) or deps_.dailyStealLimit))
+        if stealCount >= stealLimit then
+            Send(connection, deps_.Shared.EVENTS.STEAL_RESPONSE, {
+                success = false,
+                code = "STEAL_LIMIT_REACHED",
+                message = "偷取次数不足",
+                requestId = requestId,
+                daily = { stealCount = stealCount, limit = stealLimit },
+            })
+            return
+        end
+        ServerSteal.RequestStealWithQuotaAvailable(uid, targetUid, cropIndex, cropId, connection, requestId, requestRecordKey, stealLimit)
         return
     end
     local thiefCloudUid = CloudUid(NormalizeUserId(uid) or uid)
@@ -349,6 +459,7 @@ function ServerSteal.RequestSteal(uid, targetUid, cropIndex, cropId, connection,
                 ok = function(quotaRows)
                     local row = quotaRows and quotaRows[1]
                     local stealCount = math.max(0, math.floor(tonumber(row and row.value or 0) or 0))
+                    StoreStealDaily(uid, stealCount, stealLimit)
                     if stealCount >= stealLimit then
                         Send(connection, deps_.Shared.EVENTS.STEAL_RESPONSE, {
                             success = false,
@@ -363,13 +474,21 @@ function ServerSteal.RequestSteal(uid, targetUid, cropIndex, cropId, connection,
                 end,
                 error = function(_, reason)
                     EnterStealBackoff(uid, reason)
-                    SendFail(connection, requestId, "偷菜次数读取失败: " .. tostring(reason))
+                    if IsRateLimitReason(reason) then
+                        SendFail(connection, requestId, "服务器繁忙，请稍后再试", SendRateLimitedPayload())
+                    else
+                        SendFail(connection, requestId, "偷菜次数读取失败: " .. tostring(reason))
+                    end
                 end,
             })
         end,
         error = function(_, reason)
             EnterStealBackoff(uid, reason)
-            SendFail(connection, requestId, "偷菜次数上限读取失败: " .. tostring(reason))
+            if IsRateLimitReason(reason) then
+                SendFail(connection, requestId, "服务器繁忙，请稍后再试", SendRateLimitedPayload())
+            else
+                SendFail(connection, requestId, "偷菜次数上限读取失败: " .. tostring(reason))
+            end
         end,
     })
 end

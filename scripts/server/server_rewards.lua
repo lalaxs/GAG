@@ -70,6 +70,18 @@ local function RecordResponse(uid, key, response)
     end
 end
 
+local function CompleteCommittedRequest(uid, key, response)
+    if deps_.RequestGuard ~= nil and deps_.RequestGuard.CompleteCommitted ~= nil then
+        deps_.RequestGuard.CompleteCommitted(uid, key, response)
+    end
+end
+
+local function ReleaseRequest(uid, key)
+    if deps_.RequestGuard ~= nil and deps_.RequestGuard.Release ~= nil then
+        deps_.RequestGuard.Release(uid, key)
+    end
+end
+
 local function SendMutationResult(connection, eventName, result, requestId)
     if type(result) == "table" and type(result.response) == "table" then
         Send(connection, eventName, result.response)
@@ -81,6 +93,62 @@ local function SendMutationResult(connection, eventName, result, requestId)
         retryable = type(result) == "table" and result.retryable == true,
         requestId = requestId,
     })
+end
+
+local function GetAdRewardReceipt(state, requestId)
+    if type(state) ~= "table" or requestId == nil or requestId == "" then return nil end
+    state.adRewardReceipts = type(state.adRewardReceipts) == "table" and state.adRewardReceipts or {}
+    return state.adRewardReceipts[tostring(requestId)]
+end
+
+local function StoreAdRewardReceipt(state, requestId, response)
+    if type(state) ~= "table" or requestId == nil or requestId == "" then return end
+    state.adRewardReceipts = type(state.adRewardReceipts) == "table" and state.adRewardReceipts or {}
+    state.adRewardReceiptOrder = type(state.adRewardReceiptOrder) == "table" and state.adRewardReceiptOrder or {}
+    local key = tostring(requestId)
+    state.adRewardReceipts[key] = {
+        success = response.success == true,
+        message = response.message,
+        rewardType = response.rewardType,
+        rewards = response.rewards,
+        daily = response.daily,
+        plotIndex = response.plotIndex,
+        maturedCount = response.maturedCount,
+    }
+    state.adRewardReceiptOrder[#state.adRewardReceiptOrder + 1] = key
+    while #state.adRewardReceiptOrder > 20 do
+        local expiredKey = table.remove(state.adRewardReceiptOrder, 1)
+        state.adRewardReceipts[expiredKey] = nil
+    end
+end
+
+local function ReplayAdRewardReceipt(state, requestId, farmState)
+    local receipt = GetAdRewardReceipt(state, requestId)
+    if type(receipt) ~= "table" then return nil end
+    local response = {}
+    for key, value in pairs(receipt) do response[key] = value end
+    response.requestId = requestId
+    response.state = state
+    if farmState ~= nil then response.farm = farmState end
+    return response
+end
+
+local function GetAdRewardDayKey()
+    return os and os.date and os.date("%Y%m%d") or "unknown"
+end
+
+local function GetAdRewardDailyCount(state, rewardType)
+    state.adRewardDaily = type(state.adRewardDaily) == "table" and state.adRewardDaily or {}
+    local dayKey = GetAdRewardDayKey()
+    if tostring(state.adRewardDaily.dayKey or "") ~= dayKey then
+        state.adRewardDaily = { dayKey = dayKey }
+    end
+    return math.max(0, math.floor(tonumber(state.adRewardDaily[rewardType] or 0) or 0))
+end
+
+local function SetAdRewardDailyCount(state, rewardType, count)
+    GetAdRewardDailyCount(state, rewardType)
+    state.adRewardDaily[rewardType] = math.max(0, math.floor(tonumber(count or 0) or 0))
 end
 
 local function CommitTourRank(uid, state)
@@ -144,6 +212,17 @@ function ServerRewards.MatureAllCropsInPlot(farmState, plotIndex)
             crop.elapsed = math.max(tonumber(crop.growTime or 1) or 1, 1)
             crop.mature = true
             crop.matureAt = now
+            -- 偷菜按自然日：跨日旧标记不挡 stealable
+            local stolenAt = tonumber(crop.stolenAt or 0) or 0
+            local stolenToday = crop.stolen == true
+                and stolenAt > 0
+                and os.date("%Y%m%d", stolenAt) == os.date("%Y%m%d", now)
+            if crop.stolen == true and stolenToday ~= true then
+                crop.stolen = false
+                crop.stolenBy = nil
+                crop.stolenAt = nil
+                crop.stealReward = nil
+            end
             crop.stealable = crop.stolen ~= true
             changed = changed + 1
         end
@@ -155,12 +234,23 @@ function ServerRewards.GrantAdReward(uid, payload, connection)
     uid = CloudUid(uid)
     payload = payload or {}
     local rewardType = tostring(payload.rewardType or "")
+    local requestId = tostring(payload.requestId or "")
+    if requestId == "" then
+        Send(connection, deps_.Shared.EVENTS.AD_REWARD_RESPONSE, {
+            success = false,
+            message = "广告奖励请求无效",
+            requestId = payload.requestId,
+            rewardType = rewardType,
+        })
+        return
+    end
     if rewardType == "steal_attempts" then
         ServerCloudStore.QuotaGet(uid, "daily_steal_ad", {
             ok = function(rows)
                 local row = rows and rows[1]
                 local watched = math.max(0, math.floor(tonumber(row and row.value or 0) or 0))
                 if watched >= deps_.dailyStealAdLimit then
+                    ReleaseRequest(uid, payload._requestRecordKey)
                     Send(connection, deps_.Shared.EVENTS.AD_REWARD_RESPONSE, { success = false, code = "AD_LIMIT_REACHED", message = "今日偷取次数广告已达上限", requestId = payload.requestId, rewardType = rewardType, daily = { stealAdCount = watched, stealAdLimit = deps_.dailyStealAdLimit } })
                     return
                 end
@@ -169,27 +259,66 @@ function ServerRewards.GrantAdReward(uid, payload, connection)
                 c:QuotaAdd(uid, "daily_steal_ad", 1, deps_.dailyStealAdLimit, "day", 1)
                 c:QuotaAdd(uid, "daily_steal_ad_bonus", deps_.adStealBonus, deps_.dailyStealAdLimit * deps_.adStealBonus, "day", 1)
                 deps_.RequestGuard.AddToCommit(c, uid, payload._requestRecordKey, response)
-                c:Commit({ ok = function() Send(connection, deps_.Shared.EVENTS.AD_REWARD_RESPONSE, response); deps_.SocialServer.RequestSocialState(uid, connection) end, error = function(_, reason) Send(connection, deps_.Shared.EVENTS.AD_REWARD_RESPONSE, { success = false, message = "奖励发放失败: " .. tostring(reason), requestId = payload.requestId, rewardType = rewardType }) end })
+                c:Commit({ ok = function()
+                    CompleteCommittedRequest(uid, payload._requestRecordKey, response)
+                    if deps_.ServerSteal ~= nil and deps_.ServerSteal.RefreshStealDailyCache ~= nil then
+                        deps_.ServerSteal.RefreshStealDailyCache(uid, { stealLimit = response.daily and response.daily.limit })
+                    end
+                    Send(connection, deps_.Shared.EVENTS.AD_REWARD_RESPONSE, response)
+                    deps_.SocialServer.RequestSocialState(uid, connection)
+                end, error = function(_, reason)
+                    ReleaseRequest(uid, payload._requestRecordKey)
+                    Send(connection, deps_.Shared.EVENTS.AD_REWARD_RESPONSE, { success = false, retryable = true, message = "奖励发放失败: " .. tostring(reason), requestId = payload.requestId, rewardType = rewardType })
+                end })
             end,
-            error = function(_, reason) Send(connection, deps_.Shared.EVENTS.AD_REWARD_RESPONSE, { success = false, message = "广告次数读取失败: " .. tostring(reason), requestId = payload.requestId, rewardType = rewardType }) end,
+            error = function(_, reason)
+                ReleaseRequest(uid, payload._requestRecordKey)
+                Send(connection, deps_.Shared.EVENTS.AD_REWARD_RESPONSE, { success = false, retryable = true, message = "广告次数读取失败: " .. tostring(reason), requestId = payload.requestId, rewardType = rewardType })
+            end,
         })
         return
     end
 
     if rewardType == "rare_seed_pack" then
+        local session = deps_.PlayerStateService.GetSession(uid)
+        local replay = session ~= nil and ReplayAdRewardReceipt(session.economy, requestId) or nil
+        if replay ~= nil then
+            print("[奖励] 在次数校验前回放稀有种子包广告收据 requestId=" .. requestId)
+            CompleteCommittedRequest(uid, payload._requestRecordKey, replay)
+            Send(connection, deps_.Shared.EVENTS.AD_REWARD_RESPONSE, replay)
+            return
+        end
         ServerCloudStore.QuotaGet(uid, "daily_seed_pack_ad", {
             ok = function(rows)
                 local row = rows and rows[1]
                 local watched = math.max(0, math.floor(tonumber(row and row.value or 0) or 0))
                 if watched >= deps_.dailySeedPackAdLimit then
+                    ReleaseRequest(uid, payload._requestRecordKey)
                     Send(connection, deps_.Shared.EVENTS.AD_REWARD_RESPONSE, { success = false, code = "AD_LIMIT_REACHED", message = "今日广告种子包已领取完", requestId = payload.requestId, rewardType = rewardType, daily = { seedPackAdCount = watched, seedPackAdLimit = deps_.dailySeedPackAdLimit } })
                     return
                 end
                 deps_.PlayerStateService.MutateEconomy(uid, "ad_rare_seed_pack", function(state)
+                    local replay = ReplayAdRewardReceipt(state, requestId)
+                    if replay ~= nil then
+                        print("[奖励] 回放稀有种子包广告收据 requestId=" .. requestId)
+                        return { success = true, response = replay, replayed = true }
+                    end
+                    local currentCount = math.max(watched, GetAdRewardDailyCount(state, rewardType))
+                    if currentCount >= deps_.dailySeedPackAdLimit then
+                        return { success = false, response = { success = false, code = "AD_LIMIT_REACHED", message = "今日广告种子包已领取完", requestId = payload.requestId, rewardType = rewardType, state = state, daily = { seedPackAdCount = currentCount, seedPackAdLimit = deps_.dailySeedPackAdLimit } } }
+                    end
                     state.seedPacks.pack_rare = (tonumber(state.seedPacks.pack_rare or 0) or 0) + deps_.adRarePackCount
-                    return { success = true, response = { success = true, message = "获得稀有种子包 x" .. tostring(deps_.adRarePackCount), requestId = payload.requestId, rewardType = rewardType, state = state, rewards = { { packId = "pack_rare", count = deps_.adRarePackCount } }, daily = { seedPackAdCount = watched + 1, seedPackAdLimit = deps_.dailySeedPackAdLimit } } }
+                    SetAdRewardDailyCount(state, rewardType, currentCount + 1)
+                    local response = { success = true, message = "获得稀有种子包 x" .. tostring(deps_.adRarePackCount), requestId = payload.requestId, rewardType = rewardType, state = state, rewards = { { packId = "pack_rare", count = deps_.adRarePackCount } }, daily = { seedPackAdCount = currentCount + 1, seedPackAdLimit = deps_.dailySeedPackAdLimit } }
+                    StoreAdRewardReceipt(state, requestId, response)
+                    return { success = true, response = response }
                 end, function(result)
                     if result ~= nil and result.success == true and type(result.response) == "table" then
+                        CompleteCommittedRequest(uid, payload._requestRecordKey, result.response)
+                    else
+                        ReleaseRequest(uid, payload._requestRecordKey)
+                    end
+                    if result ~= nil and result.success == true and result.replayed ~= true and type(result.response) == "table" then
                         local c = serverCloud:BatchCommit("广告次数：稀有种子包")
                         c:QuotaAdd(uid, "daily_seed_pack_ad", 1, deps_.dailySeedPackAdLimit, "day", 1)
                         deps_.RequestGuard.AddToCommit(c, uid, payload._requestRecordKey, result.response)
@@ -199,30 +328,59 @@ function ServerRewards.GrantAdReward(uid, payload, connection)
                     SendMutationResult(connection, deps_.Shared.EVENTS.AD_REWARD_RESPONSE, result, payload.requestId)
                 end)
             end,
-            error = function(_, reason) Send(connection, deps_.Shared.EVENTS.AD_REWARD_RESPONSE, { success = false, message = "广告次数读取失败: " .. tostring(reason), requestId = payload.requestId, rewardType = rewardType }) end,
+            error = function(_, reason)
+                ReleaseRequest(uid, payload._requestRecordKey)
+                Send(connection, deps_.Shared.EVENTS.AD_REWARD_RESPONSE, { success = false, retryable = true, message = "广告次数读取失败: " .. tostring(reason), requestId = payload.requestId, rewardType = rewardType })
+            end,
         })
         return
     end
 
     if rewardType == "mature_plot" then
         local plotIndex = NormalizePlotIndex(payload.plotIndex)
+        local session = deps_.PlayerStateService.GetSession(uid)
+        local replay = session ~= nil and ReplayAdRewardReceipt(session.economy, requestId, session.farm) or nil
+        if replay ~= nil then
+            print("[奖励] 在次数校验前回放快速成熟广告收据 requestId=" .. requestId)
+            CompleteCommittedRequest(uid, payload._requestRecordKey, replay)
+            Send(connection, deps_.Shared.EVENTS.AD_REWARD_RESPONSE, replay)
+            return
+        end
         ServerCloudStore.QuotaGet(uid, "daily_mature_ad", {
             ok = function(rows)
                 local row = rows and rows[1]
                 local watched = math.max(0, math.floor(tonumber(row and row.value or 0) or 0))
                 if watched >= deps_.dailyMatureAdLimit then
+                    ReleaseRequest(uid, payload._requestRecordKey)
                     Send(connection, deps_.Shared.EVENTS.AD_REWARD_RESPONSE, { success = false, code = "AD_LIMIT_REACHED", message = "今日快速成熟广告已达上限", requestId = payload.requestId, rewardType = rewardType, daily = { matureAdCount = watched, matureAdLimit = deps_.dailyMatureAdLimit } })
                     return
                 end
                 deps_.PlayerStateService.MutateEconomyAndFarm(uid, "ad_mature_plot", function(state, farmState)
+                    local replay = ReplayAdRewardReceipt(state, requestId, farmState)
+                    if replay ~= nil then
+                        print("[奖励] 回放快速成熟广告收据 requestId=" .. requestId)
+                        return { success = true, response = replay, replayed = true }
+                    end
+                    local currentCount = math.max(watched, GetAdRewardDailyCount(state, rewardType))
+                    if currentCount >= deps_.dailyMatureAdLimit then
+                        return { success = false, response = { success = false, code = "AD_LIMIT_REACHED", message = "今日快速成熟广告已达上限", requestId = payload.requestId, rewardType = rewardType, farm = farmState, state = state, daily = { matureAdCount = currentCount, matureAdLimit = deps_.dailyMatureAdLimit } } }
+                    end
                     local changed = ServerRewards.MatureAllCropsInPlot(farmState, plotIndex)
                     if changed <= 0 then
-                        return { success = false, response = { success = false, message = "该地块没有可加速成熟的作物", requestId = payload.requestId, rewardType = rewardType, farm = farmState, state = state, daily = { matureAdCount = watched, matureAdLimit = deps_.dailyMatureAdLimit } } }
+                        return { success = false, response = { success = false, message = "该地块没有可加速成熟的作物", requestId = payload.requestId, rewardType = rewardType, farm = farmState, state = state, daily = { matureAdCount = currentCount, matureAdLimit = deps_.dailyMatureAdLimit } } }
                     end
                     SyncProgressionTourValueFromFarm(state, farmState)
-                    return { success = true, response = { success = true, message = "地块作物已全部成熟", requestId = payload.requestId, rewardType = rewardType, plotIndex = plotIndex, maturedCount = changed, farm = farmState, state = state, daily = { matureAdCount = watched + 1, matureAdLimit = deps_.dailyMatureAdLimit } } }
+                    SetAdRewardDailyCount(state, rewardType, currentCount + 1)
+                    local response = { success = true, message = "地块作物已全部成熟", requestId = payload.requestId, rewardType = rewardType, plotIndex = plotIndex, maturedCount = changed, farm = farmState, state = state, daily = { matureAdCount = currentCount + 1, matureAdLimit = deps_.dailyMatureAdLimit } }
+                    StoreAdRewardReceipt(state, requestId, response)
+                    return { success = true, response = response }
                 end, function(result)
                     if result ~= nil and result.success == true and type(result.response) == "table" then
+                        CompleteCommittedRequest(uid, payload._requestRecordKey, result.response)
+                    else
+                        ReleaseRequest(uid, payload._requestRecordKey)
+                    end
+                    if result ~= nil and result.success == true and result.replayed ~= true and type(result.response) == "table" then
                         local c = serverCloud:BatchCommit("广告次数：快速成熟")
                         c:QuotaAdd(uid, "daily_mature_ad", 1, deps_.dailyMatureAdLimit, "day", 1)
                         deps_.AddTourRankCommit(c, uid, result.response.state)
@@ -232,11 +390,15 @@ function ServerRewards.GrantAdReward(uid, payload, connection)
                     SendMutationResult(connection, deps_.Shared.EVENTS.AD_REWARD_RESPONSE, result, payload.requestId)
                 end)
             end,
-            error = function(_, reason) Send(connection, deps_.Shared.EVENTS.AD_REWARD_RESPONSE, { success = false, message = "广告次数读取失败: " .. tostring(reason), requestId = payload.requestId, rewardType = rewardType }) end,
+            error = function(_, reason)
+                ReleaseRequest(uid, payload._requestRecordKey)
+                Send(connection, deps_.Shared.EVENTS.AD_REWARD_RESPONSE, { success = false, retryable = true, message = "广告次数读取失败: " .. tostring(reason), requestId = payload.requestId, rewardType = rewardType })
+            end,
         })
         return
     end
 
+    ReleaseRequest(uid, payload._requestRecordKey)
     Send(connection, deps_.Shared.EVENTS.AD_REWARD_RESPONSE, { success = false, message = "广告奖励类型无效", requestId = payload.requestId, rewardType = rewardType })
 end
 
